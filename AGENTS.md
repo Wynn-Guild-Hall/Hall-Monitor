@@ -1,0 +1,26 @@
+# Hall-Monitor
+
+Discord bot for the Wynncraft Guild Hall. Full architecture reference is in [DESIGN.md](DESIGN.md); read it before non-trivial changes.
+
+## Fast facts
+
+- **Runtime:** Python 3.12, discord.py + FastAPI sharing one asyncio event loop and one Tortoise ORM connection.
+- **Command prefix:** `~` (no slash commands).
+- **Persistence:** SQLite via Tortoise ORM + Aerich migrations, at `${DATA_DIR}/hall-monitor.db`.
+- **HTTP sidecar:** listens on `HALL_MONITOR_PORT` for two integrations — picolimbo (`/api/verify/{uuid}/{msg}`) and the Hallway website (`/api/join/lookup`).
+- **Deployed** as its own stack in the wynnvets [vets-deploy](../vets-deploy) repo on the `verify` + `hall-internal` networks. Never publicly exposed via Traefik.
+
+## Layout landmarks
+
+- `src/hall_monitor/discord_bot/cogs/<domain>/<cmd>.py` — one file per command. Force sub-commands are split further because permissions differ per sub-command.
+- `src/hall_monitor/services/` — framework-agnostic business logic. Importable from cogs OR routes.
+- `src/hall_monitor/external/` — one HTTP client per third-party API.
+- `src/hall_monitor/sidecar/routes/` — FastAPI routes.
+- `src/hall_monitor/db/models.py` — Tortoise models. Model edits require `aerich migrate -n <slug>`.
+- `src/hall_monitor/discord_bot/cogs/admin/scripts/` — ad-hoc scripts callable via `~script <name>`.
+
+## Don't
+
+- Don't register slash commands — the bot is deliberately prefix-only.
+- Don't add features when a stub bug fix is requested — the codebase is early skeleton and easy to over-elaborate.
+- Don't hard-code Discord role IDs — every ID lives in `config.py` and comes from env.
