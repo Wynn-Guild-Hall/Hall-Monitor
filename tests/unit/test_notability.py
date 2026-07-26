@@ -219,11 +219,11 @@ async def test_refresh_all_writes_cache_for_all_candidates(db, httpx_mock, monke
     # Bulk leaderboards — one guild on each so we can assert union coverage.
     httpx_mock.add_response(
         url="https://api.wynnpool.com/leaderboard/guild-average-online",
-        json=[{"rank": 1, "name": "Wynncraft Veterans", "tag": "VETS", "averageOnline": 40}],
+        json={"1": {"name": "Wynncraft Veterans", "prefix": "VETS", "averageOnline": 40}},
     )
     httpx_mock.add_response(
         url="https://api.wynnpool.com/leaderboard/guildLevel",
-        json=[{"rank": 1, "name": "Wynncraft Veterans", "tag": "VETS", "level": 130}],
+        json={"1": {"name": "Wynncraft Veterans", "prefix": "VETS", "level": 130}},
     )
     httpx_mock.add_response(
         url="https://api.wynncraft.com/v3/guild/seasons",

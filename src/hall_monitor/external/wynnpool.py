@@ -20,11 +20,17 @@ class LeaderboardEntry:
     level for ``guildLevel``, the season rating for ``season-rating``, or
     the average online for ``guild-average-online``. ``None`` when the
     upstream payload doesn't expose it.
+
+    ``tag`` (guild prefix) is present on the dict-keyed leaderboards but
+    absent on ``season-rating`` (which only exposes ``guild_name`` /
+    ``guild_uuid``), so it's optional. Notability's tag-based match will
+    simply skip season entries whose tag is ``None`` — matching those by
+    name would require a separate name→tag lookup we don't yet have.
     """
 
     rank: int
     name: str
-    tag: str
+    tag: str | None = None
     value: float | None = None
 
 
@@ -51,29 +57,53 @@ class GuildDetails:
     banner: Banner | None = None
 
 
-def _parse_leaderboard(payload) -> tuple[LeaderboardEntry, ...]:
-    """Wynnpool leaderboards may come as a list or a dict keyed by rank.
+_METRIC_FIELDS = ("level", "rating", "averageOnline", "value")
 
-    We look for the metric under any of the known field names (``level``,
-    ``rating``, ``averageOnline``, ``value``) so one parser handles every
-    endpoint's shape without a bespoke code path per leaderboard.
+
+def _extract_value(row: dict) -> float | None:
+    for key in _METRIC_FIELDS:
+        if key in row and row[key] is not None:
+            return float(row[key])
+    return None
+
+
+def _parse_leaderboard(payload) -> tuple[LeaderboardEntry, ...]:
+    """Wynnpool ships two leaderboard shapes; this dispatches on them.
+
+    1. **Dict-keyed by rank string**:
+       ``{"1": {"uuid": ..., "name": ..., "prefix": "SEQ", "averageOnline": 16.29, ...}, ...}``
+       Used by ``guild-average-online`` and ``guildLevel``.
+
+    2. **Object with ranking array**:
+       ``{"season": N, "ranking": [{"rank": 1, "guild_uuid": ..., "guild_name": "Sequoia", "rating": 15107093}, ...]}``
+       Used by ``season-rating/{n}`` — note the ``guild_name`` / ``guild_uuid``
+       field naming and the *absence* of any prefix/tag field.
     """
-    rows = payload.values() if isinstance(payload, dict) else payload or ()
     entries: list[LeaderboardEntry] = []
-    for row in rows:
-        value = None
-        for key in ("level", "rating", "averageOnline", "value"):
-            if key in row and row[key] is not None:
-                value = float(row[key])
-                break
-        entries.append(
-            LeaderboardEntry(
-                rank=int(row["rank"]),
-                name=row["name"],
-                tag=row["tag"],
-                value=value,
+    if isinstance(payload, dict) and "ranking" in payload:
+        for row in payload.get("ranking", ()) or ():
+            entries.append(
+                LeaderboardEntry(
+                    rank=int(row["rank"]),
+                    name=row.get("guild_name") or row.get("name") or "",
+                    tag=row.get("prefix"),  # season-rating omits this
+                    value=_extract_value(row),
+                )
             )
-        )
+    elif isinstance(payload, dict):
+        for rank_key, row in payload.items():
+            try:
+                rank = int(rank_key)
+            except (TypeError, ValueError):
+                continue
+            entries.append(
+                LeaderboardEntry(
+                    rank=rank,
+                    name=row.get("name", ""),
+                    tag=row.get("prefix"),
+                    value=_extract_value(row),
+                )
+            )
     return tuple(sorted(entries, key=lambda e: e.rank))
 
 
@@ -125,7 +155,7 @@ async def guild_details(
     payload = response.json()
     return GuildDetails(
         name=payload["name"],
-        tag=payload["tag"],
-        war_count=int(payload.get("warCount", 0)),
+        tag=payload["prefix"],
+        war_count=int(payload.get("wars") or 0),
         banner=_parse_banner(payload.get("banner")),
     )

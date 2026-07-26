@@ -191,13 +191,16 @@ async def test_wynncraft_get_seasons(httpx_mock):
 async def test_wynnpool_average_online_leaderboard(httpx_mock):
     httpx_mock.add_response(
         url="https://api.wynnpool.com/leaderboard/guild-average-online",
-        json=[
-            {"rank": 1, "name": "Wynncraft Veterans", "tag": "VETS"},
-            {"rank": 2, "name": "Other Guild", "tag": "OTHR"},
-        ],
+        json={
+            "1": {"name": "Wynncraft Veterans", "prefix": "VETS", "averageOnline": 21.5},
+            "2": {"name": "Other Guild", "prefix": "OTHR", "averageOnline": 18.2},
+        },
     )
     result = await wynnpool.average_online_leaderboard()
-    assert [e.tag for e in result] == ["VETS", "OTHR"]
+    assert [(e.rank, e.tag, e.value) for e in result] == [
+        (1, "VETS", 21.5),
+        (2, "OTHR", 18.2),
+    ]
 
 
 async def test_wynnpool_guild_details_typed(httpx_mock):
@@ -205,8 +208,8 @@ async def test_wynnpool_guild_details_typed(httpx_mock):
         url="https://api.wynnpool.com/guild/VETS",
         json={
             "name": "Wynncraft Veterans",
-            "tag": "VETS",
-            "warCount": 51234,
+            "prefix": "VETS",
+            "wars": 51234,
             "banner": {
                 "base": "WHITE",
                 "tier": 3,
@@ -227,12 +230,24 @@ async def test_wynnpool_guild_details_404_returns_none(httpx_mock):
 
 
 async def test_wynnpool_season_rating(httpx_mock):
+    """Season leaderboards use a different shape: `ranking` array of
+    `{rank, guild_uuid, guild_name, rating}` — no prefix/tag field."""
     httpx_mock.add_response(
         url="https://api.wynnpool.com/leaderboard/season-rating/7",
-        json=[{"rank": 1, "name": "Wynncraft Veterans", "tag": "VETS"}],
+        json={
+            "season": 7,
+            "ranking": [
+                {"rank": 1, "guild_uuid": "u1", "guild_name": "Sequoia", "rating": 15107093},
+                {"rank": 2, "guild_uuid": "u2", "guild_name": "Aequitas", "rating": 14436545},
+            ],
+        },
     )
     result = await wynnpool.season_rating(7)
-    assert len(result) == 1 and result[0].tag == "VETS"
+    assert [(e.rank, e.name, e.tag) for e in result] == [
+        (1, "Sequoia", None),
+        (2, "Aequitas", None),
+    ]
+    assert result[0].value == 15107093
 
 
 # --------------------------------------------------------------------------
