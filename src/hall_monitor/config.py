@@ -32,6 +32,7 @@ class Settings(BaseSettings):
     wynnpool_api_base: str = "https://api.wynnpool.com"
     mojang_api_base: str = "https://api.mojang.com"
     playerdb_api_base: str = "https://playerdb.co"
+    athena_api_base: str = "https://athena.wynntils.com"
 
     pending_invite_ttl_minutes: int = 45
     pending_invite_sweep_seconds: int = 60
