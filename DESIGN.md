@@ -13,7 +13,7 @@ Entry point: [`src/hall_monitor/__main__.py`](src/hall_monitor/__main__.py).
 
 ## 2. End-to-end join flow
 
-**Status:** steps 2 and 6 implemented (Stages 3 and 4). Step 5 (picolimbo → Hall-Monitor plumbing) lands in Stage 5; steps 7–8 (invite click → member_join → role apply) land in Stage 6.
+**Status:** implemented end to end (Stages 3–6). Step 8's contact displacement lands in Stage 7, the guild aesthetic role in Stage 8, and the nickname in Stage 10.
 
 1. A representative visits `hall.wynnvets.org/join`, enters their Minecraft username.
 2. Hallway's JS calls `GET /api/join/lookup?username=X`. Hall-Monitor resolves the UUID (Mojang, PlayerDB fallback), asks Wynncraft's API whether they're a chief/owner of a notable guild, and returns `{eligible, guild_tag, mc_username, current_contacts_per_role}` for the UI to render. On failure the response carries a `reason` field (`"not chief or owner"` / `"guild not notable"`); unknown username → HTTP 404.
@@ -22,11 +22,11 @@ Entry point: [`src/hall_monitor/__main__.py`](src/hall_monitor/__main__.py).
 5. Picolimbo forwards `GET /api/verify/{uuid}/hall request 14` to Hall-Monitor.
 6. Hall-Monitor parses the subcommand, re-runs the Wynncraft eligibility check (authoritative), mints a single-use Discord invite, and returns `{"kick_message": "<welcome text with discord.gg URL>"}`.
 7. Picolimbo disconnects the player with that message. The player clicks the invite in their MC client's kick screen.
-8. On `on_member_join`, Hall-Monitor resolves which invite was used, applies the encoded contact roles (kicking prior conflicting holders — see §6), promotes the `PendingInvite` to a `Delegate`, sets the nickname, and ensures the guild's aesthetic role exists.
+8. On `on_member_join`, Hall-Monitor resolves which invite was used (see §3.1), applies the delegate role plus the encoded contact roles (kicking prior conflicting holders — see §6), promotes the `PendingInvite` to a `Delegate`, sets the nickname, and ensures the guild's aesthetic role exists.
 
 ## 3. PendingInvite lifecycle invariants
 
-**Status:** mint / revoke / sweep implemented (Stage 4); on-join promotion + on-failure retention land in Stage 6.
+**Status:** implemented (Stage 6)
 
 Enforced in `services/discord_invites.py`:
 
@@ -34,7 +34,23 @@ Enforced in `services/discord_invites.py`:
 - **Zero `PendingInvite`s if the UUID already has a `Delegate` row for a member still present in the server.** `mint_invite` raises `AlreadyLiveDelegate`; MC-time verify translates that to a "you're already in" kick message.
 - **Expiry sweep** (`scheduler.py`, every `PENDING_INVITE_SWEEP_SECONDS`) deletes rows older than `PENDING_INVITE_TTL_MINUTES` (default 45) and revokes the associated Discord invite. Belt-and-braces against the bot going down mid-flow. The scheduler binds the bot into `sweep_expired` via `functools.partial` so `discord_invites` stays a plain service module.
 - **On successful join**, the row is deleted synchronously as part of the promotion to `Delegate`.
-- **On failed role application**, the row stays until the sweep collects it — safer than a `Delegate` without roles.
+- **On failed role application**, the row stays until the sweep collects it — safer than a `Delegate` without roles. Nothing is registered either: a `Delegate` row would make the next `mint_invite` refuse the retry with "you're already verified".
+
+### 3.1 Working out which invite was used
+
+Discord reports that someone joined, never how. `services/discord_invites.py` keeps a `{code: uses}` snapshot of the guild's invite list — seeded on `on_ready` (and every reconnect; re-seeding is idempotent), extended by `note_minted` on every mint, and pruned by `revoke_invite`. `on_member_join` re-reads the list and diffs:
+
+- **uses went up** — direct evidence, but only for invites Discord still lists.
+- **the code vanished** — what actually happens to ours, since a `max_uses=1` invite is deleted on consumption. Expiry is indistinguishable from here, so candidates are filtered to `PendingInvite` rows younger than the invite's own `max_age`: an invite that has already expired can't be the one just consumed.
+
+Candidates are intersected with our own `PendingInvite` rows, so a join through anyone else's invite resolves to nothing rather than to a wrong row. The vanity URL is excluded from the snapshot outright — its use count only climbs, so it would read as consumed on every join. **More than one match is treated as no match**: a mis-attribution would bind a stranger's Discord account to someone else's Minecraft UUID, which is far worse than asking the representative to run `hall request` again.
+
+Two constraints shape this design, both verified against discord.py 2.6.4 and Discord's API docs rather than assumed:
+
+- **Handlers are concurrent.** `dispatch` schedules one task per listener, so two near-simultaneous joins interleave at every `await`. The snapshot read → fetch → diff → write is one critical section under an `asyncio.Lock`, with the fetch *inside* the lock.
+- **`INVITE_DELETE` is not a usable signal.** Discord doesn't document it firing on max-uses exhaustion, time-expired invites are known not to fire it, and nothing orders it against `GUILD_MEMBER_ADD` anyway. The diff is the only mechanism.
+
+Reading the invite list requires **Manage Server**. With only View Audit Log, Discord withholds invite metadata and every `uses` comes back `None` — codes are still listed, so vanish-detection keeps working while use-counting silently doesn't. Fetching per join is a known ratelimit hotspot on large guilds; at Guild Hall's join rate (a handful ever) it's not a concern.
 
 ## 4. Notability
 
