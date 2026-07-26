@@ -19,6 +19,13 @@ Discord bot for the Wynncraft Guild Hall. Full architecture reference is in [DES
 - `src/hall_monitor/db/models.py` — Tortoise models. Model edits require `aerich migrate -n <slug>`.
 - `src/hall_monitor/discord_bot/cogs/admin/scripts/` — ad-hoc scripts callable via `~script <name>`.
 
+## Required Discord permissions
+
+The verify flow mints and revokes single-use invites, so the bot's role in the guild needs:
+
+- **Create Instant Invite** (on the welcome channel) — every MC-time `hall request <N>` mints one.
+- **Manage Server** (or Manage Channel on the welcome channel alone) — needed to revoke the prior outstanding invite when a UUID re-requests before TTL, and for the sweep job.
+
 ## Don't
 
 - Don't register slash commands — the bot is deliberately prefix-only.

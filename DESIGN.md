@@ -13,7 +13,7 @@ Entry point: [`src/hall_monitor/__main__.py`](src/hall_monitor/__main__.py).
 
 ## 2. End-to-end join flow
 
-**Status:** step 2 implemented (Stage 3); steps 4–8 land in Stages 4–8.
+**Status:** steps 2 and 6 implemented (Stages 3 and 4). Step 5 (picolimbo → Hall-Monitor plumbing) lands in Stage 5; steps 7–8 (invite click → member_join → role apply) land in Stage 6.
 
 1. A representative visits `hall.wynnvets.org/join`, enters their Minecraft username.
 2. Hallway's JS calls `GET /api/join/lookup?username=X`. Hall-Monitor resolves the UUID (Mojang, PlayerDB fallback), asks Wynncraft's API whether they're a chief/owner of a notable guild, and returns `{eligible, guild_tag, mc_username, current_contacts_per_role}` for the UI to render. On failure the response carries a `reason` field (`"not chief or owner"` / `"guild not notable"`); unknown username → HTTP 404.
@@ -26,11 +26,13 @@ Entry point: [`src/hall_monitor/__main__.py`](src/hall_monitor/__main__.py).
 
 ## 3. PendingInvite lifecycle invariants
 
+**Status:** mint / revoke / sweep implemented (Stage 4); on-join promotion + on-failure retention land in Stage 6.
+
 Enforced in `services/discord_invites.py`:
 
 - **One `PendingInvite` per MC UUID.** Re-requesting revokes the previous Discord invite and mints a fresh one.
-- **Zero `PendingInvite`s if the UUID already has a `Delegate` row for a member still present in the server.** MC-time verify returns a "you're already in" kick message.
-- **Expiry sweep** (`scheduler.py`, every `PENDING_INVITE_SWEEP_SECONDS`) deletes rows older than `PENDING_INVITE_TTL_MINUTES` (default 45) and revokes the associated Discord invite. Belt-and-braces against the bot going down mid-flow.
+- **Zero `PendingInvite`s if the UUID already has a `Delegate` row for a member still present in the server.** `mint_invite` raises `AlreadyLiveDelegate`; MC-time verify translates that to a "you're already in" kick message.
+- **Expiry sweep** (`scheduler.py`, every `PENDING_INVITE_SWEEP_SECONDS`) deletes rows older than `PENDING_INVITE_TTL_MINUTES` (default 45) and revokes the associated Discord invite. Belt-and-braces against the bot going down mid-flow. The scheduler binds the bot into `sweep_expired` via `functools.partial` so `discord_invites` stays a plain service module.
 - **On successful join**, the row is deleted synchronously as part of the promotion to `Delegate`.
 - **On failed role application**, the row stays until the sweep collects it — safer than a `Delegate` without roles.
 
