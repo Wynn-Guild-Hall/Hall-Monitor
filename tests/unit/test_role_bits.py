@@ -2,6 +2,7 @@
 
 import pytest
 
+from hall_monitor.services import contacts
 from hall_monitor.services.role_bits import (
     ROLE_BITS,
     UnknownRoleBit,
@@ -49,3 +50,11 @@ def test_reject_bit_mixed_with_valid():
 def test_reject_negative():
     with pytest.raises(UnknownRoleBit):
         decode(-1)
+
+
+def test_every_decodable_role_maps_to_a_settings_field():
+    """A new ROLE_BITS entry without a matching contact role ID would only
+    surface when a member redeemed an invite carrying that bit."""
+    assert set(ROLE_BITS.values()) == set(contacts.CONTACT_ROLES)
+    for role in ROLE_BITS.values():
+        contacts.contact_role_id(role)  # raises UnknownContactRole if unmapped
