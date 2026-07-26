@@ -45,7 +45,12 @@ async def test_playerdb_happy_path(httpx_mock):
         url=PLAYERDB_URL,
         json={
             "success": True,
-            "data": {"player": {"raw_id": "069a79f444e94726a5befca90e38aaf5"}},
+            "data": {
+                "player": {
+                    "raw_id": "069a79f444e94726a5befca90e38aaf5",
+                    "username": "Notch",
+                }
+            },
         },
     )
     assert (
@@ -63,7 +68,7 @@ async def test_resolve_falls_back_on_mojang_429(httpx_mock):
     httpx_mock.add_response(url=MOJANG_URL, status_code=429, headers={"Retry-After": "0"})
     httpx_mock.add_response(
         url=PLAYERDB_URL,
-        json={"success": True, "data": {"player": {"raw_id": "abc"}}},
+        json={"success": True, "data": {"player": {"raw_id": "abc", "username": "Notch"}}},
     )
     assert await resolve_username_to_uuid("Notch") == "abc"
 
@@ -72,7 +77,7 @@ async def test_resolve_falls_back_on_connection_error(httpx_mock):
     httpx_mock.add_exception(httpx.ConnectError("boom"), url=MOJANG_URL)
     httpx_mock.add_response(
         url=PLAYERDB_URL,
-        json={"success": True, "data": {"player": {"raw_id": "abc"}}},
+        json={"success": True, "data": {"player": {"raw_id": "abc", "username": "Notch"}}},
     )
     assert await resolve_username_to_uuid("Notch") == "abc"
 
@@ -236,7 +241,7 @@ async def test_wynnpool_season_rating(httpx_mock):
 
 async def test_5xx_retried_once_then_succeeds(httpx_mock):
     httpx_mock.add_response(url=MOJANG_URL, status_code=500)
-    httpx_mock.add_response(url=MOJANG_URL, json={"id": "abc"})
+    httpx_mock.add_response(url=MOJANG_URL, json={"id": "abc", "name": "Notch"})
     assert await mojang.username_to_uuid("Notch") == "abc"
 
 

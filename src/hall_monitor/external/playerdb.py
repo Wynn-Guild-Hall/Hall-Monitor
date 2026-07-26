@@ -5,15 +5,15 @@ import httpx
 from hall_monitor.config import settings
 
 from ._client import Requester
+from .mojang import Profile
 
 _requester = Requester(base_url=settings.playerdb_api_base)
 
 
-async def username_to_uuid(username: str, *, urgent: bool = False) -> str | None:
-    """Returns the UUID (unhyphenated hex) for ``username``, or ``None`` if
-    PlayerDB says the player doesn't exist. Raises
-    :class:`httpx.HTTPStatusError` on other non-2xx responses.
-    """
+async def resolve_profile(
+    username: str, *, urgent: bool = False
+) -> Profile | None:
+    """PlayerDB profile lookup. Returns ``None`` on 404 or ``success: false``."""
     try:
         response = await _requester.get(
             f"/api/player/minecraft/{username}", urgent=urgent
@@ -25,4 +25,10 @@ async def username_to_uuid(username: str, *, urgent: bool = False) -> str | None
     payload = response.json()
     if not payload.get("success"):
         return None
-    return payload["data"]["player"]["raw_id"]
+    player = payload["data"]["player"]
+    return Profile(uuid=player["raw_id"], username=player["username"])
+
+
+async def username_to_uuid(username: str, *, urgent: bool = False) -> str | None:
+    profile = await resolve_profile(username, urgent=urgent)
+    return profile.uuid if profile else None
