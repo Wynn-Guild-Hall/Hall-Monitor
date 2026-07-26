@@ -174,12 +174,13 @@ async def test_wynncraft_get_seasons(httpx_mock):
     httpx_mock.add_response(
         url="https://api.wynncraft.com/v3/guild/seasons",
         json={
-            "1": {"start": "2020-01-01", "end": "2020-02-01"},
-            "2": {"start": "2020-02-01", "end": "2020-03-01"},
+            "1": {"startDate": "2020-01-01T00:00:00Z", "endDate": "2020-02-01T00:00:00Z"},
+            "2": {"startDate": "2020-02-01T00:00:00Z", "endDate": "2020-03-01T00:00:00Z"},
         },
     )
     seasons = await wynncraft.get_seasons()
     assert [s.number for s in seasons] == [1, 2]
+    assert seasons[0].start.startswith("2020-01-01")
 
 
 # --------------------------------------------------------------------------

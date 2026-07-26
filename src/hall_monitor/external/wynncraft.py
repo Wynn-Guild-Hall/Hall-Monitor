@@ -89,8 +89,8 @@ class Guild:
 @dataclass(frozen=True)
 class Season:
     number: int
-    start: str
-    end: str
+    start: str  # ISO 8601 UTC (Wynncraft's `startDate`)
+    end: str    # ISO 8601 UTC (Wynncraft's `endDate`)
 
 
 def _parse_banner(raw: dict | None) -> Banner | None:
@@ -201,6 +201,10 @@ async def get_seasons(*, urgent: bool = False) -> tuple[Season, ...]:
         except (TypeError, ValueError):
             continue
         seasons.append(
-            Season(number=number, start=data["start"], end=data["end"])
+            Season(
+                number=number,
+                start=data["startDate"],
+                end=data["endDate"],
+            )
         )
     return tuple(sorted(seasons, key=lambda s: s.number))
