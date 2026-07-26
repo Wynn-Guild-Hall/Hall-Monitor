@@ -13,8 +13,10 @@ Entry point: [`src/hall_monitor/__main__.py`](src/hall_monitor/__main__.py).
 
 ## 2. End-to-end join flow
 
+**Status:** step 2 implemented (Stage 3); steps 4–8 land in Stages 4–8.
+
 1. A representative visits `hall.wynnvets.org/join`, enters their Minecraft username.
-2. Hallway's JS calls `GET /api/join/lookup?username=X`. Hall-Monitor resolves the UUID (Mojang, PlayerDB fallback), asks Wynncraft's API whether they're a chief/owner of a notable guild, and returns `{eligible, guild_tag, current_contacts_per_role}` for the UI to render.
+2. Hallway's JS calls `GET /api/join/lookup?username=X`. Hall-Monitor resolves the UUID (Mojang, PlayerDB fallback), asks Wynncraft's API whether they're a chief/owner of a notable guild, and returns `{eligible, guild_tag, mc_username, current_contacts_per_role}` for the UI to render. On failure the response carries a `reason` field (`"not chief or owner"` / `"guild not notable"`); unknown username → HTTP 404.
 3. The user ticks the contact roles they want. The UI updates a live "type `hall request N` on verify.wynnvets.org" hint, where `N` is a bit-field over the roles (see §5).
 4. The user joins `verify.wynnvets.org` in Minecraft and types `hall request 14`.
 5. Picolimbo forwards `GET /api/verify/{uuid}/hall request 14` to Hall-Monitor.
@@ -59,7 +61,9 @@ Adding a role is a one-line map addition; old codes stay valid. Codes carrying a
 
 ## 6. Contacts
 
-`services/contacts.py` enforces per-role uniqueness within a guild. Assigning a new contact displaces the old one; a delegate who ends up with zero contact roles is kicked from the server. The UI's "conflict warning" on `/join` reads directly from `guild_contact`.
+**Status:** read side implemented (Stage 3); assign/displace/kick lands in Stage 7.
+
+`services/contacts.py` enforces per-role uniqueness within a guild. Assigning a new contact displaces the old one; a delegate who ends up with zero contact roles is kicked from the server. The UI's "conflict warning" on `/join` reads directly from `guild_contact` — the Stage 3 `current_contacts_for_guild(tag)` helper drops rows whose delegate has left the Discord server (cross-checked against `bot.get_guild(...).get_member(...)` when the bot handle is available).
 
 ## 7. Cog organisation
 
