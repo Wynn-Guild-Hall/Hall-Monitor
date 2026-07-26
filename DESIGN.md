@@ -62,11 +62,15 @@ Ad-hoc admin scripts live at `cogs/admin/scripts/` — drop a file with `async d
 
 ## 8. External API clients
 
+**Status:** implemented (Stage 1)
+
 `external/` holds one client per third-party API. Guarantees:
 
-- **Mojang** is preferred; **PlayerDB** is the fallback when Mojang ratelimits.
-- **Wynncraft** reads `WYNNCRAFT_API_TOKEN` and sends it as a bearer header when set. Unset works too (shared anon ratelimit).
+- **Mojang** is preferred; **PlayerDB** is the fallback when Mojang ratelimits (429) or the connection fails. A Mojang 404 is authoritative and does *not* trigger the fallback. The orchestrator is `external.resolve_username_to_uuid`.
+- **Wynncraft** reads `WYNNCRAFT_API_TOKEN` and sends it as a bearer header when set. Unset works too (shared anon ratelimit). Wynncraft splits its rate limit across multiple buckets; `external/wynncraft.py` serialises `/v3/player/*` and `/v3/guild/*` on separate bucket queues so a bulk guild sweep can't starve a player lookup.
 - **Wynnpool** is unauthenticated.
+
+Every client funnels through `external/_client.py`, which owns the shared retry/timeout/bucket-queue policy: 10 s timeout, one 500 ms retry on 5xx, 429 pauses the bucket for the `Retry-After`/`RateLimit-Reset` window and re-raises so callers can fall back. Requests are serialised per bucket with a priority queue; user-facing lookups pass `urgent=True` to jump ahead of background work. Responses come back as frozen dataclasses (`wynncraft.Guild`, `wynnpool.GuildDetails`, `LeaderboardEntry`, …) so no downstream code should be reaching into raw JSON.
 
 ## 9. Portability
 
