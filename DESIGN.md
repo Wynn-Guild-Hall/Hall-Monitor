@@ -34,15 +34,22 @@ Enforced in `services/discord_invites.py`:
 
 ## 4. Notability
 
-`services/notability.py` aggregates five independent signals against a guild tag and stores the result in `notability_cache`. Signals:
+**Status:** implemented (Stage 2)
+
+`services/notability.py` aggregates six independent signals against a guild tag and stores the result in `notability_cache`. Signals:
 
 1. Top-25 average online (last 5 days) on `api.wynnpool.com/leaderboard/guild-average-online`.
 2. Level 100+ on `api.wynnpool.com/leaderboard/guildLevel`.
-3. Season placements (top 3 in last 10 seasons, or top 10 in last 5, or top-25 average across last 5).
-4. Average territory ownership > 20 across the last 5 days, provided the current season hasn't ended (`api.wynncraft.com/v3/guild/seasons`).
-5. A janitor/monitor-issued force override (`force_override` table) with an expiry.
+3. Season placements — top 3 in any of the last 10 seasons, top 10 in any of the last 5, or mean rank across the last 5 ≤ 25.
+4. Territory ownership > 20 while a Wynncraft season is currently running (`api.wynncraft.com/v3/guild/seasons`). Implemented as a current snapshot; a full 5-day average will need historical polling we don't yet do.
+5. War count > 50 000 on the Wynncraft guild payload.
+6. A janitor/monitor-issued force override (`force_override` table with `kind="notable"`) with no expiry or an expiry in the future.
 
-The scheduler refreshes every `NOTABILITY_REFRESH_SECONDS` (default 3600). Transitions trigger delegate ↔ relegate role swaps.
+`is_notable(tag)` reads from the cache; on a miss it falls back to an inline single-guild evaluation that hits every relevant API and populates the cache row. `refresh_all()` collects candidate tags from every Wynnpool leaderboard, every `Delegate` row, and every `ForceOverride(kind="notable")`, then re-evaluates them all. The scheduler runs it every `NOTABILITY_REFRESH_SECONDS` (default 3600).
+
+`~force notable <tag> <time>` writes a `ForceOverride` row. Janitors get a two-month floor on the duration; monitors can pass `0` for a permanent override (`services/time_parse.py` owns the parsing). `~unforce notable <tag>` deletes the row.
+
+Transitions (delegate ↔ relegate role swaps on notability change) land in Stage 9.
 
 ## 5. Role-bit encoding
 
