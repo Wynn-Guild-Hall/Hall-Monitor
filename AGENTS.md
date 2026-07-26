@@ -25,7 +25,9 @@ The verify flow mints single-use invites and hands out roles when they're redeem
 
 - **Create Instant Invite** (on the welcome channel) — every MC-time `hall request <N>` mints one.
 - **Manage Server** — to revoke the prior outstanding invite when a UUID re-requests before TTL, for the sweep job, and to read the guild's invite list. That last one is what tells `on_member_join` which invite a member came through; Manage Channel on the welcome channel alone is *not* enough for it (see DESIGN.md §3.1).
-- **Manage Roles** — to apply the delegate and contact roles on join. The bot's own role must also sit **above** every role it hands out, or Discord rejects the assignment and the join goes unverified.
+- **Manage Roles** — to apply the delegate and contact roles on join.
+
+Administrator covers all three (and overrides channel overwrites), which is how the bot is set up in production — it holds the monitor role. What Administrator does **not** waive is role position: only the guild owner can assign a role above their own highest one. The bot's role has to sit above Guild Hall Delegate and the four contact roles, or `add_roles` comes back 403 and the join lands in the failed-role-application path.
 
 ## Don't
 
