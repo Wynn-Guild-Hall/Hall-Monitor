@@ -2,16 +2,42 @@
 
 One contact per role per guild; assigning a new one displaces the old one,
 and members with no remaining contact roles are kicked from the server.
-Displacement / kick logic lands in Stage 7 — this file currently ships
-only the read-side helpers the Stage 3 ``/api/join/lookup`` route needs.
+Displacement / kick logic lands in Stage 7 — this file currently ships the
+read side plus the contact-role-name → Discord-role-ID mapping the join
+listener applies.
 """
 
 import discord
 
+from hall_monitor.config import settings
 from hall_monitor.db.models import Delegate, GuildContact
 from hall_monitor.services import delegate_registry
 
 CONTACT_ROLES = ("events", "housing", "warring", "ownership")
+
+_CONTACT_ROLE_SETTINGS = {
+    "events": "events_contact_role_id",
+    "housing": "housing_contact_role_id",
+    "warring": "warring_contact_role_id",
+    "ownership": "ownership_contact_role_id",
+}
+
+
+class UnknownContactRole(KeyError):
+    """Raised for a role name outside :data:`CONTACT_ROLES`."""
+
+
+def contact_role_id(role: str) -> int:
+    """Discord role ID configured for a contact role name.
+
+    Reads ``settings`` per call rather than caching at import time — the
+    IDs are deploy-time config, and tests monkeypatch them.
+    """
+    try:
+        attribute = _CONTACT_ROLE_SETTINGS[role]
+    except KeyError as exc:
+        raise UnknownContactRole(role) from exc
+    return getattr(settings, attribute)
 
 
 async def current_contacts_for_guild(
