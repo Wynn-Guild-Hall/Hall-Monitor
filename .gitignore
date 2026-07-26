@@ -216,3 +216,11 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+.claude
+.local
+.ephemeral
+
+# Runtime data (SQLite, dumps)
+data/*
+!data/.gitkeep
