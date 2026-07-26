@@ -140,6 +140,19 @@ async def get_player_guild(uuid: str, *, urgent: bool = False) -> PlayerGuild | 
     return PlayerGuild(name=guild["name"], prefix=guild["prefix"], rank=guild["rank"])
 
 
+def _guild_from_payload(payload: dict) -> Guild:
+    return Guild(
+        uuid=payload["uuid"],
+        name=payload["name"],
+        prefix=payload["prefix"],
+        level=payload["level"],
+        territories=payload.get("territories", 0),
+        members=_parse_members(payload.get("members") or {}),
+        banner=_parse_banner(payload.get("banner")),
+        wars=payload.get("wars"),
+    )
+
+
 async def get_guild(guild_name: str, *, urgent: bool = False) -> Guild | None:
     """Full guild by name (spaces allowed). Returns ``None`` on 404."""
     try:
@@ -153,17 +166,23 @@ async def get_guild(guild_name: str, *, urgent: bool = False) -> Guild | None:
         if e.response.status_code == 404:
             return None
         raise
-    payload = response.json()
-    return Guild(
-        uuid=payload["uuid"],
-        name=payload["name"],
-        prefix=payload["prefix"],
-        level=payload["level"],
-        territories=payload.get("territories", 0),
-        members=_parse_members(payload.get("members") or {}),
-        banner=_parse_banner(payload.get("banner")),
-        wars=payload.get("wars"),
-    )
+    return _guild_from_payload(response.json())
+
+
+async def get_guild_by_prefix(tag: str, *, urgent: bool = False) -> Guild | None:
+    """Full guild by prefix/tag. Returns ``None`` on 404."""
+    try:
+        response = await _requester.get(
+            f"/v3/guild/prefix/{tag}",
+            bucket=_BUCKET_GUILD,
+            urgent=urgent,
+            headers=_headers(),
+        )
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 404:
+            return None
+        raise
+    return _guild_from_payload(response.json())
 
 
 async def get_seasons(*, urgent: bool = False) -> tuple[Season, ...]:

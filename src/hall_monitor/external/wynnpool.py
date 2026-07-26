@@ -14,11 +14,18 @@ _requester = Requester(base_url=settings.wynnpool_api_base)
 
 @dataclass(frozen=True)
 class LeaderboardEntry:
-    """One row on a Wynnpool guild leaderboard."""
+    """One row on a Wynnpool guild leaderboard.
+
+    ``value`` carries the leaderboard-specific metric — e.g. the guild
+    level for ``guildLevel``, the season rating for ``season-rating``, or
+    the average online for ``guild-average-online``. ``None`` when the
+    upstream payload doesn't expose it.
+    """
 
     rank: int
     name: str
     tag: str
+    value: float | None = None
 
 
 @dataclass(frozen=True)
@@ -45,15 +52,26 @@ class GuildDetails:
 
 
 def _parse_leaderboard(payload) -> tuple[LeaderboardEntry, ...]:
-    """Wynnpool leaderboards may come as a list or a dict keyed by rank."""
+    """Wynnpool leaderboards may come as a list or a dict keyed by rank.
+
+    We look for the metric under any of the known field names (``level``,
+    ``rating``, ``averageOnline``, ``value``) so one parser handles every
+    endpoint's shape without a bespoke code path per leaderboard.
+    """
     rows = payload.values() if isinstance(payload, dict) else payload or ()
     entries: list[LeaderboardEntry] = []
     for row in rows:
+        value = None
+        for key in ("level", "rating", "averageOnline", "value"):
+            if key in row and row[key] is not None:
+                value = float(row[key])
+                break
         entries.append(
             LeaderboardEntry(
                 rank=int(row["rank"]),
                 name=row["name"],
                 tag=row["tag"],
+                value=value,
             )
         )
     return tuple(sorted(entries, key=lambda e: e.rank))
