@@ -74,21 +74,23 @@ async def test_health_returns_200(client):
     assert r.json() == {"ok": True}
 
 
-async def test_verify_unknown_subcommand_kick_message(client):
-    r = await client.get("/api/verify/some-uuid/dance%201")
+async def test_verify_mistyped_code_kick_message(client):
+    r = await client.get("/api/verify/some-uuid/HALL1X")
     assert r.status_code == 200
-    assert "Unknown command" in r.json()["kick_message"]
+    assert "isn't a Guild Hall code" in r.json()["kick_message"]
 
 
-async def test_verify_non_integer_argument_kick_message(client):
-    r = await client.get("/api/verify/some-uuid/request%20three")
-    assert "Invalid arguments" in r.json()["kick_message"]
+async def test_verify_ignores_ordinary_chat(client):
+    """The route prefix is only `hall`, so conversation reaches us as well.
+    Nobody gets disconnected for saying "hallo"."""
+    r = await client.get("/api/verify/some-uuid/o%20everyone")
+    assert r.json()["kick_message"] is None
 
 
 async def test_verify_invalid_role_bits_kick_message(client):
     # Bit 4 is reserved / unknown → decode raises → error kick.
-    r = await client.get("/api/verify/some-uuid/request%2016")
-    assert r.json()["kick_message"] == "Invalid role code."
+    r = await client.get("/api/verify/some-uuid/HALL16")
+    assert "role we don't recognise" in r.json()["kick_message"]
 
 
 async def test_verify_happy_path_mints_invite(db, app, httpx_mock, monkeypatch):
@@ -111,7 +113,7 @@ async def test_verify_happy_path_mints_invite(db, app, httpx_mock, monkeypatch):
         )
         await NotabilityCache.create(guild_tag="VETS", is_notable=True, signals_json="{}")
 
-        r = await c.get("/api/verify/uuid-chief/request%205")
+        r = await c.get("/api/verify/uuid-chief/HALL05")
         kick = r.json()["kick_message"]
         assert "discord.gg/abc123" in kick
         assert "VETS" in kick
@@ -140,7 +142,7 @@ async def test_verify_not_chief_or_owner_kick_message(db, app, httpx_mock, monke
             url="https://api.wynncraft.com/v3/player/uuid-recruit",
             json={"guild": {"name": "n", "prefix": "OTHR", "rank": "RECRUIT"}},
         )
-        r = await c.get("/api/verify/uuid-recruit/request%201")
+        r = await c.get("/api/verify/uuid-recruit/HALL01")
         assert "chief or owner" in r.json()["kick_message"]
 
 
@@ -164,7 +166,7 @@ async def test_verify_guild_not_notable_kick_message(db, app, httpx_mock, monkey
         await NotabilityCache.create(
             guild_tag="SMLL", is_notable=False, signals_json="{}"
         )
-        r = await c.get("/api/verify/uuid-chief/request%201")
+        r = await c.get("/api/verify/uuid-chief/HALL01")
         assert "SMLL" in r.json()["kick_message"]
         assert "notable guild" in r.json()["kick_message"]
 
@@ -195,7 +197,7 @@ async def test_verify_already_a_delegate_kick_message(db, app, httpx_mock, monke
             url="https://api.wynncraft.com/v3/player/uuid-existing",
             json={"guild": {"name": "Wynncraft Veterans", "prefix": "VETS", "rank": "CHIEF"}},
         )
-        r = await c.get("/api/verify/uuid-existing/request%201")
+        r = await c.get("/api/verify/uuid-existing/HALL01")
         assert "already verified" in r.json()["kick_message"]
     # No fresh invite was minted.
     channel.create_invite.assert_not_awaited()
@@ -222,7 +224,7 @@ async def test_verify_second_request_revokes_first_invite(db, app, httpx_mock, m
             json={"guild": {"name": "Wynncraft Veterans", "prefix": "VETS", "rank": "CHIEF"}},
             is_reusable=True,
         )
-        r1 = await c.get("/api/verify/uuid-chief/request%201")
+        r1 = await c.get("/api/verify/uuid-chief/HALL01")
         assert "discord.gg/first" in r1.json()["kick_message"]
 
         # Swap the next mint to a fresh code.
@@ -231,7 +233,7 @@ async def test_verify_second_request_revokes_first_invite(db, app, httpx_mock, m
         second_invite.url = "https://discord.gg/second"
         channel.create_invite = AsyncMock(return_value=second_invite)
 
-        r2 = await c.get("/api/verify/uuid-chief/request%201")
+        r2 = await c.get("/api/verify/uuid-chief/HALL01")
         assert "discord.gg/second" in r2.json()["kick_message"]
 
     # Old code was revoked; only the new row remains.

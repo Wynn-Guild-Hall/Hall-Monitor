@@ -196,7 +196,7 @@ async def resolve_used_invite(member: discord.Member) -> PendingInvite | None:
     ``None`` rather than to a wrong row. Anything still ambiguous returns
     ``None`` too — a mis-attributed join would bind a stranger's Discord
     account to someone else's Minecraft UUID, which is much worse than
-    asking the representative to run ``hall request`` again.
+    asking the representative to type their ``HALL<NN>`` code again.
     """
     async with _snapshot_lock:
         before = dict(_invite_uses)

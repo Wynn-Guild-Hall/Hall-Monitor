@@ -1,8 +1,11 @@
-"""Route called by picolimbo when a player types a chat line prefixed ``hall ``.
+"""Route called by picolimbo when a player types a chat line starting ``hall``.
 
 Response shape is contractual: ``{"kick_message": str | null}``. Picolimbo
 disconnects the player with ``kick_message`` when it's non-null; otherwise
 the chat line is silently accepted.
+
+Picolimbo strips the route prefix, so ``msg`` is normally just the digits
+of a ``HALL<NN>`` code.
 
 The eligibility check re-runs here because the Hallway lookup is only
 advisory — someone can post any UUID via a curl. The MC-time check is
@@ -32,15 +35,26 @@ _ELIGIBLE_RANKS = frozenset({"OWNER", "CHIEF"})
 async def verify(request: Request, uuid: str, msg: str) -> dict:
     try:
         command = mc_command.parse(msg)
-    except mc_command.UnknownSubcommand:
-        return {"kick_message": "Unknown command. Try `hall request <N>`."}
-    except mc_command.InvalidArguments:
-        return {"kick_message": "Invalid arguments. Try `hall request <N>`."}
+    except mc_command.InvalidCode:
+        if not mc_command.looks_like_attempt(msg):
+            # Ordinary chat that happens to start with "hall" — the route
+            # prefix is that broad. Not worth a disconnect.
+            return {"kick_message": None}
+        return {
+            "kick_message": (
+                "That isn't a Guild Hall code. Get yours at hall.wynnvets.org/join"
+            )
+        }
 
     try:
         role_bits.decode(command.bits)  # validates; we forward the raw bits to mint
     except role_bits.UnknownRoleBit:
-        return {"kick_message": "Invalid role code."}
+        return {
+            "kick_message": (
+                "That code asks for a role we don't recognise. "
+                "Get a fresh one at hall.wynnvets.org/join"
+            )
+        }
 
     player_guild = await wynncraft.get_player_guild(uuid, urgent=True)
     if player_guild is None or player_guild.rank not in _ELIGIBLE_RANKS:

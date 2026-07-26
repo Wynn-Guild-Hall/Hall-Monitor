@@ -23,7 +23,7 @@ Discord bot for the Wynncraft Guild Hall. Full architecture reference is in [DES
 
 The verify flow mints single-use invites and hands out roles when they're redeemed, so the bot's role in the guild needs:
 
-- **Create Instant Invite** (on the welcome channel) — every MC-time `hall request <N>` mints one.
+- **Create Instant Invite** (on the welcome channel) — every MC-time `HALL<NN>` code mints one.
 - **Manage Server** — to revoke the prior outstanding invite when a UUID re-requests before TTL, for the sweep job, and to read the guild's invite list. That last one is what tells `on_member_join` which invite a member came through; Manage Channel on the welcome channel alone is *not* enough for it (see DESIGN.md §3.1).
 - **Manage Roles** — to apply the delegate and contact roles on join.
 

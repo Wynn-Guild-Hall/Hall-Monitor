@@ -1,4 +1,4 @@
-"""Encoding for the ``hall request <N>`` role-bits integer.
+"""Encoding for the role-bits integer inside a ``HALL<NN>`` code.
 
 Bit indices are stable — new roles get appended to ``ROLE_BITS`` at a fresh
 index. Old codes stay valid; codes carrying an unknown bit are rejected.

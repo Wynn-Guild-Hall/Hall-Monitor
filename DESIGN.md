@@ -17,9 +17,9 @@ Entry point: [`src/hall_monitor/__main__.py`](src/hall_monitor/__main__.py).
 
 1. A representative visits `hall.wynnvets.org/join`, enters their Minecraft username.
 2. Hallway's JS calls `GET /api/join/lookup?username=X`. Hall-Monitor resolves the UUID (Mojang, PlayerDB fallback), asks Wynncraft's API whether they're a chief/owner of a notable guild, and returns `{eligible, guild_tag, mc_username, current_contacts_per_role}` for the UI to render. On failure the response carries a `reason` field (`"not chief or owner"` / `"guild not notable"`); unknown username → HTTP 404.
-3. The user ticks the contact roles they want. The UI updates a live "type `hall request N` on verify.wynnvets.org" hint, where `N` is a bit-field over the roles (see §5).
-4. The user joins `verify.wynnvets.org` in Minecraft and types `hall request 14`.
-5. Picolimbo forwards `GET /api/verify/{uuid}/hall request 14` to Hall-Monitor.
+3. The user ticks the contact roles they want. The UI updates a live "type `HALL14` on verify.wynnvets.org" hint, where the digits are a bit-field over the roles (see §5).
+4. The user joins `verify.wynnvets.org` in Minecraft and types `HALL14`.
+5. Picolimbo matches the `hall` route prefix, strips it, and forwards `GET /api/verify/{uuid}/14` to Hall-Monitor.
 6. Hall-Monitor parses the subcommand, re-runs the Wynncraft eligibility check (authoritative), mints a single-use Discord invite, and returns `{"kick_message": "<welcome text with discord.gg URL>"}`.
 7. Picolimbo disconnects the player with that message. The player clicks the invite in their MC client's kick screen.
 8. On `on_member_join`, Hall-Monitor resolves which invite was used (see §3.1), applies the delegate role plus the encoded contact roles (kicking prior conflicting holders — see §6), promotes the `PendingInvite` to a `Delegate`, sets the nickname, and ensures the guild's aesthetic role exists.
@@ -43,7 +43,7 @@ Discord reports that someone joined, never how. `services/discord_invites.py` ke
 - **uses went up** — direct evidence, but only for invites Discord still lists.
 - **the code vanished** — what actually happens to ours, since a `max_uses=1` invite is deleted on consumption. Expiry is indistinguishable from here, so candidates are filtered to `PendingInvite` rows younger than the invite's own `max_age`: an invite that has already expired can't be the one just consumed.
 
-Candidates are intersected with our own `PendingInvite` rows, so a join through anyone else's invite resolves to nothing rather than to a wrong row. The vanity URL is excluded from the snapshot outright — its use count only climbs, so it would read as consumed on every join. **More than one match is treated as no match**: a mis-attribution would bind a stranger's Discord account to someone else's Minecraft UUID, which is far worse than asking the representative to run `hall request` again.
+Candidates are intersected with our own `PendingInvite` rows, so a join through anyone else's invite resolves to nothing rather than to a wrong row. The vanity URL is excluded from the snapshot outright — its use count only climbs, so it would read as consumed on every join. **More than one match is treated as no match**: a mis-attribution would bind a stranger's Discord account to someone else's Minecraft UUID, which is far worse than asking the representative to type their code again.
 
 Two constraints shape this design, both verified against discord.py 2.6.4 and Discord's API docs rather than assumed:
 
@@ -71,11 +71,17 @@ Reading the invite list requires **Manage Server**. With only View Audit Log, Di
 
 Transitions (delegate ↔ relegate role swaps on notability change) land in Stage 9.
 
-## 5. Role-bit encoding
+## 5. The code
 
-`services/role_bits.py` owns the single source of truth: `ROLE_BITS: dict[int, str]`. Bit 0 = Events, Bit 1 = Housing, Bit 2 = Warring, Bit 3 = Ownership. Bits 4+ are reserved.
+A representative types `HALL<NN>` on the verify server: a fixed `HALL` marker plus the role-bits integer, zero-padded to two digits. That's six characters — deliberately the same width as a dazebot account-link code, because the verify server prompts for "your code" and shouldn't need to explain which kind.
 
-Adding a role is a one-line map addition; old codes stay valid. Codes carrying an unknown bit are rejected with a clear kick message.
+The two code spaces cannot collide. dazebot draws its codes from `ABCDEFGHJKMNPQRSTUVWXYZ23456789` (visually-confusable characters removed), which contains no `L`, so nothing it issues can begin with `HALL`. `tests/unit/test_mc_command.py` pins that property.
+
+Picolimbo routes on the prefix `hall` — no trailing space, since the code is a single token — and strips it, so `services/mc_command.py` normally receives bare digits. It accepts the marker as well, which keeps a hand-run `curl` identical to what the player typed. That prefix is broad enough to catch ordinary chat starting with those letters, so a line with no digit in it is dropped silently instead of disconnecting someone mid-conversation.
+
+`services/role_bits.py` owns the single source of truth for the digits: `ROLE_BITS: dict[int, str]`. Bit 0 = Events, Bit 1 = Housing, Bit 2 = Warring, Bit 3 = Ownership. Bits 4+ are reserved.
+
+Adding a role is a one-line map addition; old codes stay valid. Codes carrying an unknown bit are rejected with a clear kick message. Hallway builds the same string in JS for its live display — `mc_command.format_code` and `static/js/request_code.js` have to move together.
 
 ## 6. Contacts
 

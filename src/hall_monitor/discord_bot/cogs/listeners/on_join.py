@@ -4,7 +4,7 @@ The invite is the only thing linking a Discord account to the Minecraft
 UUID that requested it, so a member we can't match gets nothing — no
 roles, no ``Delegate`` row — and their ``PendingInvite`` stays put for the
 sweep. Same for a role application that fails part-way: a delegate
-without roles is worse than one who has to run ``hall request`` again,
+without roles is worse than one who has to type their code again,
 and a lingering ``Delegate`` row would make ``mint_invite`` refuse the
 retry.
 
