@@ -49,12 +49,20 @@ class Banner:
 
 @dataclass(frozen=True)
 class GuildDetails:
-    """The subset of Wynnpool's guild endpoint we consume."""
+    """The subset of Wynnpool's guild endpoint we consume.
+
+    Wynnpool mirrors the same numbers Wynncraft publishes, on a far more
+    forgiving rate limit, so this is the preferred source for the
+    per-guild notability signals — see :func:`external.guild_stats`.
+    Addressing is by guild *name*; there's no prefix endpoint.
+    """
 
     name: str
     tag: str
     war_count: int
     banner: Banner | None = None
+    territories: int = 0
+    level: int | None = None
 
 
 _METRIC_FIELDS = ("level", "rating", "averageOnline", "value")
@@ -158,4 +166,6 @@ async def guild_details(
         tag=payload["prefix"],
         war_count=int(payload.get("wars") or 0),
         banner=_parse_banner(payload.get("banner")),
+        territories=int(payload.get("territories") or 0),
+        level=payload.get("level"),
     )

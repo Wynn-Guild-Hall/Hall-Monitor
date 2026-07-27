@@ -11,7 +11,11 @@ Signals
 4. **Territory ownership** > 20 while a Wynncraft season is currently
    running. (Approximated with the current snapshot; the full 5-day
    average would require historical polling we don't yet do.)
-5. **War count** > 50 000 on the Wynncraft guild payload.
+5. **War count** > 50 000.
+
+Signals 4 and 5 are the only two needing a per-guild request; both go
+through ``external.guild_stats``, which prefers Wynnpool and falls back
+to Wynncraft.
 6. **Force override** — a `ForceOverride(kind="notable", subject=tag)`
    row with no expiry or an expiry in the future.
 
@@ -25,6 +29,7 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
+from hall_monitor import external
 from hall_monitor.db.models import Delegate, ForceOverride, NotabilityCache
 from hall_monitor.external import wynncraft, wynnpool
 
@@ -153,9 +158,9 @@ async def _evaluate(tag: str, context: _BulkContext) -> dict[str, bool | None]:
     which means checked and not met.
 
     Four of the six signals are answered by bulk payloads we already hold.
-    Only territory ownership and war count need a per-guild Wynncraft
-    fetch, so that request is deferred until the free signals have all
-    come back negative. Notability is an ``any()``, so for a guild that
+    Only territory ownership and war count need a per-guild fetch, so
+    that request is deferred until the free signals have all come back
+    negative. Notability is an ``any()``, so for a guild that
     already qualifies the fetch could not change the answer — and doing it
     anyway meant a full guild payload per candidate per hour, which is how
     a refresh sweep walks into a 429 and stays there.
@@ -175,10 +180,10 @@ async def _evaluate(tag: str, context: _BulkContext) -> dict[str, bool | None]:
     if any(signals.values()):
         return signals
 
-    guild = await _fetch_guild(tag, context)
+    guild = await _fetch_stats(tag, context)
     if guild is not None and context.tag_to_name.get(tag) is None:
         # A guild on no leaderboard has no name in the context; the
-        # Wynncraft payload is the only place to learn it.
+        # per-guild payload is the only place to learn it.
         signals["season_placement"] = _signal_season_placement(
             tag, guild.name, context
         )
@@ -189,17 +194,11 @@ async def _evaluate(tag: str, context: _BulkContext) -> dict[str, bool | None]:
     return signals
 
 
-async def _fetch_guild(
+async def _fetch_stats(
     tag: str, context: _BulkContext
-) -> wynncraft.Guild | None:
-    """The Wynncraft payload for ``tag``, by name if we know it, else by prefix."""
-    name = context.tag_to_name.get(tag)
-    guild = None
-    if name is not None:
-        guild = await wynncraft.get_guild(name)
-    if guild is None:
-        guild = await wynncraft.get_guild_by_prefix(tag)
-    return guild
+) -> external.GuildStats | None:
+    """Per-guild numbers for ``tag``, from Wynnpool where it can answer."""
+    return await external.guild_stats(context.tag_to_name.get(tag), tag)
 
 
 def _signal_top25_avg_online(tag: str, ctx: _BulkContext) -> bool:
@@ -267,14 +266,14 @@ def _signal_season_placement(
 
 
 def _signal_territory_ownership(
-    guild: wynncraft.Guild | None, season_active: bool
+    guild: "external.GuildStats | None", season_active: bool
 ) -> bool:
     if guild is None or not season_active:
         return False
     return guild.territories > _SIGNAL_4_MIN_TERRITORIES
 
 
-def _signal_war_count(guild: wynncraft.Guild | None) -> bool:
+def _signal_war_count(guild: "external.GuildStats | None") -> bool:
     if guild is None or guild.wars is None:
         return False
     return guild.wars > _SIGNAL_5_MIN_WARS

@@ -11,6 +11,7 @@ import httpx
 import pytest
 
 from hall_monitor.external import (
+    guild_stats,
     mojang,
     playerdb,
     resolve_username_to_uuid,
@@ -287,3 +288,79 @@ async def test_bucket_priority_jumps_the_queue():
     urgent = asyncio.create_task(work("third-urgent", urgent=True))
     await asyncio.gather(first, normal, urgent)
     assert order == ["first", "third-urgent", "second-normal"]
+
+
+# --------------------------------------------------------------------------
+# guild_stats — Wynnpool preferred, Wynncraft authoritative
+# --------------------------------------------------------------------------
+
+WYNNPOOL_GUILD = "https://api.wynnpool.com/guild/Returners"
+WYNNCRAFT_GUILD = "https://api.wynncraft.com/v3/guild/Returners"
+WYNNCRAFT_PREFIX = "https://api.wynncraft.com/v3/guild/prefix/VETS"
+
+
+def _wynncraft_payload(*, territories=5, wars=100):
+    return {
+        "uuid": "u",
+        "name": "Returners",
+        "prefix": "VETS",
+        "level": 93,
+        "territories": territories,
+        "wars": wars,
+        "members": {},
+    }
+
+
+async def test_guild_stats_prefers_wynnpool(httpx_mock):
+    """No Wynncraft response is registered — if one were requested,
+    pytest-httpx would fail the test, which is the assertion."""
+    httpx_mock.add_response(
+        url=WYNNPOOL_GUILD,
+        json={"name": "Returners", "prefix": "VETS", "wars": 47, "territories": 3},
+    )
+    stats = await guild_stats("Returners", "VETS")
+    assert stats is not None
+    assert (stats.source, stats.wars, stats.territories) == ("wynnpool", 47, 3)
+
+
+async def test_guild_stats_falls_back_when_wynnpool_404s(httpx_mock):
+    """Unlike Mojang, a Wynnpool 404 isn't authoritative — it only means
+    Wynnpool hasn't indexed the guild."""
+    httpx_mock.add_response(url=WYNNPOOL_GUILD, status_code=404)
+    httpx_mock.add_response(url=WYNNCRAFT_GUILD, json=_wynncraft_payload())
+    stats = await guild_stats("Returners", "VETS")
+    assert stats is not None
+    assert (stats.source, stats.wars, stats.territories) == ("wynncraft", 100, 5)
+
+
+async def test_guild_stats_falls_back_when_wynnpool_is_down(httpx_mock):
+    httpx_mock.add_response(url=WYNNPOOL_GUILD, status_code=503)
+    httpx_mock.add_response(url=WYNNPOOL_GUILD, status_code=503)  # one retry
+    httpx_mock.add_response(url=WYNNCRAFT_GUILD, json=_wynncraft_payload())
+    stats = await guild_stats("Returners", "VETS")
+    assert stats is not None
+    assert stats.source == "wynncraft"
+
+
+async def test_guild_stats_skips_wynnpool_without_a_name(httpx_mock):
+    """Wynnpool addresses guilds by name only, so a bare tag can't use it."""
+    httpx_mock.add_response(url=WYNNCRAFT_PREFIX, json=_wynncraft_payload())
+    stats = await guild_stats(None, "VETS")
+    assert stats is not None
+    assert stats.source == "wynncraft"
+
+
+async def test_guild_stats_propagates_a_wynncraft_ratelimit(httpx_mock):
+    """A 429 must not read as 'no territories, no wars' — that would quietly
+    strip a guild of its notability on the next refresh."""
+    httpx_mock.add_response(url=WYNNPOOL_GUILD, status_code=404)
+    httpx_mock.add_response(url=WYNNCRAFT_GUILD, status_code=429)
+    with pytest.raises(httpx.HTTPStatusError):
+        await guild_stats("Returners", "VETS")
+
+
+async def test_guild_stats_none_when_neither_knows_the_guild(httpx_mock):
+    httpx_mock.add_response(url=WYNNPOOL_GUILD, status_code=404)
+    httpx_mock.add_response(url=WYNNCRAFT_GUILD, status_code=404)
+    httpx_mock.add_response(url=WYNNCRAFT_PREFIX, status_code=404)
+    assert await guild_stats("Returners", "VETS") is None
