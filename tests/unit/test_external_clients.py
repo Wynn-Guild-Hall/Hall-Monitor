@@ -11,6 +11,7 @@ import httpx
 import pytest
 
 from hall_monitor.external import (
+    athena,
     guild_stats,
     mojang,
     playerdb,
@@ -461,3 +462,30 @@ async def test_resolver_output_is_ready_for_wynncraft(httpx_mock):
         url=f"https://api.wynncraft.com/v3/player/{resolved}", json={"guild": None}
     )
     assert await wynncraft.get_player_guild(resolved) is None
+
+
+# --------------------------------------------------------------------------
+# Athena
+# --------------------------------------------------------------------------
+
+
+async def test_athena_guild_list_reads_the_real_row_shape(httpx_mock):
+    """Athena keys its cache by name, so the guild name arrives as `_id` —
+    indexing `name` raised KeyError against every real response."""
+    httpx_mock.add_response(
+        url="https://athena.wynntils.com/cache/get/guildList",
+        json=[{"_id": "Returners", "prefix": "VETS", "color": "#e33232"}],
+    )
+    guilds = await athena.guild_list()
+    assert guilds == (
+        athena.AthenaGuild(name="Returners", prefix="VETS", colour="#e33232"),
+    )
+
+
+async def test_athena_blank_colour_reads_as_none(httpx_mock):
+    """Roughly one guild in six has `color: ""`, not a missing key."""
+    httpx_mock.add_response(
+        url="https://athena.wynntils.com/cache/get/guildList",
+        json=[{"_id": "A Wynnic Operation", "prefix": "WynO", "color": ""}],
+    )
+    assert (await athena.guild_list())[0].colour is None
