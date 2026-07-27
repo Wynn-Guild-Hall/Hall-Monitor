@@ -74,23 +74,28 @@ async def test_health_returns_200(client):
     assert r.json() == {"ok": True}
 
 
-async def test_verify_mistyped_code_kick_message(client):
+async def test_verify_mistyped_code_answers_in_chat(client):
+    """A typo must not cost the player their session."""
     r = await client.get("/api/verify/some-uuid/HALL1X")
     assert r.status_code == 200
-    assert "isn't a Guild Hall code" in r.json()["kick_message"]
+    body = r.json()
+    assert body["kick_message"] is None
+    assert "isn't a Guild Hall code" in body["chat_message"]
 
 
 async def test_verify_ignores_ordinary_chat(client):
     """The route prefix is only `hall`, so conversation reaches us as well.
     Nobody gets disconnected for saying "hallo"."""
     r = await client.get("/api/verify/some-uuid/o%20everyone")
-    assert r.json()["kick_message"] is None
+    assert r.json() == {"kick_message": None, "chat_message": None}
 
 
 async def test_verify_invalid_role_bits_kick_message(client):
     # Bit 4 is reserved / unknown → decode raises → error kick.
     r = await client.get("/api/verify/some-uuid/HALL16")
-    assert "role we don't recognise" in r.json()["kick_message"]
+    body = r.json()
+    assert body["kick_message"] is None
+    assert "role we don't recognise" in body["chat_message"]
 
 
 async def test_verify_happy_path_mints_invite(db, app, httpx_mock, monkeypatch):
@@ -115,7 +120,11 @@ async def test_verify_happy_path_mints_invite(db, app, httpx_mock, monkeypatch):
 
         r = await c.get("/api/verify/uuid-chief/HALL05")
         kick = r.json()["kick_message"]
-        assert "discord.gg/abc123" in kick
+        # Success is the one disconnect: the invite has to outlive the
+        # session, and the code is what gets typed into Discord.
+        assert "abc123" in kick
+        assert "discord.gg/abc123" in kick, "keep the URL as an alternative path"
+        assert "Click" not in kick, "nothing on a disconnect screen is clickable"
         assert "VETS" in kick
 
     # A PendingInvite row was persisted with the correct role bits.
@@ -143,7 +152,9 @@ async def test_verify_not_chief_or_owner_kick_message(db, app, httpx_mock, monke
             json={"guild": {"name": "n", "prefix": "OTHR", "rank": "RECRUIT"}},
         )
         r = await c.get("/api/verify/uuid-recruit/HALL01")
-        assert "chief or owner" in r.json()["kick_message"]
+        body = r.json()
+        assert body["kick_message"] is None, "rejections stay in chat"
+        assert "chief or owner" in body["chat_message"]
 
 
 async def test_verify_guild_not_notable_kick_message(db, app, httpx_mock, monkeypatch):
@@ -167,8 +178,10 @@ async def test_verify_guild_not_notable_kick_message(db, app, httpx_mock, monkey
             guild_tag="SMLL", is_notable=False, signals_json="{}"
         )
         r = await c.get("/api/verify/uuid-chief/HALL01")
-        assert "SMLL" in r.json()["kick_message"]
-        assert "notable guild" in r.json()["kick_message"]
+        body = r.json()
+        assert body["kick_message"] is None
+        assert "SMLL" in body["chat_message"]
+        assert "notable guild" in body["chat_message"]
 
 
 async def test_verify_already_a_delegate_kick_message(db, app, httpx_mock, monkeypatch):
@@ -198,7 +211,9 @@ async def test_verify_already_a_delegate_kick_message(db, app, httpx_mock, monke
             json={"guild": {"name": "Wynncraft Veterans", "prefix": "VETS", "rank": "CHIEF"}},
         )
         r = await c.get("/api/verify/uuid-existing/HALL01")
-        assert "already verified" in r.json()["kick_message"]
+        body = r.json()
+        assert body["kick_message"] is None
+        assert "already verified" in body["chat_message"]
     # No fresh invite was minted.
     channel.create_invite.assert_not_awaited()
 

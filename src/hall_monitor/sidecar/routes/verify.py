@@ -1,8 +1,14 @@
 """Route called by picolimbo when a player types a chat line starting ``hall``.
 
-Response shape is contractual: ``{"kick_message": str | null}``. Picolimbo
-disconnects the player with ``kick_message`` when it's non-null; otherwise
-the chat line is silently accepted.
+Response shape is contractual: ``{"kick_message": str | null, "chat_message":
+str | null}``. Picolimbo disconnects the player with ``kick_message`` when
+it's non-null, otherwise sends ``chat_message`` back in chat, otherwise
+silently accepts the line.
+
+**Only success disconnects.** The invite has to survive the end of the
+session, and the disconnect screen is the one place text stays put long
+enough to copy. Every rejection answers in chat instead — being kicked
+for a mistyped code means reconnecting just to try again.
 
 Picolimbo strips the route prefix, so ``msg`` is normally just the digits
 of a ``HALL<NN>`` code.
@@ -31,6 +37,36 @@ logger = logging.getLogger(__name__)
 _ELIGIBLE_RANKS = frozenset({"OWNER", "CHIEF"})
 
 
+def _chat(message: str) -> dict:
+    """Answer in chat and leave the player connected."""
+    return {"kick_message": None, "chat_message": message}
+
+
+def _kick(message: str) -> dict:
+    """Disconnect, putting ``message`` on the disconnect screen."""
+    return {"kick_message": message, "chat_message": None}
+
+
+def _ignore() -> dict:
+    return {"kick_message": None, "chat_message": None}
+
+
+def _welcome(guild_tag: str, invite_code: str) -> str:
+    """The one message a player has to act on after being disconnected.
+
+    Nothing on a Minecraft disconnect screen is clickable, so the code
+    comes first and on its own line — that's what gets typed into
+    Discord's join dialog. The full URL follows for anyone who'd rather
+    paste a link than find that dialog.
+    """
+    return (
+        f"Welcome, {guild_tag} representative.\n\n"
+        f"Invite code:  {invite_code}\n"
+        f"In Discord: + (Add a Server) > Join a Server > paste the code\n\n"
+        f"Or open  https://discord.gg/{invite_code}"
+    )
+
+
 @router.get("/api/verify/{uuid}/{msg:path}")
 async def verify(request: Request, uuid: str, msg: str) -> dict:
     try:
@@ -38,30 +74,26 @@ async def verify(request: Request, uuid: str, msg: str) -> dict:
     except mc_command.InvalidCode:
         if not mc_command.looks_like_attempt(msg):
             # Ordinary chat that happens to start with "hall" — the route
-            # prefix is that broad. Not worth a disconnect.
-            return {"kick_message": None}
-        return {
-            "kick_message": (
-                "That isn't a Guild Hall code. Get yours at hall.wynnvets.org/join"
-            )
-        }
+            # prefix is that broad. Say nothing at all.
+            return _ignore()
+        return _chat(
+            "That isn't a Guild Hall code. Get yours at hall.wynnvets.org/join"
+        )
 
     try:
         role_bits.decode(command.bits)  # validates; we forward the raw bits to mint
     except role_bits.UnknownRoleBit:
-        return {
-            "kick_message": (
-                "That code asks for a role we don't recognise. "
-                "Get a fresh one at hall.wynnvets.org/join"
-            )
-        }
+        return _chat(
+            "That code asks for a role we don't recognise. "
+            "Get a fresh one at hall.wynnvets.org/join"
+        )
 
     player_guild = await wynncraft.get_player_guild(uuid, urgent=True)
     if player_guild is None or player_guild.rank not in _ELIGIBLE_RANKS:
-        return {"kick_message": "You aren't chief or owner of a notable guild."}
+        return _chat("You aren't chief or owner of a notable guild.")
 
     if not await notability.is_notable(player_guild.prefix):
-        return {"kick_message": f"{player_guild.prefix} isn't a notable guild."}
+        return _chat(f"{player_guild.prefix} isn't a notable guild.")
 
     bot = getattr(request.app.state, "bot", None)
     discord_guild = None
@@ -73,7 +105,7 @@ async def verify(request: Request, uuid: str, msg: str) -> dict:
 
     if welcome_channel is None:
         logger.error("verify: welcome channel unavailable; can't mint invite")
-        return {"kick_message": "Verification is temporarily unavailable. Try again in a minute."}
+        return _chat("Verification is temporarily unavailable. Try again in a minute.")
 
     try:
         pending = await discord_invites.mint_invite(
@@ -85,14 +117,9 @@ async def verify(request: Request, uuid: str, msg: str) -> dict:
             discord_guild=discord_guild,
         )
     except discord_invites.AlreadyLiveDelegate:
-        return {"kick_message": "You're already verified in the Guild Hall."}
+        return _chat("You're already verified in the Guild Hall.")
     except Exception:
         logger.exception("verify: mint_invite failed for %s", uuid)
-        return {"kick_message": "Verification is temporarily unavailable. Try again in a minute."}
+        return _chat("Verification is temporarily unavailable. Try again in a minute.")
 
-    return {
-        "kick_message": (
-            f"Welcome, {player_guild.prefix} representative. "
-            f"Click to join the Guild Hall: https://discord.gg/{pending.discord_invite_code}"
-        )
-    }
+    return _kick(_welcome(player_guild.prefix, pending.discord_invite_code))
