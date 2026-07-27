@@ -23,6 +23,7 @@ from hall_monitor.services.discord_invites import (
 GUILD_ID = 7
 DELEGATE_ROLE_ID = 100
 CONTACT_ROLE_IDS = {"events": 200, "housing": 201, "warring": 202, "ownership": 203}
+GUILD_TAG_ROLE_ID = 300
 
 
 @pytest.fixture(autouse=True)
@@ -31,6 +32,19 @@ def clean_snapshot():
     discord_invites.reset_snapshot()
     yield
     discord_invites.reset_snapshot()
+
+
+@pytest.fixture(autouse=True)
+def offline_athena(monkeypatch):
+    """The aesthetic role's colour is Stage 8's subject, not this file's —
+    but the join path asks for it, and nothing here should reach Athena."""
+
+    async def unknown_to_athena(guild_tag, *, urgent=False):
+        return None
+
+    monkeypatch.setattr(
+        "hall_monitor.services.athena_colour.lookup", unknown_to_athena
+    )
 
 
 @pytest.fixture
@@ -93,6 +107,11 @@ def _fake_guild(
     guild.invites = AsyncMock(return_value=list(listed))
     table = _all_roles() if roles is None else roles
     guild.get_role = table.get
+    # The guild-tag role doesn't exist yet, so the join mints it.
+    guild.roles = list(table.values())
+    guild.create_role = AsyncMock(
+        side_effect=lambda *, name, **kwargs: _fake_role(GUILD_TAG_ROLE_ID, name)
+    )
     return guild
 
 
@@ -438,6 +457,7 @@ async def test_join_applies_roles_and_promotes_to_delegate(db, configured_roles)
         DELEGATE_ROLE_ID,
         CONTACT_ROLE_IDS["events"],
         CONTACT_ROLE_IDS["warring"],
+        GUILD_TAG_ROLE_ID,  # the guild's aesthetic role, minted on demand
     }
     assert "VETS" in member.add_roles.await_args.kwargs["reason"]
 
@@ -487,6 +507,36 @@ async def test_join_doesnt_re_add_roles_it_already_applied(db, configured_roles)
 
     member.add_roles.assert_awaited_once()
     assert await GuildContact.filter(guild_tag="VETS").count() == 4
+
+
+async def test_join_mints_the_guild_role_in_the_same_request(db, configured_roles):
+    """The aesthetic role is created on demand and applied with the rest —
+    a second `add_roles` would be rate limit spent on a colour."""
+    await _pending("used-code", mc_uuid="uuid-chief", bits=0b0001, tag="VETS")
+    guild = _fake_guild()
+    member = _fake_member(guild, user_id=555)
+
+    await on_join.OnJoin(MagicMock()).on_member_join(member)
+
+    guild.create_role.assert_awaited_once()
+    assert guild.create_role.await_args.kwargs["name"] == "VETS"
+    member.add_roles.assert_awaited_once()
+    assert GUILD_TAG_ROLE_ID in {role.id for role in member.add_roles.await_args.args}
+
+
+async def test_join_survives_a_guild_role_it_cant_create(db, configured_roles):
+    """Missing Manage Roles for a *new* role can't cost someone their
+    verification — the delegate and contact roles are the point."""
+    guild = _fake_guild()
+    guild.create_role = AsyncMock(side_effect=_forbidden())
+    await _pending("used-code", mc_uuid="uuid-chief", bits=0b0001, tag="VETS")
+    member = _fake_member(guild, user_id=555)
+
+    await on_join.OnJoin(MagicMock()).on_member_join(member)
+
+    applied = {role.id for role in member.add_roles.await_args.args}
+    assert applied == {DELEGATE_ROLE_ID, CONTACT_ROLE_IDS["events"]}
+    assert (await Delegate.get(mc_uuid="uuid-chief")).discord_user_id == 555
 
 
 async def test_join_without_a_match_changes_nothing(db, configured_roles):

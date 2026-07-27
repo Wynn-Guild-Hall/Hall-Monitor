@@ -13,7 +13,7 @@ Entry point: [`src/hall_monitor/__main__.py`](src/hall_monitor/__main__.py).
 
 ## 2. End-to-end join flow
 
-**Status:** implemented end to end (Stages 3–7). Step 8's guild aesthetic role lands in Stage 8 and the nickname in Stage 10.
+**Status:** implemented end to end (Stages 3–8). The nickname in step 8 lands in Stage 10.
 
 1. A representative visits `hall.wynnvets.org/join`, enters their Minecraft username.
 2. Hallway's JS calls `GET /api/join/lookup?username=X`. Hall-Monitor resolves the UUID (Mojang, PlayerDB fallback), asks Wynncraft's API whether they're a chief/owner of a notable guild, and returns `{eligible, guild_tag, mc_username, current_contacts_per_role}` for the UI to render. On failure the response carries a `reason` field (`"not chief or owner"` / `"guild not notable"`); unknown username → HTTP 404.
@@ -22,7 +22,7 @@ Entry point: [`src/hall_monitor/__main__.py`](src/hall_monitor/__main__.py).
 5. Picolimbo matches the `hall` route prefix, strips it, and forwards `GET /api/verify/{uuid}/14` to Hall-Monitor over the `verify` Docker network. That route is deliberately not web-reachable — Hallway's nginx proxies only `/api/join/` — because its sole proof that the requester owns the Minecraft account is that they connected to the limbo server as it.
 6. Hall-Monitor parses the code, re-runs the Wynncraft eligibility check (authoritative), mints a single-use Discord invite, and returns it as a `kick_message`. Every *rejection* comes back as a `chat_message` instead, leaving the player connected — being disconnected for a mistyped code means reconnecting just to retry. Success is the one case that disconnects, because the invite has to be readable after the session ends, and nothing on a Minecraft disconnect screen is clickable: the message leads with the bare invite code to type into Discord's join dialog, with the `discord.gg` URL after it for anyone who'd rather paste a link. Picolimbo renders kick reasons as MiniMessage (auth-stack patch `0005`), so the code is coloured apart from the instructions around it — only the vanilla colour names and formatting tags parse, and a test pins the message to that set.
 7. Picolimbo disconnects the player with that message. The player clicks the invite in their MC client's kick screen.
-8. On `on_member_join`, Hall-Monitor resolves which invite was used (see §3.1), applies the delegate role plus the encoded contact roles (kicking prior conflicting holders — see §6), promotes the `PendingInvite` to a `Delegate`, sets the nickname, and ensures the guild's aesthetic role exists.
+8. On `on_member_join`, Hall-Monitor resolves which invite was used (see §3.1), ensures the guild's aesthetic role exists (§11), applies it alongside the delegate role and the encoded contact roles (kicking prior conflicting holders — see §6), promotes the `PendingInvite` to a `Delegate`, and sets the nickname.
 
 ## 3. PendingInvite lifecycle invariants
 
@@ -157,3 +157,19 @@ Stages 1–7 ran on `Tortoise.generate_schemas(safe=True)`, which creates missin
 - **The live schema doesn't match the models** → refuse, naming the missing columns. Marking a drifted schema as migrated buries the difference until some later migration trips over it.
 
 Both raise at boot rather than degrading, and neither can fire after the first successful baseline. The emptiness of the `aerich` table is the signal, not its absence — an easy thing to get backwards.
+
+## 11. The guild aesthetic role
+
+**Status:** implemented (Stage 8)
+
+Every delegate wears a role named for their guild tag, coloured with that guild's own hue, so the member list says at a glance which guilds are in the room and `@VETS` reaches their representatives. `services/guild_roles.py` creates it on demand: `ensure_guild_role` finds the role by name (case-insensitively, per §4's guild-tag rules, so a role somebody made by hand as `Vets` is adopted rather than duplicated), creates it if missing, and otherwise edits only what actually differs. A colour that still matches leaves no edit, no request, and no hourly audit-log entry.
+
+The colour comes from Athena — the same guild cache Wynntils renders from — via `services/athena_colour.py`. Athena's raw hue is often unusable in Discord: near-black disappears on the dark theme and near-white on the light one, and a desaturated hue reads as grey mush on both. `to_discord_visible` clamps HLS lightness into `[0.40, 0.70]` and floors saturation at `0.55`, leaving hue alone — a dark red comes out a lighter red, never a different colour. An achromatic input keeps its neutrality rather than being assigned an arbitrary tint.
+
+The guild list is one request for every guild Athena knows, so it's memoised for an hour, and a failed refresh serves the stale copy: an hour-old colour beats every guild role reverting to blurple because Athena had a bad minute. When there's nothing cached to serve, `colour_for` falls back to blurple (`DEFAULT_COLOUR`) — which is itself a fixed point of the transform, so the fallback isn't a colour we'd have rejected from Athena.
+
+The role rides along in the join's single `add_roles` call rather than costing a second one, and it's the one part of that call allowed to be missing: **a role that can't be created doesn't stop the verification.** The delegate and contact roles *are* the verification; the guild colour is decoration, and `~script guild_role <TAG>` re-runs the whole path by hand — Athena lookup, contrast clamp, create-or-edit — for any tag. Every Discord-side failure here is logged rather than raised, matching §6.
+
+New roles land at the bottom of the hierarchy, which is where `create_role` puts them and where an aesthetic role belongs: it grants no permissions, and a role above the bot's own would be one the bot couldn't edit afterwards.
+
+Stage 9 clears a relegated guild's colour by passing `colour_hex` explicitly, so this module never has to learn what notability is.

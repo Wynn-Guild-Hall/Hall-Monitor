@@ -10,8 +10,9 @@ retry.
 
 Claiming the contact slots comes last, once the delegate row exists —
 see ``services/contacts.py`` for what displacing a prior holder costs
-them. The guild aesthetic role and nickname enforcement are still absent
-here; later stages hang off the same listener.
+them, and ``services/guild_roles.py`` for the guild colour that follows.
+Nickname enforcement is still absent here; a later stage hangs off the
+same listener.
 """
 
 import logging
@@ -24,6 +25,7 @@ from hall_monitor.services import (
     contacts,
     delegate_registry,
     discord_invites,
+    guild_roles,
     role_bits,
 )
 
@@ -115,6 +117,16 @@ class OnJoin(commands.Cog):
                 pending.guild_tag,
             )
             return
+
+        # The guild's aesthetic role rides along in the same `add_roles`
+        # call rather than costing a second one. It's cosmetic, so a role
+        # that can't be created doesn't stop the verification — unlike the
+        # delegate and contact roles above, which are the verification.
+        guild_role = await guild_roles.ensure_guild_role(
+            member.guild, pending.guild_tag
+        )
+        if guild_role is not None:
+            roles.append(guild_role)
 
         try:
             await member.add_roles(

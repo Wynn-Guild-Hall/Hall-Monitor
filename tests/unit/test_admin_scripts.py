@@ -355,3 +355,61 @@ async def test_notable_guilds_says_so_when_empty(db):
     ctx, _ = _fake_ctx()
     await notable_guilds.main(ctx)
     assert "no notable guilds" in ctx.reply.await_args.args[0]
+
+
+# --------------------------------------------------------------------------
+# guild_role
+# --------------------------------------------------------------------------
+
+
+def _ctx_with_guild():
+    """A ctx whose guild has no roles and can mint one."""
+    ctx, _ = _fake_ctx()
+    guild = MagicMock()
+    guild.roles = []
+    minted = MagicMock()
+    minted.mention = "<@&300>"
+    guild.create_role = AsyncMock(return_value=minted)
+    ctx.guild = guild
+    return ctx, guild
+
+
+async def test_guild_role_script_creates_the_role_and_names_the_colour(monkeypatch):
+    """The point of the script: see the colour without waiting for a chief
+    to verify."""
+    from hall_monitor.discord_bot.cogs.admin.scripts import guild_role
+
+    async def athena(tag, *, urgent=False):
+        return "#7f2727"
+
+    monkeypatch.setattr("hall_monitor.services.athena_colour.lookup", athena)
+    ctx, guild = _ctx_with_guild()
+
+    await guild_role.main(ctx, "VETS")
+
+    assert guild.create_role.await_args.kwargs["name"] == "VETS"
+    body = ctx.reply.await_args.args[0]
+    assert "<@&300>" in body  # mentioned, so the colour renders in-channel
+    assert "#9E2E2E" in body  # the Discord-visible variant, not Athena's raw hue
+
+
+async def test_guild_role_script_flags_the_fallback_colour(monkeypatch):
+    from hall_monitor.discord_bot.cogs.admin.scripts import guild_role
+
+    async def athena(tag, *, urgent=False):
+        return None
+
+    monkeypatch.setattr("hall_monitor.services.athena_colour.lookup", athena)
+    ctx, _ = _ctx_with_guild()
+
+    await guild_role.main(ctx, "NEWG")
+
+    assert "Athena doesn't know this guild" in ctx.reply.await_args.args[0]
+
+
+async def test_guild_role_script_wants_a_tag():
+    from hall_monitor.discord_bot.cogs.admin.scripts import guild_role
+
+    ctx, _ = _ctx_with_guild()
+    await guild_role.main(ctx)
+    assert "usage" in ctx.reply.await_args.args[0]
