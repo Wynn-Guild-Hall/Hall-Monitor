@@ -13,7 +13,7 @@ Entry point: [`src/hall_monitor/__main__.py`](src/hall_monitor/__main__.py).
 
 ## 2. End-to-end join flow
 
-**Status:** implemented end to end (Stages 3–6). Step 8's contact displacement lands in Stage 7, the guild aesthetic role in Stage 8, and the nickname in Stage 10.
+**Status:** implemented end to end (Stages 3–7). Step 8's guild aesthetic role lands in Stage 8 and the nickname in Stage 10.
 
 1. A representative visits `hall.wynnvets.org/join`, enters their Minecraft username.
 2. Hallway's JS calls `GET /api/join/lookup?username=X`. Hall-Monitor resolves the UUID (Mojang, PlayerDB fallback), asks Wynncraft's API whether they're a chief/owner of a notable guild, and returns `{eligible, guild_tag, mc_username, current_contacts_per_role}` for the UI to render. On failure the response carries a `reason` field (`"not chief or owner"` / `"guild not notable"`); unknown username → HTTP 404.
@@ -97,9 +97,13 @@ Adding a role is a one-line map addition; old codes stay valid. Codes carrying a
 
 ## 6. Contacts
 
-**Status:** read side implemented (Stage 3); assign/displace/kick lands in Stage 7.
+**Status:** implemented (Stage 7)
 
-`services/contacts.py` enforces per-role uniqueness within a guild. Assigning a new contact displaces the old one; a delegate who ends up with zero contact roles is kicked from the server. The UI's "conflict warning" on `/join` reads directly from `guild_contact` — the Stage 3 `current_contacts_for_guild(tag)` helper drops rows whose delegate has left the Discord server (cross-checked against `bot.get_guild(...).get_member(...)` when the bot handle is available).
+`services/contacts.py` enforces per-role uniqueness within a guild. Assigning a new contact displaces the old one; a delegate who ends up with zero contact roles is kicked from the server, because the Hall is a room of guild representatives and a delegate representing nothing has no seat at the table. The UI's "conflict warning" on `/join` reads directly from `guild_contact` — the `current_contacts_for_guild(tag)` helper drops rows whose delegate has left the Discord server (cross-checked against `bot.get_guild(...).get_member(...)` when the bot handle is available).
+
+Two things reach the assign path: `on_member_join` claims every slot a verification code asked for, and `~force assign <user> <contactType>` claims one by hand. The command scopes by tier — a janitor or monitor assigns within *the target's* guild, an ownership contact only within their own — and either way the target must already have a `Delegate` row, since the slot is a foreign key onto it. `~unforce assign` vacates a slot, with the same kick-if-last consequence.
+
+Guild tags are matched case-insensitively (`services/guild_tag.py`) so `~force assign` hits the row the join flow wrote, and the slot's *stored* spelling is left alone: two rows differing only in case would break an invariant the `unique_together` can't see. Discord-side failures (role removal, kick) are logged rather than raised — the database is the roster's source of truth, and a stale role on a displaced holder is visible and fixable in a way a slot that silently refused to move is not.
 
 ## 7. Cog organisation
 
