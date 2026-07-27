@@ -11,13 +11,18 @@ import httpx
 from hall_monitor.config import settings
 
 from ._client import Requester
+from ._uuid import dashed
 
 _requester = Requester(base_url=settings.mojang_api_base)
 
 
 @dataclass(frozen=True)
 class Profile:
-    """A Minecraft profile — canonical username + unhyphenated UUID."""
+    """A Minecraft profile — canonical username + dashed UUID.
+
+    Mojang returns the UUID bare; we dash it on the way in so one shape
+    reaches the database and Wynncraft. See :mod:`._uuid`.
+    """
 
     uuid: str
     username: str
@@ -38,7 +43,7 @@ async def resolve_profile(
     if response.status_code == 204 or not response.content:
         return None
     payload = response.json()
-    return Profile(uuid=payload["id"], username=payload["name"])
+    return Profile(uuid=dashed(payload["id"]), username=payload["name"])
 
 
 async def username_to_uuid(username: str, *, urgent: bool = False) -> str | None:

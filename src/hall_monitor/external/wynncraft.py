@@ -16,6 +16,7 @@ import httpx
 from hall_monitor.config import settings
 
 from ._client import Requester
+from ._uuid import dashed
 
 _BUCKET_PLAYER = "player"
 _BUCKET_GUILD = "guild"
@@ -122,10 +123,15 @@ def _parse_members(raw: dict) -> tuple[GuildMember, ...]:
 
 async def get_player_guild(uuid: str, *, urgent: bool = False) -> PlayerGuild | None:
     """The player's current guild, or ``None`` if they have none / the
-    player is unknown."""
+    player is unknown.
+
+    The UUID is dashed on the way out: this route 404s on the bare
+    32-character form, which reads back as "no guild" and quietly demotes
+    a chief to nobody.
+    """
     try:
         response = await _requester.get(
-            f"/v3/player/{uuid}",
+            f"/v3/player/{dashed(uuid)}",
             bucket=_BUCKET_PLAYER,
             urgent=urgent,
             headers=_headers(),

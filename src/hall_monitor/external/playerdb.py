@@ -5,6 +5,7 @@ import httpx
 from hall_monitor.config import settings
 
 from ._client import Requester
+from ._uuid import dashed
 from .mojang import Profile
 
 _requester = Requester(base_url=settings.playerdb_api_base)
@@ -26,7 +27,7 @@ async def resolve_profile(
     if not payload.get("success"):
         return None
     player = payload["data"]["player"]
-    return Profile(uuid=player["raw_id"], username=player["username"])
+    return Profile(uuid=dashed(player["raw_id"]), username=player["username"])
 
 
 async def username_to_uuid(username: str, *, urgent: bool = False) -> str | None:

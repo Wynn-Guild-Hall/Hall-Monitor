@@ -33,7 +33,7 @@ async def test_mojang_happy_path(httpx_mock):
     httpx_mock.add_response(
         url=MOJANG_URL, json={"id": "069a79f444e94726a5befca90e38aaf5", "name": "Notch"}
     )
-    assert await mojang.username_to_uuid("Notch") == "069a79f444e94726a5befca90e38aaf5"
+    assert await mojang.username_to_uuid("Notch") == "069a79f4-44e9-4726-a5be-fca90e38aaf5"
 
 
 async def test_mojang_404_returns_none(httpx_mock):
@@ -56,7 +56,7 @@ async def test_playerdb_happy_path(httpx_mock):
     )
     assert (
         await playerdb.username_to_uuid("Notch")
-        == "069a79f444e94726a5befca90e38aaf5"
+        == "069a79f4-44e9-4726-a5be-fca90e38aaf5"
     )
 
 
@@ -405,3 +405,59 @@ async def test_a_caller_header_still_wins(httpx_mock, monkeypatch):
     headers = httpx_mock.get_requests()[-1].headers
     assert headers["authorization"] == "Bearer tok"
     assert headers["user-agent"].startswith("hall-monitor/")
+
+
+# --------------------------------------------------------------------------
+# UUID canonicalisation
+# --------------------------------------------------------------------------
+
+
+def test_dashed_accepts_either_form():
+    from hall_monitor.external._uuid import dashed
+
+    bare = "085d0e5829d444aa837992a4568a59d6"
+    canonical = "085d0e58-29d4-44aa-8379-92a4568a59d6"
+    assert dashed(bare) == canonical
+    assert dashed(canonical) == canonical
+    assert dashed(canonical.upper()) == canonical
+
+
+def test_dashed_passes_through_what_it_cannot_parse():
+    """Fixtures use readable stand-ins; rejecting them isn't this
+    function's job."""
+    from hall_monitor.external._uuid import dashed
+
+    assert dashed("uuid-chief") == "uuid-chief"
+
+
+async def test_get_player_guild_dashes_the_uuid(httpx_mock):
+    """Wynncraft's player route 404s on the bare form Mojang returns, and a
+    404 here reads back as "no guild" — silently demoting a chief."""
+    httpx_mock.add_response(
+        url="https://api.wynncraft.com/v3/player/085d0e58-29d4-44aa-8379-92a4568a59d6",
+        json={"guild": {"name": "Returners", "prefix": "VETS", "rank": "CHIEF"}},
+    )
+    guild = await wynncraft.get_player_guild("085d0e5829d444aa837992a4568a59d6")
+    assert guild is not None
+    assert (guild.prefix, guild.rank) == ("VETS", "CHIEF")
+
+
+async def test_get_player_guild_leaves_a_dashed_uuid_alone(httpx_mock):
+    httpx_mock.add_response(
+        url="https://api.wynncraft.com/v3/player/085d0e58-29d4-44aa-8379-92a4568a59d6",
+        json={"guild": None},
+    )
+    assert await wynncraft.get_player_guild("085d0e58-29d4-44aa-8379-92a4568a59d6") is None
+
+
+async def test_resolver_output_is_ready_for_wynncraft(httpx_mock):
+    """The end-to-end shape that broke /api/join/lookup: whatever the
+    resolver returns has to be directly usable as a Wynncraft player key."""
+    httpx_mock.add_response(
+        url=MOJANG_URL, json={"id": "069a79f444e94726a5befca90e38aaf5", "name": "Notch"}
+    )
+    resolved = await resolve_username_to_uuid("Notch")
+    httpx_mock.add_response(
+        url=f"https://api.wynncraft.com/v3/player/{resolved}", json={"guild": None}
+    )
+    assert await wynncraft.get_player_guild(resolved) is None
