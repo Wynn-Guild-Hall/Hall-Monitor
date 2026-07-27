@@ -29,6 +29,30 @@ The verify flow mints single-use invites and hands out roles when they're redeem
 
 Administrator covers all three (and overrides channel overwrites), which is how the bot is set up in production — it holds the monitor role. What Administrator does **not** waive is role position: only the guild owner can assign a role above their own highest one. The bot's role has to sit above Guild Hall Delegate and the four contact roles, or `add_roles` comes back 403 and the join lands in the failed-role-application path.
 
+## Poking the clients on a running container
+
+Each `external/` module holds one long-lived `httpx.AsyncClient` with a
+connection pool, which is right for a process that runs a single event
+loop for its lifetime. It does mean an ad-hoc script has to use **one**
+`asyncio.run` for everything — two calls into the same client from two
+loops picks a pooled connection off the first loop and dies with
+`RuntimeError: Event loop is closed`, several frames deep in httpcore
+and looking nothing like the actual cause.
+
+```bash
+docker exec hall-monitor python -c "
+import asyncio
+from hall_monitor.external import mojang, wynncraft
+
+async def main():
+    print(await mojang.username_to_uuid('Notch'))
+    print((await wynncraft.get_guild_by_prefix('VETS')).level)
+    print(len(await wynncraft.get_seasons()))
+
+asyncio.run(main())
+"
+```
+
 ## Don't
 
 - Don't register slash commands — the bot is deliberately prefix-only.
