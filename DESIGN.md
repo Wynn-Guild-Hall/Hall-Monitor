@@ -67,7 +67,7 @@ Reading the invite list requires **Manage Server**. With only View Audit Log, Di
 
 `is_notable(tag)` reads from the cache; on a miss it falls back to an inline single-guild evaluation that hits every relevant API and populates the cache row. `refresh_all()` collects candidate tags from every Wynnpool leaderboard, every `Delegate` row, and every `ForceOverride(kind="notable")`, then re-evaluates them all. The scheduler runs it every `NOTABILITY_REFRESH_SECONDS` (default 3600).
 
-`~force notable <tag> <time>` writes a `ForceOverride` row. Janitors get a two-month floor on the duration; monitors can pass `0` for a permanent override (`services/time_parse.py` owns the parsing). `~unforce notable <tag>` deletes the row.
+`~force notable <tag> <time>` writes a `ForceOverride` row. Janitors are capped at three months — long enough to carry a guild through a quiet patch, short enough that nobody parks a guild in the Hall indefinitely. There's no floor. Monitors have no ceiling and can pass `0` for a permanent override (`services/time_parse.py` owns the parsing). `~unforce notable <tag>` deletes the row.
 
 Transitions (delegate ↔ relegate role swaps on notability change) land in Stage 9.
 

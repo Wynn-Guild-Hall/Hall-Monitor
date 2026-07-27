@@ -10,8 +10,8 @@ Accepted forms
   for monitor-tier callers who intend "no expiry".
 
 The units the plan calls out are ``d/w/mo/y`` — nothing shorter (no
-minutes/hours), because the smallest meaningful gate we ship is a
-two-month floor on the janitor's ``~force notable`` window.
+minutes/hours). An override measured in minutes would expire before
+anyone noticed it, and every gate we ship is bounded in months.
 """
 
 import re

@@ -1,8 +1,10 @@
 """``~force notable`` — override a guild's notability status for a duration.
 
-Janitors get a two-month floor on the duration (long enough to matter,
-short enough to expire on its own). Monitors can pass ``0`` for a
-permanent override.
+Janitors get a three-month ceiling: long enough to carry a guild through
+a quiet patch, short enough that nobody can quietly park a guild in the
+Hall forever. Monitors have no ceiling and can pass ``0`` for a permanent
+override. There's no floor — a janitor who wants to grant a week has a
+reason, and a short override expires on its own anyway.
 """
 
 from datetime import datetime, timedelta, timezone
@@ -14,7 +16,7 @@ from hall_monitor.db.models import ForceOverride
 from hall_monitor.discord_bot.permissions import is_janitor
 from hall_monitor.services.time_parse import InvalidDuration, parse as parse_duration
 
-_JANITOR_MIN = timedelta(days=60)
+_JANITOR_MAX = timedelta(days=90)
 
 
 def gating_rejection(delta: timedelta | None, is_monitor: bool) -> str | None:
@@ -25,12 +27,14 @@ def gating_rejection(delta: timedelta | None, is_monitor: bool) -> str | None:
     Extracted from the command handler so it's unit-testable without
     faking a Discord context.
     """
-    if delta is None and not is_monitor:
-        return "permanent overrides are monitor-only; try `2mo` or longer."
-    if delta is not None and delta < _JANITOR_MIN and not is_monitor:
+    if is_monitor:
+        return None
+    if delta is None:
+        return "permanent overrides are monitor-only; try `3mo` or shorter."
+    if delta > _JANITOR_MAX:
         return (
-            "janitor overrides must be at least two months (`2mo`); "
-            "monitors can go shorter."
+            "janitor overrides can't run past three months (`3mo`); "
+            "ask a monitor for anything longer."
         )
     return None
 
