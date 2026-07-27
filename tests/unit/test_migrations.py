@@ -96,7 +96,26 @@ async def _make_pre_migration_database() -> None:
     assert not await Aerich.filter(app="models").exists()
 
 
-async def test_pre_migration_database_is_baselined_not_rebuilt(connected, caplog):
+@pytest.fixture
+def only_the_initial_migration(tmp_path, monkeypatch):
+    """Point Aerich at a copy of the migrations holding just the first.
+
+    Baselining is only ever correct against a database that predates
+    *every* migration, and the production one was baselined in Stage 7 — so
+    with the real directory the guard below fires instead, which is the
+    point of the guard and the reason these cases supply their own.
+    """
+    versions = tmp_path / "migrations" / "models"
+    versions.mkdir(parents=True)
+    source = sorted((db_module.MIGRATIONS_DIR / "models").glob("[0-9]*.py"))[0]
+    (versions / source.name).write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+    monkeypatch.setattr(db_module, "MIGRATIONS_DIR", tmp_path / "migrations")
+    return versions
+
+
+async def test_pre_migration_database_is_baselined_not_rebuilt(
+    connected, only_the_initial_migration, caplog
+):
     """Running the initial migration for real would `CREATE TABLE` over
     live tables. It gets recorded as applied instead."""
     await _make_pre_migration_database()
@@ -109,7 +128,9 @@ async def test_pre_migration_database_is_baselined_not_rebuilt(connected, caplog
     assert "baselined" in caplog.text
 
 
-async def test_baselined_database_then_migrates_normally(connected):
+async def test_baselined_database_then_migrates_normally(
+    connected, only_the_initial_migration
+):
     """After the baseline, it's an ordinary managed database."""
     await _make_pre_migration_database()
     await db_module.migrate()
@@ -120,7 +141,9 @@ async def test_baselined_database_then_migrates_normally(connected):
     assert await Aerich.filter(app="models").count() == before
 
 
-async def test_baseline_refuses_when_the_live_schema_has_drifted(connected):
+async def test_baseline_refuses_when_the_live_schema_has_drifted(
+    connected, only_the_initial_migration
+):
     """Faking a baseline onto a schema that doesn't match the migration
     buries the difference until some later migration trips over it."""
     await _make_pre_migration_database()

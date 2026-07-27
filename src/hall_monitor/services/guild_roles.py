@@ -22,9 +22,17 @@ import logging
 
 import discord
 
+from hall_monitor.db.models import Delegate, GuildRole, PendingInvite
 from hall_monitor.services import athena_colour, guild_tag as tags
 
 logger = logging.getLogger(__name__)
+
+# Outcomes of a reconcile pass over one guild's role.
+RECOLOURED = "recoloured"
+GREYED = "greyed"
+DELETED = "deleted"
+UNCHANGED = "unchanged"
+ABSENT = "absent"
 
 
 def find_guild_role(
@@ -50,39 +58,93 @@ async def ensure_guild_role(
     created. An existing role whose colour still matches Athena's is left
     strictly alone — no edit, no request, no audit-log entry every hour.
 
-    ``colour_hex`` overrides the Athena lookup, which is how Stage 9's
-    relegation clears a guild's colour without teaching this module about
-    notability.
+    ``colour_hex`` overrides the Athena lookup, which is how relegation
+    clears a guild's colour without teaching this module about notability.
+
+    Only the colour and the mention flag are ever written. The **name is
+    left alone** once the role exists, so an operator is free to decorate
+    it (`✦ VETS`, and one day a role icon) without this putting it back.
     """
     reason = reason or f"hall-monitor: {guild_tag} guild role"
     if colour_hex is None:
         colour_hex = await athena_colour.colour_for(guild_tag)
     colour = _colour(colour_hex)
 
-    role = find_guild_role(discord_guild, guild_tag)
+    role = await resolve_role(discord_guild, guild_tag)
     if role is None:
         return await _create(discord_guild, guild_tag, colour, reason=reason)
-
-    changes: dict[str, object] = {}
-    if role.colour != colour:
-        changes["colour"] = colour
-    if not role.mentionable:
-        # `@VETS` is the point of the role; a role nobody may mention is
-        # just a colour swatch.
-        changes["mentionable"] = True
-    if not changes:
-        return role
-
-    try:
-        await role.edit(reason=reason, **changes)
-    except discord.HTTPException:
-        logger.exception(
-            "guild roles: couldn't update the %s role (%s) — %s",
-            guild_tag,
-            role.id,
-            ", ".join(sorted(changes)),
-        )
+    await _apply(role, colour, guild_tag=guild_tag, reason=reason)
     return role
+
+
+async def resolve_role(
+    discord_guild: discord.Guild, guild_tag: str
+) -> discord.Role | None:
+    """The guild's role: by recorded ID first, by name second.
+
+    ID first because the name is the operator's to change. A role renamed
+    to sit better in the list — decorated, prefixed, eventually carrying an
+    emote — is still the same role, and matching only on name would quietly
+    create a second one beside it.
+    """
+    owned = await GuildRole.filter(guild_tag__iexact=guild_tag).first()
+    if owned is not None:
+        role = discord_guild.get_role(owned.discord_role_id)
+        if role is not None:
+            return role
+        await owned.delete()  # deleted by hand at some point; stop claiming it
+    return find_guild_role(discord_guild, guild_tag)
+
+
+async def reconcile_role(
+    discord_guild: discord.Guild, guild_tag: str, *, notable: bool
+) -> str:
+    """Bring one guild's role in line with the Hall, and recycle it if spent.
+
+    Three outcomes worth naming:
+
+    - **Deleted.** A role *we* created, holding nobody, for a guild with no
+      live delegate and no verification in flight. It has no members to
+      lose and no history worth keeping, and the next join recreates it —
+      `ensure_guild_role` is create-on-demand — so leaving it would just
+      spend one of Discord's 250 role slots on nothing.
+    - **Greyed.** The guild isn't notable but people still wear the role.
+      Deleting it would blank every past `@TAG` in the channel history to
+      `@deleted-role`; the colour going away says the same thing reversibly.
+    - **Recoloured.** Notable, so it carries the Athena hue.
+
+    A role we didn't create is never deleted, only recoloured — a role
+    adopted by name might be somebody's own, and by the time you find out
+    the mentions are already broken.
+    """
+    role = await resolve_role(discord_guild, guild_tag)
+    if role is None:
+        return ABSENT
+
+    owned = await GuildRole.filter(
+        guild_tag__iexact=guild_tag, discord_role_id=role.id
+    ).first()
+    if owned is not None and not role.members and not await _in_use(guild_tag):
+        return await _recycle(role, owned, guild_tag)
+
+    colour = (
+        _colour(await athena_colour.colour_for(guild_tag))
+        if notable
+        else discord.Colour.default()
+    )
+    changed = await _apply(
+        role,
+        colour,
+        guild_tag=guild_tag,
+        reason=(
+            f"hall-monitor: {guild_tag} is notable"
+            if notable
+            else f"hall-monitor: {guild_tag} is no longer notable"
+        ),
+    )
+    if not changed:
+        return UNCHANGED
+    return RECOLOURED if notable else GREYED
 
 
 async def set_delegate(member) -> None:
@@ -116,8 +178,68 @@ async def _create(
     except discord.HTTPException:
         logger.exception("guild roles: couldn't create the %s role", guild_tag)
         return None
+    # Recorded *because* we made it: the reconcile pass deletes only roles
+    # it can prove are ours.
+    await GuildRole.update_or_create(
+        guild_tag=guild_tag, defaults={"discord_role_id": role.id}
+    )
     logger.info("guild roles: created the %s role in %s", guild_tag, colour)
     return role
+
+
+async def _apply(
+    role: discord.Role, colour: discord.Colour, *, guild_tag: str, reason: str
+) -> bool:
+    """Write only what differs. Returns whether anything was written."""
+    changes: dict[str, object] = {}
+    if role.colour != colour:
+        changes["colour"] = colour
+    if not role.mentionable:
+        # `@VETS` is the point of the role; a role nobody may mention is
+        # just a colour swatch.
+        changes["mentionable"] = True
+    if not changes:
+        return False
+
+    try:
+        await role.edit(reason=reason, **changes)
+    except discord.HTTPException:
+        logger.exception(
+            "guild roles: couldn't update the %s role (%s) — %s",
+            guild_tag,
+            role.id,
+            ", ".join(sorted(changes)),
+        )
+        return False
+    return True
+
+
+async def _recycle(role: discord.Role, owned: GuildRole, guild_tag: str) -> str:
+    try:
+        await role.delete(reason=f"hall-monitor: {guild_tag} has nobody in the Hall")
+    except discord.HTTPException:
+        logger.exception("guild roles: couldn't delete the spent %s role", guild_tag)
+        return UNCHANGED
+    await owned.delete()
+    logger.info(
+        "guild roles: recycled the %s role — no members, no delegates", guild_tag
+    )
+    return DELETED
+
+
+async def _in_use(guild_tag: str) -> bool:
+    """Whether anyone is, or is about to be, a delegate for this guild.
+
+    The pending-invite half closes a race with the join listener, which
+    creates the role and then applies it: a sweep landing in between would
+    delete the role out from under an `add_roles` that is already in
+    flight, failing a verification. A `PendingInvite` exists for the whole
+    of that window — it's only deleted once the `Delegate` row is written,
+    and the row is what the first half of this check sees.
+    """
+    if await Delegate.filter(guild_tag__iexact=guild_tag, left_at=None).exists():
+        return True
+    return await PendingInvite.filter(guild_tag__iexact=guild_tag).exists()
 
 
 def _colour(hex_colour: str) -> discord.Colour:

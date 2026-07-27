@@ -1,18 +1,21 @@
 """Background jobs — notability refresh and pending-invite expiry sweep."""
 
 import functools
+import logging
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from discord.ext import commands
 
 from hall_monitor.config import settings
-from hall_monitor.services import discord_invites, notability
+from hall_monitor.services import discord_invites, notability, transitions
+
+logger = logging.getLogger(__name__)
 
 
 def build_scheduler(bot: commands.Bot) -> AsyncIOScheduler:
     scheduler = AsyncIOScheduler()
     scheduler.add_job(
-        notability.refresh_all,
+        functools.partial(refresh_and_reconcile, bot),
         "interval",
         seconds=settings.notability_refresh_seconds,
         id="notability-refresh",
@@ -26,3 +29,24 @@ def build_scheduler(bot: commands.Bot) -> AsyncIOScheduler:
         id="pending-invite-sweep",
     )
     return scheduler
+
+
+async def refresh_and_reconcile(bot: commands.Bot) -> None:
+    """Re-evaluate notability, then make Discord match the new answer.
+
+    One job rather than two intervals: the reconcile reads the cache the
+    refresh just wrote, and running them independently would spend an hour
+    of every change acting on the previous sweep's numbers.
+    """
+    await notability.refresh_all()
+
+    guild = (
+        bot.get_guild(settings.discord_guild_id) if settings.discord_guild_id else None
+    )
+    if guild is None:
+        logger.warning(
+            "reconcile skipped: guild %s unavailable", settings.discord_guild_id
+        )
+        return
+    summary = await transitions.reconcile(guild)
+    logger.info("reconcile: %s", summary.line())

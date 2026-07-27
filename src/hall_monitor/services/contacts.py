@@ -178,6 +178,62 @@ async def clear_contact(
     )
 
 
+async def sync_contact_roles(
+    guild_tag: str,
+    *,
+    discord_guild: discord.Guild | None,
+    granted: bool,
+    reason: str | None = None,
+) -> int:
+    """Hand out or take back the Discord contact roles for one guild's slots.
+
+    The contact channels are for representatives of guilds that are
+    currently in the Hall, so a guild that stops being notable has its
+    contact roles withdrawn — and gets them back, to the same people, when
+    it returns.
+
+    The ``GuildContact`` rows are left alone either way. Notability decides
+    who may *use* a contact role; the row decides who holds the slot.
+    Clearing the rows would make a guild's return cost four re-verifications
+    and lose the record of who to give them back to. Nobody is kicked here
+    for the same reason: the kick is what happens when you lose your slot to
+    someone else, not when your guild has a quiet quarter.
+
+    Returns the number of members whose roles actually changed, so a
+    reconcile that has nothing to do says so.
+    """
+    if discord_guild is None:
+        return 0
+    reason = reason or (
+        f"hall-monitor: {guild_tag} is notable"
+        if granted
+        else f"hall-monitor: {guild_tag} is no longer notable"
+    )
+
+    changed = 0
+    rows = await GuildContact.filter(guild_tag__iexact=guild_tag).prefetch_related(
+        "delegate"
+    )
+    for row in rows:
+        if row.role not in _CONTACT_ROLE_SETTINGS:
+            continue
+        member = _member_for(row.delegate, discord_guild)
+        if member is None:
+            continue
+        discord_role = _discord_role(discord_guild, row.role)
+        if discord_role is None:
+            continue
+        holds = any(existing.id == discord_role.id for existing in member.roles)
+        if holds == granted:
+            continue  # already correct — an hourly pass must be quiet
+        if granted:
+            await _add_role(member, discord_role, role=row.role, reason=reason)
+        else:
+            await _remove_role(member, row.role, reason=reason)
+        changed += 1
+    return changed
+
+
 async def resolve_conflicts_and_kick_if_empty(
     guild_tag: str,
     roles: set[str],
@@ -337,6 +393,12 @@ async def _grant_role(
         return
     if any(existing.id == discord_role.id for existing in member.roles):
         return
+    await _add_role(member, discord_role, role=role, reason=reason)
+
+
+async def _add_role(
+    member: discord.Member, discord_role: discord.Role, *, role: str, reason: str
+) -> None:
     try:
         await member.add_roles(discord_role, reason=reason)
     except discord.HTTPException:

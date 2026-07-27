@@ -105,6 +105,8 @@ Two things reach the assign path: `on_member_join` claims every slot a verificat
 
 Guild tags are matched case-insensitively (`services/guild_tag.py`) so `~force assign` hits the row the join flow wrote, and the slot's *stored* spelling is left alone: two rows differing only in case would break an invariant the `unique_together` can't see. Discord-side failures (role removal, kick) are logged rather than raised — the database is the roster's source of truth, and a stale role on a displaced holder is visible and fixable in a way a slot that silently refused to move is not.
 
+**Contact roles are gated on notability** (`sync_contact_roles`, driven by §12's reconcile). The contact channels are for representatives of guilds currently in the Hall, so a guild that drops out has its four contact roles withdrawn and gets them back — to the same people — when it returns. The `GuildContact` rows never move: notability decides who may *use* a contact role, the row decides who holds the slot. Clearing the rows would cost a returning guild four re-verifications and lose the record of who to hand the roles back to. Nobody is kicked for it either, which is the same distinction — the kick is what happens when you lose your slot to someone else, not when your guild has a quiet quarter.
+
 ## 7. Cog organisation
 
 `discord_bot/cogs/` is grouped by domain (`general/`, `moderation/`, `force/`, `admin/`, `listeners/`). The auto-loader in `discord_bot/__init__.py` walks the tree and calls `setup()` on any file or package that exposes one. Sub-commands with distinct permissions live in per-file modules inside `cogs/force/`; the group cog imports and registers them at setup time.
@@ -143,7 +145,7 @@ To move off Wynncraft Veterans infrastructure:
 
 **Status:** implemented (Stage 7 follow-up)
 
-Model edits ship with an Aerich migration: `aerich migrate -n <slug>`, committed alongside the `db/models.py` change. `db.migrate()` applies whatever is outstanding at boot — one process, one SQLite file, so there's no window for two instances to race, and a deploy needing a remembered manual step eventually gets one nobody remembered.
+Model edits ship with an Aerich migration: `aerich migrate --name <slug>`, committed alongside the `db/models.py` change. `db.migrate()` applies whatever is outstanding at boot — one process, one SQLite file, so there's no window for two instances to race, and a deploy needing a remembered manual step eventually gets one nobody remembered.
 
 Migrations live at `db/migrations/models/` and reach the image as **package data** (`[tool.setuptools.package-data]` in `pyproject.toml`), not as a package. Aerich discovers version files by walking the directory, so they get no `__init__.py`; without the package-data entry `pip install .` would leave them out of the wheel and the container would boot with nothing to apply and nothing to say about it.
 
@@ -172,4 +174,20 @@ The role rides along in the join's single `add_roles` call rather than costing a
 
 New roles land at the bottom of the hierarchy, which is where `create_role` puts them and where an aesthetic role belongs: it grants no permissions, and a role above the bot's own would be one the bot couldn't edit afterwards.
 
-Stage 9 clears a relegated guild's colour by passing `colour_hex` explicitly, so this module never has to learn what notability is.
+**The role is looked up by ID first** (`GuildRole.discord_role_id`), by name second. The name belongs to whoever decorated it — `✦ VETS`, a prefix, eventually a role icon — and `ensure_guild_role` never writes it back. Matching on name alone would quietly mint a second role beside a renamed one. Note that a *custom emote* can't live in a role name at all: Discord renders `<:VETS:…>` there as literal text, and the supported equivalent is a role **icon** (`display_icon`, boost level 2+), which takes an image or a unicode emoji — the natural home for Stage 12's rendered banner.
+
+## 12. Reconciling against notability
+
+**Status:** implemented (Stage 8)
+
+`services/transitions.py` holds a **reconcile**, not a set of edge-triggered transition handlers: it reads what's notable now and makes Discord match, rather than diffing against a remembered previous state. That makes the pass safe to run repeatedly, lets it heal a server that drifted while the bot was down or while an edit 403'd, and means there's no "previous state" record that can itself go stale. It runs after each notability sweep (one scheduler job, so the reconcile reads the numbers the sweep just wrote) and on demand via `~script reconcile`.
+
+Only guilds with a *presence* are visited — a role we created, a live delegate, or a claimed contact slot. The cache knows a couple of hundred guilds and all but a handful have nothing here to reconcile; iterating the cache would mint a role for every guild in Wynncraft. Tags are deduplicated case-insensitively, or two spellings of one guild would take turns undoing each other. One guild's failure is logged and skipped rather than ending the pass.
+
+Per guild it settles the contact roles (§6) and the aesthetic role, the latter with three outcomes:
+
+- **Recoloured** — notable, so it carries the Athena hue.
+- **Greyed** — not notable, but people still wear it. Deleting it would rewrite every past `@TAG` in the channel history to `@deleted-role`; the colour going away says the same thing reversibly.
+- **Deleted** — a role *we* created, holding nobody, for a guild with no live delegate and no verification in flight. It has no members to lose and no history worth keeping, and the next join recreates it, so leaving it would spend one of Discord's 250 role slots on nothing.
+
+Two guards on that deletion, because it's the irreversible one. **A role we didn't create is never deleted** — one adopted by name might be somebody's own, and by the time you find out, the mentions are already broken; `GuildRole` records the ones we minted precisely so the sweep can tell. And **a pending invite counts as in use**: the join listener creates the role and then applies it, so a sweep landing between the two would delete the role out from under an `add_roles` already in flight and fail a verification. A `PendingInvite` row exists for the whole of that window — it's only deleted once the `Delegate` row is written, and the `Delegate` row is what the first guard sees.

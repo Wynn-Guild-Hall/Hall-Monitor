@@ -1,7 +1,7 @@
 """Tortoise ORM configuration, and the startup migration step.
 
 Schema changes are Aerich migrations, generated with
-``aerich migrate -n <slug>`` and committed alongside the model edit.
+``aerich migrate --name <slug>`` and committed alongside the model edit.
 :func:`migrate` applies them at boot — there is one process and one SQLite
 file, so there's no window where two instances race to migrate, and a
 deploy that needed a remembered manual step would eventually get one that

@@ -77,6 +77,24 @@ class DashKV(Model):
         unique_together = (("guild_tag", "key"),)
 
 
+class GuildRole(Model):
+    """A Discord role this bot created for a guild tag.
+
+    Recorded so the reconcile pass knows which roles are ours to delete.
+    ``ensure_guild_role`` adopts a role a human made under the same name,
+    and a deletion sweep can't tell those apart by name alone — every
+    ``@VETS`` in message history would become ``@deleted-role`` to find out.
+    """
+
+    id = fields.IntField(pk=True)
+    guild_tag = fields.CharField(max_length=8, unique=True)
+    discord_role_id = fields.BigIntField(unique=True)
+    created_at = fields.DatetimeField(auto_now_add=True)
+
+    class Meta:
+        table = "guild_role"
+
+
 class GuildContact(Model):
     """Which delegate currently holds each contact role for a guild."""
 

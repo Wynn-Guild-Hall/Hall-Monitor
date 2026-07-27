@@ -367,14 +367,16 @@ def _ctx_with_guild():
     ctx, _ = _fake_ctx()
     guild = MagicMock()
     guild.roles = []
+    guild.get_role = lambda role_id: None
     minted = MagicMock()
+    minted.id = 300
     minted.mention = "<@&300>"
     guild.create_role = AsyncMock(return_value=minted)
     ctx.guild = guild
     return ctx, guild
 
 
-async def test_guild_role_script_creates_the_role_and_names_the_colour(monkeypatch):
+async def test_guild_role_script_creates_the_role_and_names_the_colour(db, monkeypatch):
     """The point of the script: see the colour without waiting for a chief
     to verify."""
     from hall_monitor.discord_bot.cogs.admin.scripts import guild_role
@@ -393,7 +395,7 @@ async def test_guild_role_script_creates_the_role_and_names_the_colour(monkeypat
     assert "#9E2E2E" in body  # the Discord-visible variant, not Athena's raw hue
 
 
-async def test_guild_role_script_flags_the_fallback_colour(monkeypatch):
+async def test_guild_role_script_flags_the_fallback_colour(db, monkeypatch):
     from hall_monitor.discord_bot.cogs.admin.scripts import guild_role
 
     async def athena(tag, *, urgent=False):
@@ -407,7 +409,7 @@ async def test_guild_role_script_flags_the_fallback_colour(monkeypatch):
     assert "Athena doesn't know this guild" in ctx.reply.await_args.args[0]
 
 
-async def test_guild_role_script_wants_a_tag():
+async def test_guild_role_script_wants_a_tag(db):
     from hall_monitor.discord_bot.cogs.admin.scripts import guild_role
 
     ctx, _ = _ctx_with_guild()

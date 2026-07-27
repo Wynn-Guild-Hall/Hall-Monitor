@@ -358,6 +358,92 @@ async def test_clear_on_an_empty_slot_is_a_no_op(db):
 
 
 # --------------------------------------------------------------------------
+# sync_contact_roles — notability gating
+# --------------------------------------------------------------------------
+
+
+async def test_sync_withdraws_contact_roles_from_a_guild_that_lost_notability(db):
+    """The contact channels are for guilds currently in the Hall."""
+    guild = FakeGuild()
+    delegate = await _delegate("uuid-a", 1)
+    member = guild.add_member(1, holding=("events", "warring"))
+    await GuildContact.create(guild_tag="VETS", role="events", delegate=delegate)
+    await GuildContact.create(guild_tag="VETS", role="warring", delegate=delegate)
+
+    changed = await contacts.sync_contact_roles(
+        "VETS", discord_guild=guild, granted=False
+    )
+
+    assert changed == 2
+    assert _removed_role_ids(member) == {
+        CONTACT_ROLE_IDS["events"],
+        CONTACT_ROLE_IDS["warring"],
+    }
+    member.kick.assert_not_awaited()  # losing the guild's status isn't losing a slot
+
+
+async def test_sync_keeps_the_slot_rows(db):
+    """Clearing them would cost four re-verifications on the guild's return
+    and lose the record of who to hand the roles back to."""
+    guild = FakeGuild()
+    delegate = await _delegate("uuid-a", 1)
+    guild.add_member(1, holding=("events",))
+    await GuildContact.create(guild_tag="VETS", role="events", delegate=delegate)
+
+    await contacts.sync_contact_roles("VETS", discord_guild=guild, granted=False)
+
+    assert (await contacts.current_holder("VETS", "events")).id == delegate.id
+
+
+async def test_sync_hands_the_roles_back_when_the_guild_returns(db):
+    guild = FakeGuild()
+    delegate = await _delegate("uuid-a", 1)
+    member = guild.add_member(1)  # holding nothing
+    await GuildContact.create(guild_tag="VETS", role="events", delegate=delegate)
+
+    changed = await contacts.sync_contact_roles(
+        "VETS", discord_guild=guild, granted=True
+    )
+
+    assert changed == 1
+    assert _added_role_ids(member) == {CONTACT_ROLE_IDS["events"]}
+
+
+async def test_sync_is_silent_when_nothing_needs_changing(db):
+    """It runs hourly — a pass with nothing to do must cost no requests."""
+    guild = FakeGuild()
+    delegate = await _delegate("uuid-a", 1)
+    member = guild.add_member(1, holding=("events",))
+    await GuildContact.create(guild_tag="VETS", role="events", delegate=delegate)
+
+    assert (
+        await contacts.sync_contact_roles("VETS", discord_guild=guild, granted=True)
+        == 0
+    )
+    member.add_roles.assert_not_awaited()
+    member.remove_roles.assert_not_awaited()
+
+
+async def test_sync_leaves_other_guilds_alone(db):
+    guild = FakeGuild()
+    theirs = await _delegate("uuid-othr", 1, tag="OTHR")
+    their_member = guild.add_member(1, holding=("events",))
+    await GuildContact.create(guild_tag="OTHR", role="events", delegate=theirs)
+
+    assert (
+        await contacts.sync_contact_roles("VETS", discord_guild=guild, granted=False)
+        == 0
+    )
+    their_member.remove_roles.assert_not_awaited()
+
+
+async def test_sync_without_a_discord_handle_does_nothing(db):
+    delegate = await _delegate("uuid-a", 1)
+    await GuildContact.create(guild_tag="VETS", role="events", delegate=delegate)
+    assert await contacts.sync_contact_roles("VETS", discord_guild=None, granted=False) == 0
+
+
+# --------------------------------------------------------------------------
 # Read side
 # --------------------------------------------------------------------------
 
