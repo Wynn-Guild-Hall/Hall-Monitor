@@ -9,11 +9,11 @@ notable. A signal with a high *any* but a low *only* is corroborating
 other signals; a signal with a high *only* is the one setting the bar,
 and the one to tighten.
 
-**skipped** is the catch: the normal sweep stops evaluating once a signal
-answers, so the two per-guild signals (territory ownership, war count)
-are usually never asked and show `0 any` — which means "not checked", not
-"nobody qualifies". Run `~script refresh_notability full` for numbers you
-can tune thresholds against.
+**skipped** should read zero: every signal now comes from a bulk
+leaderboard, so all six are evaluated for every guild. A non-zero count
+means a board stopped covering our threshold and the per-guild fallback
+couldn't fill the gap — check the logs for a `guildWars`/`guildTerritories`
+warning.
 
 ``~script notability_breakdown <signal>`` lists the guilds a given signal
 is solely responsible for.

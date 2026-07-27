@@ -20,12 +20,6 @@ _EDIT_INTERVAL_S = 5.0
 
 
 async def main(ctx, *args: str) -> None:
-    # `full` evaluates every signal instead of stopping at the first hit —
-    # a per-guild request for every candidate, so it's much slower. Only
-    # worth it when you're tuning thresholds rather than deciding
-    # notability.
-    exhaustive = bool(args) and args[0].lower() in {"full", "exhaustive"}
-
     if notability.is_refreshing():
         await ctx.reply(
             "a notability refresh is already running — this one would have "
@@ -33,8 +27,7 @@ async def main(ctx, *args: str) -> None:
         )
         return
 
-    mode = " (full)" if exhaustive else ""
-    message = await ctx.reply(f"notability refresh{mode}: loading leaderboards…")
+    message = await ctx.reply("notability refresh: loading leaderboards…")
     last_edit = time.monotonic()
 
     async def on_progress(done: int, total: int) -> None:
@@ -45,16 +38,14 @@ async def main(ctx, *args: str) -> None:
         last_edit = now
         await message.edit(content=f"notability refresh: {done}/{total} guilds…")
 
-    summary = await notability.refresh_all(
-        on_progress=on_progress, exhaustive=exhaustive
-    )
+    summary = await notability.refresh_all(on_progress=on_progress)
     if summary is None:
         # Lost a race with the scheduler between the check and the call.
         await message.edit(content="a notability refresh was already running.")
         return
 
     lines = [
-        f"notability refresh{mode} done in {summary.seconds:.0f}s",
+        f"notability refresh done in {summary.seconds:.0f}s",
         f"- {summary.evaluated} guilds evaluated, {summary.notable} notable",
     ]
     if summary.failed:

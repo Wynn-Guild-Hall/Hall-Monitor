@@ -15,11 +15,12 @@ Signals
 6. **Force override** — a `ForceOverride(kind="notable", subject=tag)`
    row with no expiry or an expiry in the future.
 
-Any single signal being true marks the guild notable. Signals 4 and 5 are
-the only two needing a per-guild request — both go through
-``external.guild_stats``, which prefers Wynnpool and falls back to
-Wynncraft — so they're evaluated last and skipped entirely when a cheaper
-signal has already settled the answer.
+Any single signal being true marks the guild notable. Every one is
+answered from bulk Wynnpool leaderboards, so a sweep costs a fixed ~20
+requests regardless of how many guilds it evaluates. Signals 4 and 5 rely
+on a property of top-N boards: while the board's floor sits below our
+threshold, a guild absent from it must be under that threshold. When that
+stops holding, ``external.guild_stats`` is the per-guild fallback.
 
 The scheduler refreshes every ``NOTABILITY_REFRESH_SECONDS`` (default
 3600 s); ``~script refresh_notability`` triggers the same sweep on demand.
@@ -50,6 +51,22 @@ _SIGNAL_4_MIN_TERRITORIES = 20
 _SIGNAL_5_MIN_WARS = 50_000
 
 
+# Boards that answer a signal directly.
+_SIGNAL_BOARDS = ("guild-average-online", "guildLevel", "guildWars", "guildTerritories")
+
+# Boards that answer nothing on their own but widen the candidate set —
+# a guild ranked for raids may still qualify on level, wars or seasons,
+# and it can't do so if we never look at it.
+_CANDIDATE_BOARDS = (
+    "guildTotalRaids",
+    "grootslangSrGuilds",
+    "orphionSrGuilds",
+    "colossusSrGuilds",
+    "frumaSrGuilds",
+    "namelessSrGuilds",
+)
+
+
 @dataclass(frozen=True)
 class _BulkContext:
     """Everything :func:`refresh_all` fetches once and shares across guilds."""
@@ -57,8 +74,16 @@ class _BulkContext:
     tag_to_name: dict[str, str]  # canonical tag→name from any leaderboard
     avg_online: tuple[wynnpool.LeaderboardEntry, ...]
     guild_level: tuple[wynnpool.LeaderboardEntry, ...]
+    wars: tuple[wynnpool.LeaderboardEntry, ...]
+    territories: tuple[wynnpool.LeaderboardEntry, ...]
     season_boards: tuple[tuple[wynnpool.LeaderboardEntry, ...], ...]  # newest → oldest
     current_season_active: bool
+    # A top-N board proves a "> threshold" signal false by omission only
+    # while its floor sits below that threshold. If Wynncraft inflation
+    # ever pushes the 100th guild past ours, omission stops meaning
+    # anything and we have to ask per guild again.
+    wars_board_decisive: bool = True
+    territories_board_decisive: bool = True
 
 
 async def is_notable(guild_tag: str) -> bool:
@@ -94,7 +119,7 @@ ProgressCallback = Callable[[int, int], Awaitable[None]]
 
 
 async def refresh_all(
-    *, on_progress: ProgressCallback | None = None, exhaustive: bool = False
+    *, on_progress: ProgressCallback | None = None
 ) -> RefreshSummary | None:
     """Recompute notability for every candidate guild and update the cache.
 
@@ -114,22 +139,15 @@ async def refresh_all(
     a Discord message edit, for instance, has to be throttled well below
     one-per-guild.
 
-    ``exhaustive`` evaluates every signal even once one has answered,
-    costing a per-guild request for every candidate. Pointless for
-    deciding notability, necessary for deciding *thresholds*: the normal
-    sweep can't tell you how many guilds clear 50 000 wars, because it
-    stops asking as soon as something cheaper says yes.
     """
     if _refresh_lock.locked():
         logger.info("notability refresh already running; skipping this trigger")
         return None
     async with _refresh_lock:
-        return await _refresh_all(on_progress, exhaustive)
+        return await _refresh_all(on_progress)
 
 
-async def _refresh_all(
-    on_progress: "ProgressCallback | None" = None, exhaustive: bool = False
-) -> RefreshSummary:
+async def _refresh_all(on_progress: "ProgressCallback | None" = None) -> RefreshSummary:
     started = time.monotonic()
     context = await _load_context()
 
@@ -148,7 +166,7 @@ async def _refresh_all(
     failed = 0
     for index, tag in enumerate(ordered, start=1):
         try:
-            if await _evaluate_and_cache(tag, context, exhaustive=exhaustive):
+            if await _evaluate_and_cache(tag, context):
                 notable += 1
         except Exception:
             # One guild's API hiccup or write contention shouldn't cost us
@@ -184,11 +202,24 @@ async def _refresh_all(
 
 
 async def _load_context() -> _BulkContext:
-    avg_online, guild_level, seasons = await asyncio.gather(
+    avg_online, guild_level, wars, territories, seasons = await asyncio.gather(
         wynnpool.average_online_leaderboard(),
         wynnpool.guild_level_leaderboard(),
+        wynnpool.wars_leaderboard(),
+        wynnpool.territories_leaderboard(),
         wynncraft.get_seasons(),
     )
+    candidate_boards = await asyncio.gather(
+        *(wynnpool.leaderboard(name) for name in _CANDIDATE_BOARDS),
+        return_exceptions=True,
+    )
+    extra_boards = []
+    for name, board in zip(_CANDIDATE_BOARDS, candidate_boards):
+        if isinstance(board, BaseException):
+            # Candidate-only, so losing one costs coverage, not correctness.
+            logger.warning("candidate board %s unavailable: %s", name, board)
+            continue
+        extra_boards.append(board)
     last_10 = seasons[-_SIGNAL_3_LAST_10:] if seasons else ()
     season_boards: tuple[tuple[wynnpool.LeaderboardEntry, ...], ...] = tuple(
         await asyncio.gather(
@@ -196,7 +227,7 @@ async def _load_context() -> _BulkContext:
         )
     )
     tag_to_name: dict[str, str] = {}
-    for board in (avg_online, guild_level, *season_boards):
+    for board in (avg_online, guild_level, wars, territories, *extra_boards, *season_boards):
         for entry in board:
             # Season boards carry no prefix, so their entries arrive with
             # tag=None. Letting one into the map poisons every later
@@ -208,9 +239,55 @@ async def _load_context() -> _BulkContext:
         tag_to_name=tag_to_name,
         avg_online=avg_online,
         guild_level=guild_level,
+        wars=wars,
+        territories=territories,
         season_boards=season_boards,
         current_season_active=_any_active(seasons),
+        wars_board_decisive=_board_decides(wars, _SIGNAL_5_MIN_WARS, "guildWars"),
+        territories_board_decisive=_board_decides(
+            territories, _SIGNAL_4_MIN_TERRITORIES, "guildTerritories"
+        ),
     )
+
+
+def _board_decides(
+    board: tuple[wynnpool.LeaderboardEntry, ...], threshold: float, name: str
+) -> bool:
+    """Whether omission from ``board`` proves a guild is under ``threshold``.
+
+    True while the lowest-ranked entry is at or below the threshold: a
+    guild above it would have displaced that entry.
+    """
+    values = [e.value for e in board if e.value is not None]
+    if not values:
+        # Nothing to reason from. Report "decisive" anyway: the signal will
+        # read false for everyone, which is what a missing board leaves us
+        # with regardless, and the alternative — falling back per guild —
+        # spends a request each on hundreds of guilds to learn the same.
+        logger.warning(
+            "%s came back empty; its signal reads false for every guild", name
+        )
+        return True
+    floor = min(values)
+    if floor > threshold:
+        logger.warning(
+            "%s only reaches down to %s, above our threshold of %s — "
+            "guilds off the board can no longer be ruled out from it",
+            name,
+            floor,
+            threshold,
+        )
+        return False
+    return True
+
+
+def _board_value(
+    board: tuple[wynnpool.LeaderboardEntry, ...], tag: str
+) -> float | None:
+    for entry in board:
+        if entry.tag == tag:
+            return entry.value
+    return None
 
 
 def _any_active(seasons: tuple[wynncraft.Season, ...]) -> bool:
@@ -218,10 +295,8 @@ def _any_active(seasons: tuple[wynncraft.Season, ...]) -> bool:
     return any(s.start <= now <= s.end for s in seasons)
 
 
-async def _evaluate_and_cache(
-    tag: str, context: _BulkContext, *, exhaustive: bool = False
-) -> bool:
-    signals = await _evaluate(tag, context, exhaustive=exhaustive)
+async def _evaluate_and_cache(tag: str, context: _BulkContext) -> bool:
+    signals = await _evaluate(tag, context)
     result = any(signals.values())
     await NotabilityCache.update_or_create(
         guild_tag=tag,
@@ -234,26 +309,30 @@ async def _evaluate_and_cache_single(tag: str) -> bool:
     return await _evaluate_and_cache(tag, await _load_context())
 
 
-async def _evaluate(
-    tag: str, context: _BulkContext, *, exhaustive: bool = False
-) -> dict[str, bool | None]:
+async def _evaluate(tag: str, context: _BulkContext) -> dict[str, bool | None]:
     """Compute each signal for ``tag`` and return a labelled dict.
 
     The dict is persisted verbatim to ``NotabilityCache.signals_json`` so a
     janitor can see exactly why a guild is (or isn't) notable without
-    re-running the refresh. ``None`` there means *not evaluated* — an
-    earlier signal had already settled it — as distinct from ``False``,
-    which means checked and not met.
+    re-running the refresh.
 
-    Four of the six signals are answered by bulk payloads we already hold.
-    Only territory ownership and war count need a per-guild fetch, so
-    that request is deferred until the free signals have all come back
-    negative. Notability is an ``any()``, so for a guild that
-    already qualifies the fetch could not change the answer — and doing it
-    anyway meant a full guild payload per candidate per hour, which is how
-    a refresh sweep walks into a 429 and stays there.
+    Every signal is answered from bulk leaderboards the sweep already
+    holds, so evaluating a guild costs no request of its own. Territory
+    ownership and war count lean on a property of top-N boards: while the
+    board's floor sits below our threshold, a guild missing from it must
+    be under that threshold, because otherwise it would have displaced the
+    bottom entry. ``_board_decides`` checks that each sweep, and only when
+    it stops holding do we fall back to asking per guild.
     """
-    signals: dict[str, bool | None] = {
+    wars = _board_value(context.wars, tag)
+    territories = _board_value(context.territories, tag)
+
+    if wars is None and not context.wars_board_decisive:
+        wars = await _stat(tag, context, "wars")
+    if territories is None and not context.territories_board_decisive:
+        territories = await _stat(tag, context, "territories")
+
+    return {
         "top25_average_online": _signal_top25_avg_online(tag, context),
         "level_100_plus": _signal_level_100_plus(tag, context),
         # Leaderboard names come from the same source as the season boards,
@@ -261,25 +340,18 @@ async def _evaluate(
         "season_placement": _signal_season_placement(
             tag, context.tag_to_name.get(tag), context
         ),
-        "territory_ownership": None,
-        "war_count": None,
+        "territory_ownership": _signal_territory_ownership(
+            territories, context.current_season_active
+        ),
+        "war_count": _signal_war_count(wars),
         "force_override": await _has_active_notable_override(tag),
     }
-    if any(signals.values()) and not exhaustive:
-        return signals
 
-    guild = await _fetch_stats(tag, context)
-    if guild is not None and context.tag_to_name.get(tag) is None:
-        # A guild on no leaderboard has no name in the context; the
-        # per-guild payload is the only place to learn it.
-        signals["season_placement"] = _signal_season_placement(
-            tag, guild.name, context
-        )
-    signals["territory_ownership"] = _signal_territory_ownership(
-        guild, context.current_season_active
-    )
-    signals["war_count"] = _signal_war_count(guild)
-    return signals
+
+async def _stat(tag: str, context: _BulkContext, field: str) -> float | None:
+    """One per-guild number, for when a board has stopped being decisive."""
+    stats = await _fetch_stats(tag, context)
+    return None if stats is None else getattr(stats, field)
 
 
 async def _fetch_stats(
@@ -353,18 +425,16 @@ def _signal_season_placement(
     return False
 
 
-def _signal_territory_ownership(
-    guild: "external.GuildStats | None", season_active: bool
-) -> bool:
-    if guild is None or not season_active:
+def _signal_territory_ownership(territories: float | None, season_active: bool) -> bool:
+    if territories is None or not season_active:
         return False
-    return guild.territories > _SIGNAL_4_MIN_TERRITORIES
+    return territories > _SIGNAL_4_MIN_TERRITORIES
 
 
-def _signal_war_count(guild: "external.GuildStats | None") -> bool:
-    if guild is None or guild.wars is None:
+def _signal_war_count(wars: float | None) -> bool:
+    if wars is None:
         return False
-    return guild.wars > _SIGNAL_5_MIN_WARS
+    return wars > _SIGNAL_5_MIN_WARS
 
 
 async def _has_active_notable_override(tag: str) -> bool:

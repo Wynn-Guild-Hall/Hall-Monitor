@@ -65,7 +65,8 @@ class GuildDetails:
     level: int | None = None
 
 
-_METRIC_FIELDS = ("level", "rating", "averageOnline", "value")
+# Each board carries exactly one of these, so first-match is unambiguous.
+_METRIC_FIELDS = ("level", "rating", "averageOnline", "wars", "territories", "value")
 
 
 def _extract_value(row: dict) -> float | None:
@@ -125,29 +126,45 @@ def _parse_banner(raw: dict | None) -> Banner | None:
     return Banner(base=raw["base"], tier=raw["tier"], layers=layers)
 
 
+async def leaderboard(
+    name: str, *, urgent: bool = False
+) -> tuple[LeaderboardEntry, ...]:
+    """Any Wynnpool guild leaderboard by its path segment.
+
+    All of them are capped at 100 rows (50 for average-online), which is
+    what makes them usable for threshold signals: if the board's floor
+    sits below the threshold, absence from it proves the guild is under.
+    """
+    response = await _requester.get(f"/leaderboard/{name}", urgent=urgent)
+    return _parse_leaderboard(response.json())
+
+
 async def average_online_leaderboard(
     *, urgent: bool = False
 ) -> tuple[LeaderboardEntry, ...]:
-    response = await _requester.get(
-        "/leaderboard/guild-average-online", urgent=urgent
-    )
-    return _parse_leaderboard(response.json())
+    return await leaderboard("guild-average-online", urgent=urgent)
 
 
 async def guild_level_leaderboard(
     *, urgent: bool = False
 ) -> tuple[LeaderboardEntry, ...]:
-    response = await _requester.get("/leaderboard/guildLevel", urgent=urgent)
-    return _parse_leaderboard(response.json())
+    return await leaderboard("guildLevel", urgent=urgent)
+
+
+async def wars_leaderboard(*, urgent: bool = False) -> tuple[LeaderboardEntry, ...]:
+    return await leaderboard("guildWars", urgent=urgent)
+
+
+async def territories_leaderboard(
+    *, urgent: bool = False
+) -> tuple[LeaderboardEntry, ...]:
+    return await leaderboard("guildTerritories", urgent=urgent)
 
 
 async def season_rating(
     season: int, *, urgent: bool = False
 ) -> tuple[LeaderboardEntry, ...]:
-    response = await _requester.get(
-        f"/leaderboard/season-rating/{season}", urgent=urgent
-    )
-    return _parse_leaderboard(response.json())
+    return await leaderboard(f"season-rating/{season}", urgent=urgent)
 
 
 async def guild_details(

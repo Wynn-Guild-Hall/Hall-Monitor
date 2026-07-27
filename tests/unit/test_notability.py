@@ -43,6 +43,8 @@ def _ctx(**overrides) -> _BulkContext:
         tag_to_name={},
         avg_online=(),
         guild_level=(),
+        wars=(),
+        territories=(),
         season_boards=(),
         current_season_active=False,
     )
@@ -180,19 +182,20 @@ def test_signal_3_still_matches_on_tag_if_wynnpool_adds_one():
 
 
 def test_signal_4_true_when_over_20_and_season_active():
-    assert _signal_territory_ownership(_guild(territories=25), True) is True
+    assert _signal_territory_ownership(25, True) is True
 
 
 def test_signal_4_false_when_no_active_season():
     """Twenty-five territories don't count off-season."""
-    assert _signal_territory_ownership(_guild(territories=25), False) is False
+    assert _signal_territory_ownership(25, False) is False
 
 
 def test_signal_4_false_at_boundary():
-    assert _signal_territory_ownership(_guild(territories=20), True) is False
+    assert _signal_territory_ownership(20, True) is False
 
 
-def test_signal_4_false_when_guild_missing():
+def test_signal_4_false_when_absent_from_the_board():
+    """Off the territories board means below its floor, which is below 20."""
     assert _signal_territory_ownership(None, True) is False
 
 
@@ -202,18 +205,14 @@ def test_signal_4_false_when_guild_missing():
 
 
 def test_signal_5_true_above_threshold():
-    assert _signal_war_count(_guild(wars=50_001)) is True
+    assert _signal_war_count(50_001) is True
 
 
 def test_signal_5_false_at_threshold():
-    assert _signal_war_count(_guild(wars=50_000)) is False
+    assert _signal_war_count(50_000) is False
 
 
-def test_signal_5_false_when_wars_null():
-    assert _signal_war_count(_guild(wars=None)) is False
-
-
-def test_signal_5_false_when_guild_missing():
+def test_signal_5_false_when_absent_from_the_board():
     assert _signal_war_count(None) is False
 
 
@@ -262,60 +261,76 @@ async def test_refresh_all_writes_cache_for_all_candidates(db, httpx_mock, monke
     monkeypatch.setattr(
         "hall_monitor.external.wynncraft.settings.wynncraft_api_token", ""
     )
-    # Bulk leaderboards — one guild on each so we can assert union coverage.
-    httpx_mock.add_response(
-        url="https://api.wynnpool.com/leaderboard/guild-average-online",
-        json={"1": {"name": "Wynncraft Veterans", "prefix": "VETS", "averageOnline": 40}},
-    )
-    httpx_mock.add_response(
-        url="https://api.wynnpool.com/leaderboard/guildLevel",
-        json={"1": {"name": "Wynncraft Veterans", "prefix": "VETS", "level": 130}},
-    )
-    httpx_mock.add_response(
-        url="https://api.wynncraft.com/v3/guild/seasons",
-        json={},  # no historical seasons → no season boards needed
-    )
-    # Delegate row expands candidate set.
-    await Delegate.create(
-        mc_uuid="u", discord_user_id=1, guild_tag="DELEG"
-    )
-    # Force override expands candidate set (with a distinct tag).
+    _boards(httpx_mock, boards={
+        "guild-average-online": {
+            "1": {"name": "Returners", "prefix": "VETS", "averageOnline": 40}
+        },
+        "guildLevel": {"1": {"name": "Returners", "prefix": "VETS", "level": 130}},
+        # Each board's *floor* must sit below the threshold, or absence
+        # from it proves nothing and we fall back to per-guild lookups.
+        "guildWars": {
+            "1": {"name": "Avicia", "prefix": "AVO", "wars": 225394},
+            "2": {"name": "Bottom", "prefix": "BTMW", "wars": 4108},
+        },
+        "guildTerritories": {
+            "1": {"name": "Aequitas", "prefix": "Aeq", "territories": 97},
+            "2": {"name": "Bottom", "prefix": "BTMT", "territories": 0},
+        },
+    })
+    await Delegate.create(mc_uuid="u", discord_user_id=1, guild_tag="DELEG")
     await ForceOverride.create(kind="notable", subject="OVRD", expires_at=None)
 
-    # Only DELEG needs a per-guild fetch. VETS is settled by the
-    # leaderboards and OVRD by its override, so mocking their guild
-    # endpoints would leave pytest-httpx holding unrequested responses —
-    # which is the assertion that the fetch really is skipped.
+    await refresh_all()
+
+    # Boards contribute candidates alongside delegates and overrides — and
+    # no per-guild request is registered, so any would fail the test.
+    cached = {r.guild_tag for r in await NotabilityCache.all()}
+    assert cached == {"VETS", "AVO", "BTMW", "Aeq", "BTMT", "DELEG", "OVRD"}
+
+    vets = await NotabilityCache.get(guild_tag="VETS")
+    assert vets.is_notable is True
+    signals = json.loads(vets.signals_json)
+    assert signals["top25_average_online"] is True
+    # Every signal is evaluated now; none are left null.
+    assert None not in signals.values()
+    assert signals["war_count"] is False
+
+    avo = await NotabilityCache.get(guild_tag="AVO")
+    assert avo.is_notable is True
+    assert json.loads(avo.signals_json)["war_count"] is True
+
+    ovrd = await NotabilityCache.get(guild_tag="OVRD")
+    assert ovrd.is_notable is True
+    deleg = await NotabilityCache.get(guild_tag="DELEG")
+    assert deleg.is_notable is False
+
+
+async def test_refresh_falls_back_per_guild_when_a_board_stops_covering(
+    db, httpx_mock, monkeypatch
+):
+    """If the wars board's floor climbs above 50 000, absence from it stops
+    proving anything and the guild has to be asked directly."""
+    monkeypatch.setattr(
+        "hall_monitor.external.wynncraft.settings.wynncraft_api_token", ""
+    )
+    _boards(httpx_mock, boards={
+        "guildLevel": {"1": {"name": "Returners", "prefix": "VETS", "level": 42}},
+        # Floor of 60k is above our 50k threshold — no longer decisive.
+        "guildWars": {
+            "1": {"name": "Avicia", "prefix": "AVO", "wars": 225394},
+            "2": {"name": "Other", "prefix": "OTHR", "wars": 60000},
+        },
+    })
     httpx_mock.add_response(
-        url="https://api.wynncraft.com/v3/guild/prefix/DELEG",
-        status_code=404,
+        url="https://api.wynnpool.com/guild/Returners",
+        json={"name": "Returners", "prefix": "VETS", "wars": 51000, "territories": 0},
     )
 
     await refresh_all()
 
-    cached_tags = {r.guild_tag for r in await NotabilityCache.all()}
-    assert cached_tags == {"VETS", "DELEG", "OVRD"}
-
-    # VETS is notable on the leaderboards alone; the two signals that would
-    # have cost a Wynncraft call are recorded as unevaluated, not false.
     vets = await NotabilityCache.get(guild_tag="VETS")
+    assert json.loads(vets.signals_json)["war_count"] is True
     assert vets.is_notable is True
-    vets_signals = json.loads(vets.signals_json)
-    assert vets_signals["top25_average_online"] is True
-    assert vets_signals["territory_ownership"] is None
-    assert vets_signals["war_count"] is None
-
-    # OVRD has no real signals but has a force override — notable, and it
-    # short-circuits before the fetch just the same.
-    ovrd = await NotabilityCache.get(guild_tag="OVRD")
-    assert ovrd.is_notable is True
-    assert json.loads(ovrd.signals_json)["war_count"] is None
-
-    # DELEG qualifies on nothing, so it does pay for the lookup — and the
-    # 404 leaves the per-guild signals evaluated-and-false rather than None.
-    deleg = await NotabilityCache.get(guild_tag="DELEG")
-    assert deleg.is_notable is False
-    assert json.loads(deleg.signals_json)["war_count"] is False
 
 
 async def test_refresh_all_survives_untagged_season_entries(db, httpx_mock, monkeypatch):
@@ -326,36 +341,34 @@ async def test_refresh_all_survives_untagged_season_entries(db, httpx_mock, monk
     monkeypatch.setattr(
         "hall_monitor.external.wynncraft.settings.wynncraft_api_token", ""
     )
-    httpx_mock.add_response(
-        url="https://api.wynnpool.com/leaderboard/guild-average-online",
-        json={"1": {"name": "Returners", "prefix": "VETS", "averageOnline": 40}},
-    )
-    httpx_mock.add_response(
-        url="https://api.wynnpool.com/leaderboard/guildLevel", json={}
-    )
-    httpx_mock.add_response(
-        url="https://api.wynncraft.com/v3/guild/seasons",
-        json={"31": {"startDate": "2020-01-01T00:00:00Z", "endDate": "2020-02-01T00:00:00Z"}},
-    )
-    # Season boards: named, no prefix — exactly what Wynnpool returns.
-    httpx_mock.add_response(
-        url="https://api.wynnpool.com/leaderboard/season-rating/31",
-        json={
-            "season": 31,
-            "ranking": [
-                {"rank": 1, "guild_uuid": "x", "guild_name": "Returners", "rating": 999},
-                {"rank": 2, "guild_uuid": "y", "guild_name": "Sequoia", "rating": 500},
-            ],
+    _boards(
+        httpx_mock,
+        boards={
+            "guild-average-online": {
+                "1": {"name": "Returners", "prefix": "VETS", "averageOnline": 40}
+            }
+        },
+        seasons={
+            "31": {
+                "startDate": "2020-01-01T00:00:00Z",
+                "endDate": "2020-02-01T00:00:00Z",
+            }
+        },
+        season_boards={
+            31: {
+                "season": 31,
+                "ranking": [
+                    {"rank": 1, "guild_uuid": "x", "guild_name": "Returners", "rating": 999},
+                    {"rank": 2, "guild_uuid": "y", "guild_name": "Sequoia", "rating": 500},
+                ],
+            }
         },
     )
-    # No Wynncraft guild mock: VETS is settled by the leaderboards before
-    # the per-guild fetch would happen.
 
     await refresh_all()
 
     cached = {r.guild_tag for r in await NotabilityCache.all()}
     assert cached == {"VETS"}, "a None tag must not reach the candidate set"
-    # Rank 1 last season → signal 3, matched by name since the board has no tag.
     vets = await NotabilityCache.get(guild_tag="VETS")
     assert json.loads(vets.signals_json)["season_placement"] is True
 
@@ -365,18 +378,7 @@ async def test_is_notable_slow_path_populates_cache(db, httpx_mock, monkeypatch)
     monkeypatch.setattr(
         "hall_monitor.external.wynncraft.settings.wynncraft_api_token", ""
     )
-    httpx_mock.add_response(
-        url="https://api.wynnpool.com/leaderboard/guild-average-online", json=[]
-    )
-    httpx_mock.add_response(
-        url="https://api.wynnpool.com/leaderboard/guildLevel", json=[]
-    )
-    httpx_mock.add_response(
-        url="https://api.wynncraft.com/v3/guild/seasons", json={}
-    )
-    httpx_mock.add_response(
-        url="https://api.wynncraft.com/v3/guild/prefix/NEW", status_code=404
-    )
+    _boards(httpx_mock)
 
     assert await is_notable("NEW") is False
     assert await NotabilityCache.get_or_none(guild_tag="NEW") is not None
@@ -387,14 +389,38 @@ async def test_is_notable_slow_path_populates_cache(db, httpx_mock, monkeypatch)
 # --------------------------------------------------------------------------
 
 
+def _boards(httpx_mock, **overrides):
+    """Register every board `_load_context` fetches, empty unless overridden.
+
+    pytest-httpx fails on an unregistered request, so this doubles as the
+    assertion that the sweep asks for exactly these and nothing per-guild.
+    """
+    boards = {
+        "guild-average-online": {},
+        "guildLevel": {},
+        "guildWars": {},
+        "guildTerritories": {},
+        **{name: {} for name in notability._CANDIDATE_BOARDS},
+    }
+    boards.update(overrides.pop("boards", {}))
+    for name, payload in boards.items():
+        httpx_mock.add_response(
+            url=f"https://api.wynnpool.com/leaderboard/{name}", json=payload
+        )
+    httpx_mock.add_response(
+        url="https://api.wynncraft.com/v3/guild/seasons",
+        json=overrides.pop("seasons", {}),
+    )
+    for number, payload in (overrides.pop("season_boards", {}) or {}).items():
+        httpx_mock.add_response(
+            url=f"https://api.wynnpool.com/leaderboard/season-rating/{number}",
+            json=payload,
+        )
+    assert not overrides, f"unused: {sorted(overrides)}"
+
+
 def _empty_boards(httpx_mock):
-    httpx_mock.add_response(
-        url="https://api.wynnpool.com/leaderboard/guild-average-online", json={}
-    )
-    httpx_mock.add_response(
-        url="https://api.wynnpool.com/leaderboard/guildLevel", json={}
-    )
-    httpx_mock.add_response(url="https://api.wynncraft.com/v3/guild/seasons", json={})
+    _boards(httpx_mock)
 
 
 async def test_refresh_reports_progress_and_a_summary(db, httpx_mock, monkeypatch):
