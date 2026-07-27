@@ -19,63 +19,23 @@ warning.
 is solely responsible for.
 """
 
-import json
-
-from hall_monitor.db.models import NotabilityCache
-
-# Canonical order; any signal added later still shows up, appended.
-_KNOWN_SIGNALS = (
-    "top25_average_online",
-    "level_100_plus",
-    "season_placement",
-    "territory_ownership",
-    "war_count",
-    "force_override",
-)
+from . import _signal_rows
 
 _MAX_LISTED = 60
 
 
-def _signals(row) -> dict:
-    try:
-        signals = json.loads(row.signals_json)
-    except (TypeError, ValueError):
-        return {}
-    return signals if isinstance(signals, dict) else {}
-
-
-def _true_signals(row) -> set[str]:
-    """Signal names the row records as met. ``null`` means "not evaluated",
-    which is not the same as met."""
-    return {name for name, value in _signals(row).items() if value is True}
-
-
-def _skipped_signals(row) -> set[str]:
-    """Signals the sweep never got round to asking about."""
-    return {name for name, value in _signals(row).items() if value is None}
-
-
-def _ordered(names) -> list[str]:
-    extra = sorted(name for name in names if name not in _KNOWN_SIGNALS)
-    return [name for name in _KNOWN_SIGNALS if name in names] + extra
-
-
 async def main(ctx, *args: str) -> None:
-    rows = await NotabilityCache.all()
+    rows = await _signal_rows.load()
     if not rows:
         await ctx.reply(
             "no notability cache rows yet — run `~script refresh_notability` first."
         )
         return
 
-    notable = [(row.guild_tag, _true_signals(row)) for row in rows if row.is_notable]
-    skipped_by = [_skipped_signals(row) for row in rows if row.is_notable]
-    seen: set[str] = set()
-    for _tag, met in notable:
-        seen |= met
-    for unasked in skipped_by:
-        seen |= unasked
-    names = _ordered(seen | set(_KNOWN_SIGNALS))
+    qualified = [row for row in rows if row.notable]
+    notable = [(row.tag, row.met) for row in qualified]
+    skipped_by = [row.skipped for row in qualified]
+    names = _signal_rows.columns(qualified)
 
     if args:
         await _list_sole_cause(ctx, notable, names, args[0])

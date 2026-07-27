@@ -240,3 +240,118 @@ async def test_breakdown_says_so_when_the_cache_is_empty(db):
     ctx, _ = _fake_ctx()
     await notability_breakdown.main(ctx)
     assert "refresh_notability" in ctx.reply.await_args.args[0]
+
+
+# --------------------------------------------------------------------------
+# notability_table / notable_guilds
+# --------------------------------------------------------------------------
+
+
+async def test_table_and_notable_scripts_are_discoverable():
+    found = set(_loader.discover_scripts())
+    assert {"notability_table", "notable_guilds"} <= found
+    assert "_signal_rows" not in found, "helpers must not be callable as scripts"
+
+
+async def test_table_writes_a_csv_of_every_guild(db):
+    from hall_monitor.discord_bot.cogs.admin.scripts import notability_table
+
+    await _cache("WYNN", False)
+    await _cache("VETS", True, level_100_plus=True)
+
+    ctx, _ = _fake_ctx()
+    await notability_table.main(ctx)
+
+    body = ctx.reply.await_args.args[0]
+    assert "2 guilds, 1 notable" in body
+
+    attachment = ctx.reply.await_args.kwargs["file"]
+    text = attachment.fp.getvalue().decode()
+    header, *rows = text.strip().splitlines()
+    assert header.startswith("tag,notable,top25_average_online,level_100_plus")
+    assert rows[0].startswith("VETS,true")   # ordered by tag
+    assert rows[1].startswith("WYNN,false")
+    assert "level_100_plus" in header
+
+
+async def test_table_can_restrict_to_notable(db):
+    from hall_monitor.discord_bot.cogs.admin.scripts import notability_table
+
+    await _cache("WYNN", False)
+    await _cache("VETS", True, war_count=True)
+
+    ctx, _ = _fake_ctx()
+    await notability_table.main(ctx, "notable")
+
+    text = ctx.reply.await_args.kwargs["file"].fp.getvalue().decode()
+    assert "VETS" in text and "WYNN" not in text
+    assert ctx.reply.await_args.kwargs["file"].filename == "notable-guilds.csv"
+
+
+async def test_table_leaves_an_unevaluated_signal_blank(db):
+    """Blank must not read as false — it means nothing asked."""
+    from hall_monitor.db.models import NotabilityCache
+    from hall_monitor.discord_bot.cogs.admin.scripts import notability_table
+
+    await NotabilityCache.create(
+        guild_tag="VETS",
+        is_notable=True,
+        signals_json='{"level_100_plus": true, "war_count": null}',
+    )
+    ctx, _ = _fake_ctx()
+    await notability_table.main(ctx)
+
+    text = ctx.reply.await_args.kwargs["file"].fp.getvalue().decode()
+    row = [l for l in text.splitlines() if l.startswith("VETS")][0]
+    columns = text.splitlines()[0].split(",")
+    cells = row.split(",")
+    assert cells[columns.index("war_count")] == ""
+    assert cells[columns.index("level_100_plus")] == "true"
+    assert "unevaluated" in ctx.reply.await_args.args[0]
+
+
+async def test_notable_guilds_lists_only_the_notable(db):
+    from hall_monitor.discord_bot.cogs.admin.scripts import notable_guilds
+
+    await _cache("WYNN", False)
+    await _cache("VETS", True, level_100_plus=True)
+    await _cache("AVO", True, war_count=True, level_100_plus=True)
+
+    ctx, _ = _fake_ctx()
+    await notable_guilds.main(ctx)
+    body = ctx.reply.await_args.args[0]
+
+    assert "**2 notable guilds**" in body
+    assert "1 qualify on a single signal" in body
+    assert "VETS" in body and "AVO" in body
+    assert "WYNN" not in body
+    # Sole-cause first, so a threshold change's blast radius reads top-down.
+    assert body.index("VETS") < body.index("AVO")
+
+
+async def test_notable_guilds_splits_across_messages(db):
+    """A hundred-odd guilds is past Discord's 2000-char limit."""
+    from hall_monitor.discord_bot.cogs.admin.scripts import notable_guilds
+
+    for i in range(120):
+        await _cache(f"G{i:03d}", True, level_100_plus=True)
+
+    ctx, _ = _fake_ctx()
+    ctx.send = AsyncMock()
+    await notable_guilds.main(ctx)
+
+    sent = [ctx.reply.await_args.args[0]] + [
+        call.args[0] for call in ctx.send.await_args_list
+    ]
+    assert len(sent) > 1, "should have split"
+    assert all(len(message) <= 2000 for message in sent)
+    assert "G119" in "".join(sent)
+
+
+async def test_notable_guilds_says_so_when_empty(db):
+    from hall_monitor.discord_bot.cogs.admin.scripts import notable_guilds
+
+    await _cache("WYNN", False)
+    ctx, _ = _fake_ctx()
+    await notable_guilds.main(ctx)
+    assert "no notable guilds" in ctx.reply.await_args.args[0]
