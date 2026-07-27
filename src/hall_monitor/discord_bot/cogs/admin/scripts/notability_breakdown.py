@@ -9,6 +9,12 @@ notable. A signal with a high *any* but a low *only* is corroborating
 other signals; a signal with a high *only* is the one setting the bar,
 and the one to tighten.
 
+**skipped** is the catch: the normal sweep stops evaluating once a signal
+answers, so the two per-guild signals (territory ownership, war count)
+are usually never asked and show `0 any` — which means "not checked", not
+"nobody qualifies". Run `~script refresh_notability full` for numbers you
+can tune thresholds against.
+
 ``~script notability_breakdown <signal>`` lists the guilds a given signal
 is solely responsible for.
 """
@@ -30,16 +36,23 @@ _KNOWN_SIGNALS = (
 _MAX_LISTED = 60
 
 
-def _true_signals(row) -> set[str]:
-    """Signal names the row records as met. ``null`` means "not evaluated",
-    which is not the same as met."""
+def _signals(row) -> dict:
     try:
         signals = json.loads(row.signals_json)
     except (TypeError, ValueError):
-        return set()
-    if not isinstance(signals, dict):
-        return set()
-    return {name for name, value in signals.items() if value is True}
+        return {}
+    return signals if isinstance(signals, dict) else {}
+
+
+def _true_signals(row) -> set[str]:
+    """Signal names the row records as met. ``null`` means "not evaluated",
+    which is not the same as met."""
+    return {name for name, value in _signals(row).items() if value is True}
+
+
+def _skipped_signals(row) -> set[str]:
+    """Signals the sweep never got round to asking about."""
+    return {name for name, value in _signals(row).items() if value is None}
 
 
 def _ordered(names) -> list[str]:
@@ -56,9 +69,12 @@ async def main(ctx, *args: str) -> None:
         return
 
     notable = [(row.guild_tag, _true_signals(row)) for row in rows if row.is_notable]
+    skipped_by = [_skipped_signals(row) for row in rows if row.is_notable]
     seen: set[str] = set()
     for _tag, met in notable:
         seen |= met
+    for unasked in skipped_by:
+        seen |= unasked
     names = _ordered(seen | set(_KNOWN_SIGNALS))
 
     if args:
@@ -69,15 +85,16 @@ async def main(ctx, *args: str) -> None:
     for name in names:
         any_count = sum(1 for _tag, met in notable if name in met)
         only_count = sum(1 for _tag, met in notable if met == {name})
-        counts.append((name, any_count, only_count))
+        skipped = sum(1 for unasked in skipped_by if name in unasked)
+        counts.append((name, any_count, only_count, skipped))
     # Most-responsible first: that's the criterion to tighten.
     counts.sort(key=lambda row: (-row[2], -row[1], row[0]))
 
-    width = max(len(name) for name, _a, _o in counts)
-    lines = [f"{'signal'.ljust(width)}   any   only"]
+    width = max(len(name) for name, *_rest in counts)
+    lines = [f"{'signal'.ljust(width)}   any   only  skipped"]
     lines += [
-        f"{name.ljust(width)} {any_count:>5} {only_count:>6}"
-        for name, any_count, only_count in counts
+        f"{name.ljust(width)} {any_count:>5} {only_count:>6} {skipped:>8}"
+        for name, any_count, only_count, skipped in counts
     ]
 
     sole = sum(1 for _tag, met in notable if len(met) == 1)

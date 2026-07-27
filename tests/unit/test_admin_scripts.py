@@ -43,7 +43,7 @@ async def test_unknown_script_name_is_reported():
 
 
 async def test_refresh_script_reports_the_summary(monkeypatch):
-    async def fake_refresh(*, on_progress=None):
+    async def fake_refresh(*, on_progress=None, exhaustive=False):
         await on_progress(1, 2)
         await on_progress(2, 2)
         return RefreshSummary(evaluated=2, failed=0, notable=1, seconds=12.3)
@@ -62,7 +62,7 @@ async def test_refresh_script_reports_the_summary(monkeypatch):
 
 
 async def test_refresh_script_surfaces_failures(monkeypatch):
-    async def fake_refresh(*, on_progress=None):
+    async def fake_refresh(*, on_progress=None, exhaustive=False):
         return RefreshSummary(evaluated=8, failed=2, notable=3, seconds=5.0)
 
     monkeypatch.setattr(notability, "refresh_all", fake_refresh)
@@ -76,7 +76,7 @@ async def test_refresh_script_surfaces_failures(monkeypatch):
 async def test_refresh_script_throttles_its_edits(monkeypatch):
     """One edit per guild would blow through Discord's edit rate limit, so
     only the final tick is guaranteed to land."""
-    async def fake_refresh(*, on_progress=None):
+    async def fake_refresh(*, on_progress=None, exhaustive=False):
         for done in range(1, 51):
             await on_progress(done, 50)
         return RefreshSummary(evaluated=50, failed=0, notable=5, seconds=1.0)
@@ -97,7 +97,7 @@ async def test_refresh_script_declines_when_one_is_running(monkeypatch):
     monkeypatch.setattr(notability, "is_refreshing", lambda: True)
     called = False
 
-    async def fake_refresh(*, on_progress=None):
+    async def fake_refresh(*, on_progress=None, exhaustive=False):
         nonlocal called
         called = True
 
@@ -115,7 +115,7 @@ async def test_refresh_script_handles_losing_the_race(monkeypatch):
     """is_refreshing was False at the check but the scheduler got in first."""
     monkeypatch.setattr(notability, "is_refreshing", lambda: False)
 
-    async def fake_refresh(*, on_progress=None):
+    async def fake_refresh(*, on_progress=None, exhaustive=False):
         return None
 
     monkeypatch.setattr(notability, "refresh_all", fake_refresh)
@@ -153,8 +153,8 @@ def _table(body: str) -> dict[str, tuple[int, int]]:
     block = body.split("```")[1]
     parsed = {}
     for line in block.strip().splitlines()[1:]:  # skip header
-        name, any_count, only_count = line.split()
-        parsed[name] = (int(any_count), int(only_count))
+        name, any_count, only_count, skipped = line.split()
+        parsed[name] = (int(any_count), int(only_count), int(skipped))
     return parsed
 
 
@@ -172,9 +172,9 @@ async def test_breakdown_counts_any_versus_sole_cause(db):
 
     assert "4 cached, 3 notable" in body
     table = _table(body)
-    assert table["level_100_plus"] == (3, 2)
+    assert table["level_100_plus"] == (3, 2, 0)
     # top25 corroborates VETS but is never the sole reason for anything.
-    assert table["top25_average_online"] == (1, 0)
+    assert table["top25_average_online"] == (1, 0, 0)
     assert "sole cause: 2 · multiple: 1 · unexplained: 0" in body
 
 
@@ -206,8 +206,9 @@ async def test_breakdown_treats_null_as_not_met(db):
     ctx, _ = _fake_ctx()
     await notability_breakdown.main(ctx)
     body = ctx.reply.await_args.args[0]
-    assert _table(body)["war_count"] == (0, 0)
-    assert _table(body)["top25_average_online"] == (1, 1)
+    # null == not evaluated: it counts as skipped, never as met.
+    assert _table(body)["war_count"] == (0, 0, 1)
+    assert _table(body)["top25_average_online"] == (1, 1, 0)
     assert "sole cause: 1" in body
 
 

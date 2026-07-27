@@ -463,7 +463,7 @@ async def test_refresh_counts_a_failure_without_aborting(db, httpx_mock, monkeyp
     calls: list[str] = []
     real = notability._evaluate_and_cache
 
-    async def flaky(tag, context):
+    async def flaky(tag, context, *, exhaustive=False):
         calls.append(tag)
         if tag == "VETS":
             raise RuntimeError("boom")

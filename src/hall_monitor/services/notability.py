@@ -94,7 +94,7 @@ ProgressCallback = Callable[[int, int], Awaitable[None]]
 
 
 async def refresh_all(
-    *, on_progress: ProgressCallback | None = None
+    *, on_progress: ProgressCallback | None = None, exhaustive: bool = False
 ) -> RefreshSummary | None:
     """Recompute notability for every candidate guild and update the cache.
 
@@ -113,15 +113,23 @@ async def refresh_all(
     guild rather than on a timer so the caller can decide its own cadence;
     a Discord message edit, for instance, has to be throttled well below
     one-per-guild.
+
+    ``exhaustive`` evaluates every signal even once one has answered,
+    costing a per-guild request for every candidate. Pointless for
+    deciding notability, necessary for deciding *thresholds*: the normal
+    sweep can't tell you how many guilds clear 50 000 wars, because it
+    stops asking as soon as something cheaper says yes.
     """
     if _refresh_lock.locked():
         logger.info("notability refresh already running; skipping this trigger")
         return None
     async with _refresh_lock:
-        return await _refresh_all(on_progress)
+        return await _refresh_all(on_progress, exhaustive)
 
 
-async def _refresh_all(on_progress: "ProgressCallback | None" = None) -> RefreshSummary:
+async def _refresh_all(
+    on_progress: "ProgressCallback | None" = None, exhaustive: bool = False
+) -> RefreshSummary:
     started = time.monotonic()
     context = await _load_context()
 
@@ -140,7 +148,7 @@ async def _refresh_all(on_progress: "ProgressCallback | None" = None) -> Refresh
     failed = 0
     for index, tag in enumerate(ordered, start=1):
         try:
-            if await _evaluate_and_cache(tag, context):
+            if await _evaluate_and_cache(tag, context, exhaustive=exhaustive):
                 notable += 1
         except Exception:
             # One guild's API hiccup or write contention shouldn't cost us
@@ -210,8 +218,10 @@ def _any_active(seasons: tuple[wynncraft.Season, ...]) -> bool:
     return any(s.start <= now <= s.end for s in seasons)
 
 
-async def _evaluate_and_cache(tag: str, context: _BulkContext) -> bool:
-    signals = await _evaluate(tag, context)
+async def _evaluate_and_cache(
+    tag: str, context: _BulkContext, *, exhaustive: bool = False
+) -> bool:
+    signals = await _evaluate(tag, context, exhaustive=exhaustive)
     result = any(signals.values())
     await NotabilityCache.update_or_create(
         guild_tag=tag,
@@ -224,7 +234,9 @@ async def _evaluate_and_cache_single(tag: str) -> bool:
     return await _evaluate_and_cache(tag, await _load_context())
 
 
-async def _evaluate(tag: str, context: _BulkContext) -> dict[str, bool | None]:
+async def _evaluate(
+    tag: str, context: _BulkContext, *, exhaustive: bool = False
+) -> dict[str, bool | None]:
     """Compute each signal for ``tag`` and return a labelled dict.
 
     The dict is persisted verbatim to ``NotabilityCache.signals_json`` so a
@@ -253,7 +265,7 @@ async def _evaluate(tag: str, context: _BulkContext) -> dict[str, bool | None]:
         "war_count": None,
         "force_override": await _has_active_notable_override(tag),
     }
-    if any(signals.values()):
+    if any(signals.values()) and not exhaustive:
         return signals
 
     guild = await _fetch_stats(tag, context)
