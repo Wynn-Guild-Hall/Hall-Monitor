@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 import discord
 
 from hall_monitor.db.models import Delegate
+from hall_monitor.external import wynncraft
 
 
 async def get_by_mc_uuid(mc_uuid: str) -> Delegate | None:
@@ -25,21 +26,44 @@ async def get_by_discord_user_id(discord_user_id: int) -> Delegate | None:
     return await Delegate.get_or_none(discord_user_id=discord_user_id)
 
 
-async def register(mc_uuid: str, discord_user_id: int, guild_tag: str) -> Delegate:
+async def register(
+    mc_uuid: str,
+    discord_user_id: int,
+    guild_tag: str,
+    mc_username: str | None = None,
+) -> Delegate:
     """Create or reactivate a Delegate row for this MC UUID.
 
     Reactivation clears ``left_at`` so a returning delegate isn't confused
-    with a stale one.
+    with a stale one. A ``None`` username leaves any stored one alone —
+    forgetting a name we already had would be a downgrade.
     """
-    delegate, _ = await Delegate.update_or_create(
-        mc_uuid=mc_uuid,
-        defaults={
-            "discord_user_id": discord_user_id,
-            "guild_tag": guild_tag,
-            "left_at": None,
-        },
-    )
+    defaults = {
+        "discord_user_id": discord_user_id,
+        "guild_tag": guild_tag,
+        "left_at": None,
+    }
+    if mc_username:
+        defaults["mc_username"] = mc_username
+    delegate, _ = await Delegate.update_or_create(mc_uuid=mc_uuid, defaults=defaults)
     return delegate
+
+
+async def display_name(delegate: Delegate) -> str:
+    """A human-readable handle for a delegate, resolved once and kept.
+
+    Rows written before the username was stored resolve on first use and
+    save the answer, so the cost is one lookup per delegate ever rather
+    than one per page view. A UUID is the last resort, not the default.
+    """
+    if delegate.mc_username:
+        return delegate.mc_username
+    player = await wynncraft.get_player(delegate.mc_uuid, urgent=True)
+    if player is None or not player.username:
+        return delegate.mc_uuid
+    delegate.mc_username = player.username
+    await delegate.save(update_fields=["mc_username"])
+    return player.username
 
 
 async def mark_left(discord_user_id: int) -> None:

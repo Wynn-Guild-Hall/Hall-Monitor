@@ -9,6 +9,9 @@ class PendingInvite(Model):
 
     id = fields.IntField(pk=True)
     mc_uuid = fields.CharField(max_length=36, unique=True)
+    # Captured at mint time from the eligibility check, which already
+    # fetches it — a UUID is not something to show a human.
+    mc_username = fields.CharField(max_length=16, null=True)
     guild_tag = fields.CharField(max_length=8)
     roles_bits = fields.IntField()
     discord_invite_code = fields.CharField(max_length=32, unique=True)
@@ -23,6 +26,7 @@ class Delegate(Model):
 
     id = fields.IntField(pk=True)
     mc_uuid = fields.CharField(max_length=36, unique=True)
+    mc_username = fields.CharField(max_length=16, null=True)
     discord_user_id = fields.BigIntField(unique=True)
     guild_tag = fields.CharField(max_length=8)
     joined_at = fields.DatetimeField(auto_now_add=True)

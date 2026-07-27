@@ -13,7 +13,7 @@ Eligible::
       "guild_tag": "VETS",
       "current_contacts_per_role": {
         "events": null,
-        "housing": "<mc-uuid or username>",
+        "housing": "Notch",
         "warring": null,
         "ownership": null
       }
@@ -35,7 +35,7 @@ from fastapi import APIRouter, HTTPException, Request
 
 from hall_monitor.config import settings
 from hall_monitor.external import resolve_profile, wynncraft
-from hall_monitor.services import contacts, notability
+from hall_monitor.services import contacts, delegate_registry, notability
 
 router = APIRouter()
 
@@ -72,12 +72,14 @@ async def lookup(request: Request, username: str) -> dict:
     holders = await contacts.current_contacts_for_guild(
         player_guild.prefix, discord_guild=discord_guild
     )
+    # Names, not UUIDs — this feeds a sentence a human reads before
+    # deciding to take someone's role off them.
     return {
         "eligible": True,
         "mc_username": profile.username,
         "guild_tag": player_guild.prefix,
         "current_contacts_per_role": {
-            role: (delegate.mc_uuid if delegate else None)
+            role: (await delegate_registry.display_name(delegate) if delegate else None)
             for role, delegate in holders.items()
         },
     }

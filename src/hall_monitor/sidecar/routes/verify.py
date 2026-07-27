@@ -19,6 +19,7 @@ authoritative.
 """
 
 import logging
+import time
 
 from fastapi import APIRouter, Request
 
@@ -75,31 +76,68 @@ def _welcome(guild_tag: str, invite_code: str) -> str:
 
 @router.get("/api/verify/{uuid}/{msg:path}")
 async def verify(request: Request, uuid: str, msg: str) -> dict:
+    """Log one line per request, whatever the outcome.
+
+    A success used to log nothing at all, which made "it disconnected me
+    without the invite" unanswerable after the fact: nothing on our side
+    recorded whether we'd sent a kick, a chat line, or neither. The
+    elapsed time is here for the same reason — the forward runs inside
+    picolimbo's packet handler, so how long we take is the player's
+    connection not being serviced.
+    """
+    started = time.perf_counter()
+    outcome, why = await _decide(request, uuid, msg)
+    logger.log(
+        logging.DEBUG if why == "ignored" else logging.INFO,
+        "verify: %s %r -> %s in %.0fms",
+        uuid,
+        msg,
+        why,
+        (time.perf_counter() - started) * 1000,
+    )
+    return outcome
+
+
+async def _decide(request: Request, uuid: str, msg: str) -> tuple[dict, str]:
+    """The response, plus a short label for the log line."""
     try:
         command = mc_command.parse(msg)
     except mc_command.InvalidCode:
         if not mc_command.looks_like_attempt(msg):
             # Ordinary chat that happens to start with "hall" — the route
             # prefix is that broad. Say nothing at all.
-            return _ignore()
-        return _chat(
-            "That isn't a Guild Hall code. Get yours at hall.wynnvets.org/join"
+            return _ignore(), "ignored"
+        return (
+            _chat(
+                "That isn't a Guild Hall code. Get yours at hall.wynnvets.org/join"
+            ),
+            "chat: unparseable code",
         )
 
     try:
         role_bits.decode(command.bits)  # validates; we forward the raw bits to mint
     except role_bits.UnknownRoleBit:
-        return _chat(
-            "That code asks for a role we don't recognise. "
-            "Get a fresh one at hall.wynnvets.org/join"
+        return (
+            _chat(
+                "That code asks for a role we don't recognise. "
+                "Get a fresh one at hall.wynnvets.org/join"
+            ),
+            "chat: unknown role bit",
         )
 
-    player_guild = await wynncraft.get_player_guild(uuid, urgent=True)
+    player = await wynncraft.get_player(uuid, urgent=True)
+    player_guild = player.guild if player else None
     if player_guild is None or player_guild.rank not in _ELIGIBLE_RANKS:
-        return _chat("You aren't chief or owner of a notable guild.")
+        return (
+            _chat("You aren't chief or owner of a notable guild."),
+            f"chat: not eligible (rank={player_guild.rank if player_guild else None})",
+        )
 
     if not await notability.is_notable(player_guild.prefix):
-        return _chat(f"{player_guild.prefix} isn't a notable guild.")
+        return (
+            _chat(f"{player_guild.prefix} isn't a notable guild."),
+            f"chat: {player_guild.prefix} not notable",
+        )
 
     bot = getattr(request.app.state, "bot", None)
     discord_guild = None
@@ -111,7 +149,10 @@ async def verify(request: Request, uuid: str, msg: str) -> dict:
 
     if welcome_channel is None:
         logger.error("verify: welcome channel unavailable; can't mint invite")
-        return _chat("Verification is temporarily unavailable. Try again in a minute.")
+        return (
+            _chat("Verification is temporarily unavailable. Try again in a minute."),
+            "chat: no welcome channel",
+        )
 
     try:
         pending = await discord_invites.mint_invite(
@@ -121,11 +162,24 @@ async def verify(request: Request, uuid: str, msg: str) -> dict:
             channel=welcome_channel,
             bot=bot,
             discord_guild=discord_guild,
+            mc_username=player.username if player else None,
         )
     except discord_invites.AlreadyLiveDelegate:
-        return _chat("You're already verified in the Guild Hall.")
+        return (
+            _chat(
+                "You're already verified in the Guild Hall. Ask a janitor if "
+                "you've lost your roles."
+            ),
+            "chat: already a live delegate",
+        )
     except Exception:
         logger.exception("verify: mint_invite failed for %s", uuid)
-        return _chat("Verification is temporarily unavailable. Try again in a minute.")
+        return (
+            _chat("Verification is temporarily unavailable. Try again in a minute."),
+            "chat: mint failed",
+        )
 
-    return _kick(_welcome(player_guild.prefix, pending.discord_invite_code))
+    return (
+        _kick(_welcome(player_guild.prefix, pending.discord_invite_code)),
+        f"kick: invite {pending.discord_invite_code} for {player_guild.prefix}",
+    )

@@ -41,6 +41,20 @@ class PlayerGuild:
 
 
 @dataclass(frozen=True)
+class Player:
+    """A Wynncraft player — the canonical username plus their guild.
+
+    The username comes free with the eligibility check we already make,
+    and it's the only human-readable handle we have for a UUID. Storing
+    it is what keeps a raw UUID off the `/join` page's conflict warning.
+    """
+
+    uuid: str
+    username: str
+    guild: "PlayerGuild | None"
+
+
+@dataclass(frozen=True)
 class GuildMember:
     """One row from the guild's members table."""
 
@@ -121,9 +135,8 @@ def _parse_members(raw: dict) -> tuple[GuildMember, ...]:
     return tuple(members)
 
 
-async def get_player_guild(uuid: str, *, urgent: bool = False) -> PlayerGuild | None:
-    """The player's current guild, or ``None`` if they have none / the
-    player is unknown.
+async def get_player(uuid: str, *, urgent: bool = False) -> Player | None:
+    """Username and current guild for a UUID, or ``None`` if unknown.
 
     The UUID is dashed on the way out: this route 404s on the bare
     32-character form, which reads back as "no guild" and quietly demotes
@@ -140,10 +153,24 @@ async def get_player_guild(uuid: str, *, urgent: bool = False) -> PlayerGuild | 
         if e.response.status_code == 404:
             return None
         raise
-    guild = response.json().get("guild")
-    if not guild:
-        return None
-    return PlayerGuild(name=guild["name"], prefix=guild["prefix"], rank=guild["rank"])
+    payload = response.json()
+    guild = payload.get("guild")
+    return Player(
+        uuid=dashed(uuid),
+        username=payload.get("username") or "",
+        guild=(
+            PlayerGuild(name=guild["name"], prefix=guild["prefix"], rank=guild["rank"])
+            if guild
+            else None
+        ),
+    )
+
+
+async def get_player_guild(uuid: str, *, urgent: bool = False) -> PlayerGuild | None:
+    """The player's current guild, or ``None`` if they have none / the
+    player is unknown."""
+    player = await get_player(uuid, urgent=urgent)
+    return player.guild if player else None
 
 
 def _guild_from_payload(payload: dict) -> Guild:

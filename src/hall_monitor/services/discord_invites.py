@@ -115,6 +115,7 @@ async def mint_invite(
     channel: discord.abc.GuildChannel,
     bot: discord.Client | None = None,
     discord_guild: discord.Guild | None = None,
+    mc_username: str | None = None,
 ) -> PendingInvite:
     """Mint a single-use Discord invite bound to a UUID and return the row.
 
@@ -139,6 +140,7 @@ async def mint_invite(
     note_minted(invite.code)
     return await PendingInvite.create(
         mc_uuid=mc_uuid,
+        mc_username=mc_username,
         guild_tag=guild_tag,
         roles_bits=roles_bits,
         discord_invite_code=invite.code,

@@ -131,7 +131,7 @@ class OnJoin(commands.Cog):
             return
 
         delegate = await delegate_registry.register(
-            pending.mc_uuid, member.id, pending.guild_tag
+            pending.mc_uuid, member.id, pending.guild_tag, pending.mc_username
         )
         guild_tag, roles_bits = pending.guild_tag, pending.roles_bits
         await pending.delete()

@@ -10,6 +10,7 @@ The sidecar factory needs a ``bot`` object but only reads
 method suffices — we don't spin up a real discord.py Client.
 """
 
+import logging
 import re
 from unittest.mock import AsyncMock, MagicMock
 
@@ -126,7 +127,14 @@ async def test_verify_happy_path_mints_invite(db, app, httpx_mock, monkeypatch):
     ) as c:
         httpx_mock.add_response(
             url="https://api.wynncraft.com/v3/player/uuid-chief",
-            json={"guild": {"name": "Wynncraft Veterans", "prefix": "VETS", "rank": "CHIEF"}},
+            json={
+                "username": "Wenweia",
+                "guild": {
+                    "name": "Wynncraft Veterans",
+                    "prefix": "VETS",
+                    "rank": "CHIEF",
+                },
+            },
         )
         await NotabilityCache.create(guild_tag="VETS", is_notable=True, signals_json="{}")
 
@@ -149,7 +157,56 @@ async def test_verify_happy_path_mints_invite(db, app, httpx_mock, monkeypatch):
     row = await PendingInvite.get(mc_uuid="uuid-chief")
     assert row.roles_bits == 5
     assert row.discord_invite_code == "abc123"
+    # The username rides along from the eligibility check we already made,
+    # so the join listener can store it without a second lookup.
+    assert row.mc_username == "Wenweia"
     channel.create_invite.assert_awaited_once()
+
+
+async def test_verify_logs_every_outcome(db, app, httpx_mock, monkeypatch, caplog):
+    """A silent success is what made "it disconnected me without an invite"
+    unanswerable after the fact — nothing recorded what we sent."""
+    monkeypatch.setattr(
+        "hall_monitor.sidecar.routes.verify.settings.discord_guild_id", 1
+    )
+    monkeypatch.setattr(
+        "hall_monitor.sidecar.routes.verify.settings.welcome_channel_id", 2
+    )
+    app.state.bot, _ = _bot_with_welcome_channel("zz9")
+    httpx_mock.add_response(
+        url="https://api.wynncraft.com/v3/player/uuid-chief",
+        json={
+            "username": "Wenweia",
+            "guild": {"name": "Wynncraft Veterans", "prefix": "VETS", "rank": "CHIEF"},
+        },
+    )
+    await NotabilityCache.create(guild_tag="VETS", is_notable=True, signals_json="{}")
+
+    transport = httpx.ASGITransport(app=app)
+    with caplog.at_level(logging.INFO):
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://testserver"
+        ) as c:
+            await c.get("/api/verify/uuid-chief/HALL05")
+
+    line = next(r for r in caplog.records if r.message.startswith("verify:"))
+    assert "uuid-chief" in line.message
+    assert "kick: invite zz9" in line.message
+    assert "ms" in line.message, "how long we took is the player's connection stalling"
+
+
+async def test_verify_doesnt_log_ordinary_chat_at_info(db, app, caplog):
+    """The route prefix catches any line starting `hall`; logging every one
+    would bury the verifications in chatter."""
+    transport = httpx.ASGITransport(app=app)
+    with caplog.at_level(logging.INFO):
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://testserver"
+        ) as c:
+            r = await c.get("/api/verify/some-uuid/o%20everyone")
+
+    assert r.json() == {"kick_message": None, "chat_message": None}
+    assert not [rec for rec in caplog.records if rec.message.startswith("verify:")]
 
 
 async def test_verify_not_chief_or_owner_kick_message(db, app, httpx_mock, monkeypatch):
@@ -367,7 +424,11 @@ async def test_join_lookup_happy_path(db, client, httpx_mock):
 
 
 async def test_join_lookup_populates_contacts_when_assigned(db, client, httpx_mock):
-    """Once a Delegate + GuildContact row exists, the API surfaces the holder."""
+    """Once a Delegate + GuildContact row exists, the API names the holder.
+
+    A *name*, not a UUID — this feeds the sentence someone reads before
+    deciding to take a role off another person.
+    """
     httpx_mock.add_response(
         url="https://api.mojang.com/users/profiles/minecraft/wenweia",
         json={"id": "chief-uuid", "name": "wenweia"},
@@ -378,14 +439,49 @@ async def test_join_lookup_populates_contacts_when_assigned(db, client, httpx_mo
     )
     await NotabilityCache.create(guild_tag="VETS", is_notable=True, signals_json="{}")
     holder = await Delegate.create(
-        mc_uuid="holder-uuid", discord_user_id=42, guild_tag="VETS"
+        mc_uuid="holder-uuid",
+        mc_username="Holidaze",
+        discord_user_id=42,
+        guild_tag="VETS",
     )
     await GuildContact.create(guild_tag="VETS", role="warring", delegate=holder)
 
     r = await client.get("/api/join/lookup?username=wenweia")
     body = r.json()
-    assert body["current_contacts_per_role"]["warring"] == "holder-uuid"
+    assert body["current_contacts_per_role"]["warring"] == "Holidaze"
     assert body["current_contacts_per_role"]["housing"] is None
+
+
+async def test_join_lookup_resolves_a_holder_stored_before_usernames(
+    db, client, httpx_mock
+):
+    """Rows written before the username was persisted resolve on first use
+    and keep the answer, rather than showing a UUID forever."""
+    httpx_mock.add_response(
+        url="https://api.mojang.com/users/profiles/minecraft/wenweia",
+        json={"id": "chief-uuid", "name": "wenweia"},
+    )
+    httpx_mock.add_response(
+        url="https://api.wynncraft.com/v3/player/chief-uuid",
+        json={"guild": {"name": "Wynncraft Veterans", "prefix": "VETS", "rank": "OWNER"}},
+    )
+    httpx_mock.add_response(
+        url="https://api.wynncraft.com/v3/player/fa8aa700-4538-485f-bf91-325263606995",
+        json={"username": "Holidaze", "guild": None},
+    )
+    await NotabilityCache.create(guild_tag="VETS", is_notable=True, signals_json="{}")
+    holder = await Delegate.create(
+        mc_uuid="fa8aa700-4538-485f-bf91-325263606995",
+        discord_user_id=42,
+        guild_tag="VETS",
+    )
+    await GuildContact.create(guild_tag="VETS", role="ownership", delegate=holder)
+
+    r = await client.get("/api/join/lookup?username=wenweia")
+
+    assert r.json()["current_contacts_per_role"]["ownership"] == "Holidaze"
+    # Persisted, so the next page view costs nothing.
+    assert (await Delegate.get(id=holder.id)).mc_username == "Holidaze"
 
 
 async def test_join_lookup_force_override_makes_notable(db, client, httpx_mock):
