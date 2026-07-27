@@ -15,12 +15,22 @@ CONTACT_ROLE_IDS = (
 )
 
 
+def has_any_role(ctx: commands.Context, *role_ids: int) -> bool:
+    """Plain-boolean form of the gates below.
+
+    A command whose *behaviour* differs by tier — not just its
+    availability — has to branch inside the handler, where a check
+    decorator can't help. Unset IDs (``0``) never match.
+    """
+    if ctx.guild is None or not hasattr(ctx.author, "roles"):
+        return False
+    author_roles = {r.id for r in ctx.author.roles}
+    return any(rid in author_roles for rid in role_ids if rid)
+
+
 def _has_any_role(*role_ids: int):
     async def predicate(ctx: commands.Context) -> bool:
-        if ctx.guild is None or not hasattr(ctx.author, "roles"):
-            return False
-        author_roles = {r.id for r in ctx.author.roles}
-        return any(rid in author_roles for rid in role_ids if rid)
+        return has_any_role(ctx, *role_ids)
 
     return commands.check(predicate)
 
