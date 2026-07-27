@@ -364,3 +364,44 @@ async def test_guild_stats_none_when_neither_knows_the_guild(httpx_mock):
     httpx_mock.add_response(url=WYNNCRAFT_GUILD, status_code=404)
     httpx_mock.add_response(url=WYNNCRAFT_PREFIX, status_code=404)
     assert await guild_stats("Returners", "VETS") is None
+
+
+# --------------------------------------------------------------------------
+# Outbound identification
+# --------------------------------------------------------------------------
+
+
+async def test_every_client_identifies_itself(httpx_mock):
+    """Naming ourselves is the custom on the community APIs, and it's what
+    lets their operators tell our traffic from an anonymous script's."""
+    httpx_mock.add_response(url=MOJANG_URL, json={"id": "u", "name": "Notch"})
+    await mojang.username_to_uuid("Notch")
+
+    sent = httpx_mock.get_requests()[-1].headers["user-agent"]
+    assert sent.startswith("hall-monitor/")
+    assert "github.com/Wynn-Guild-Hall/Hall-Monitor" in sent
+    assert "python-httpx" not in sent
+
+
+async def test_wynnpool_sends_the_user_agent(httpx_mock):
+    httpx_mock.add_response(
+        url="https://api.wynnpool.com/leaderboard/guildLevel", json={}
+    )
+    await wynnpool.guild_level_leaderboard()
+    assert httpx_mock.get_requests()[-1].headers["user-agent"].startswith("hall-monitor/")
+
+
+async def test_a_caller_header_still_wins(httpx_mock, monkeypatch):
+    """Wynncraft's bearer token is passed per request; the default headers
+    must not get in the way of a caller setting its own."""
+    monkeypatch.setattr(
+        "hall_monitor.external.wynncraft.settings.wynncraft_api_token", "tok"
+    )
+    httpx_mock.add_response(
+        url="https://api.wynncraft.com/v3/guild/prefix/VETS", status_code=404
+    )
+    await wynncraft.get_guild_by_prefix("VETS")
+
+    headers = httpx_mock.get_requests()[-1].headers
+    assert headers["authorization"] == "Bearer tok"
+    assert headers["user-agent"].startswith("hall-monitor/")

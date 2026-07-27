@@ -16,6 +16,11 @@ Set ``urgent=True`` to jump the bucket queue. User-facing lookups
 (``/api/join/lookup``, ``/api/verify``) use this so they aren't stuck
 behind a bulk background refresh.
 
+Every request carries a ``User-Agent`` naming the bot and linking the
+repo. None of these APIs demand it, but identifying yourself is the
+custom on the community ones, and it means an operator seeing odd traffic
+can tell it's us rather than an anonymous script.
+
 Retry and timeout policy
 ------------------------
 - Timeout: 10s per attempt.
@@ -31,12 +36,23 @@ Retry and timeout policy
 import asyncio
 import itertools
 from dataclasses import dataclass, field
+from importlib.metadata import PackageNotFoundError, version
 
 import httpx
 
 _TIMEOUT_S = 10.0
 _RETRY_5XX_BACKOFF_S = 0.5
 _DEFAULT_429_BACKOFF_S = 1.0
+
+try:
+    _VERSION = version("hall-monitor")
+except PackageNotFoundError:  # source tree, not installed
+    _VERSION = "0.0.0"
+
+# The community APIs don't require this, but identifying yourself is the
+# custom, and it's what lets an operator on the other end tell us apart
+# from an anonymous script when our traffic looks odd to them.
+USER_AGENT = f"hall-monitor/{_VERSION} (+https://github.com/Wynn-Guild-Hall/Hall-Monitor)"
 
 
 @dataclass
@@ -119,10 +135,13 @@ class Requester:
     """
 
     def __init__(self, base_url: str, headers: dict[str, str] | None = None):
+        # Every client identifies itself; a caller-supplied header of the
+        # same name still wins.
+        default_headers = {"User-Agent": USER_AGENT} | (headers or {})
         self._client = httpx.AsyncClient(
             base_url=base_url,
             timeout=_TIMEOUT_S,
-            headers=headers or {},
+            headers=default_headers,
         )
         self._buckets: dict[str, _Bucket] = {}
 
