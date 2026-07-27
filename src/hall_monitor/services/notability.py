@@ -12,20 +12,24 @@ Signals
    running. (Approximated with the current snapshot; the full 5-day
    average would require historical polling we don't yet do.)
 5. **War count** > 50 000.
-
-Signals 4 and 5 are the only two needing a per-guild request; both go
-through ``external.guild_stats``, which prefers Wynnpool and falls back
-to Wynncraft.
 6. **Force override** — a `ForceOverride(kind="notable", subject=tag)`
    row with no expiry or an expiry in the future.
 
-Any single signal being true marks the guild notable. The scheduler
-refreshes every ``NOTABILITY_REFRESH_SECONDS`` (default 3600 s).
+Any single signal being true marks the guild notable. Signals 4 and 5 are
+the only two needing a per-guild request — both go through
+``external.guild_stats``, which prefers Wynnpool and falls back to
+Wynncraft — so they're evaluated last and skipped entirely when a cheaper
+signal has already settled the answer.
+
+The scheduler refreshes every ``NOTABILITY_REFRESH_SECONDS`` (default
+3600 s); ``~script refresh_notability`` triggers the same sweep on demand.
 """
 
 import asyncio
 import json
 import logging
+import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
@@ -68,13 +72,57 @@ async def is_notable(guild_tag: str) -> bool:
     return await _evaluate_and_cache_single(guild_tag)
 
 
-async def refresh_all() -> None:
+@dataclass(frozen=True)
+class RefreshSummary:
+    """Outcome of one sweep, for the operator who triggered it."""
+
+    evaluated: int
+    failed: int
+    notable: int
+    seconds: float
+
+
+_refresh_lock = asyncio.Lock()
+
+
+def is_refreshing() -> bool:
+    """Whether a sweep is running right now."""
+    return _refresh_lock.locked()
+
+
+ProgressCallback = Callable[[int, int], Awaitable[None]]
+
+
+async def refresh_all(
+    *, on_progress: ProgressCallback | None = None
+) -> RefreshSummary | None:
     """Recompute notability for every candidate guild and update the cache.
 
     Candidates = the union of guilds visible on any Wynnpool leaderboard,
     guilds we already have Delegate rows for, and guilds with a force
     override — that way manually-added guilds still get a cache row.
+
+    Single-flight: a sweep takes minutes and makes a per-guild request for
+    every guild the cheap signals don't settle, so a second one overlapping
+    the first would double that load against APIs already close to their
+    limit. A trigger arriving mid-sweep returns ``None`` rather than
+    queueing behind it — by the time it ran, its results would be the
+    ones the running sweep is already producing.
+
+    ``on_progress(done, total)`` is awaited after each guild. It fires per
+    guild rather than on a timer so the caller can decide its own cadence;
+    a Discord message edit, for instance, has to be throttled well below
+    one-per-guild.
     """
+    if _refresh_lock.locked():
+        logger.info("notability refresh already running; skipping this trigger")
+        return None
+    async with _refresh_lock:
+        return await _refresh_all(on_progress)
+
+
+async def _refresh_all(on_progress: "ProgressCallback | None" = None) -> RefreshSummary:
+    started = time.monotonic()
     context = await _load_context()
 
     delegate_tags = {
@@ -87,11 +135,39 @@ async def refresh_all() -> None:
     }
     tags = set(context.tag_to_name) | delegate_tags | override_tags
 
-    for tag in sorted(tags):
+    ordered = sorted(tags)
+    notable = 0
+    failed = 0
+    for index, tag in enumerate(ordered, start=1):
         try:
-            await _evaluate_and_cache(tag, context)
+            if await _evaluate_and_cache(tag, context):
+                notable += 1
         except Exception:
+            # One guild's API hiccup or write contention shouldn't cost us
+            # the other ninety-nine; its cache row keeps its prior value.
+            failed += 1
             logger.exception("notability refresh failed for %s", tag)
+        if on_progress is not None:
+            try:
+                await on_progress(index, len(ordered))
+            except Exception:
+                # Reporting is a nicety; a broken callback must not cost
+                # us the sweep it's reporting on.
+                logger.exception("notability refresh progress callback failed")
+    summary = RefreshSummary(
+        evaluated=len(tags) - failed,
+        failed=failed,
+        notable=notable,
+        seconds=time.monotonic() - started,
+    )
+    logger.info(
+        "notability refresh: %d evaluated, %d notable, %d failed in %.1fs",
+        summary.evaluated,
+        summary.notable,
+        summary.failed,
+        summary.seconds,
+    )
+    return summary
 
 
 # --------------------------------------------------------------------------

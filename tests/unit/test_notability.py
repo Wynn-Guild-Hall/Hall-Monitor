@@ -1,5 +1,6 @@
 """Coverage for each of the 6 notability signals + force-override precedence."""
 
+import asyncio
 import json
 from datetime import datetime, timedelta, timezone
 
@@ -18,6 +19,19 @@ from hall_monitor.services.notability import (
     is_notable,
     refresh_all,
 )
+
+
+@pytest.fixture(autouse=True)
+def fresh_refresh_lock():
+    """Give each test its own sweep lock.
+
+    ``notability._refresh_lock`` is module state, and pytest-asyncio runs
+    every test on a new event loop. A lock left in any state by one test —
+    or bound to a loop that has since closed — makes the next test's
+    ``acquire`` wait on a future nothing will ever resolve.
+    """
+    notability._refresh_lock = asyncio.Lock()
+    yield
 
 
 def _lb(rank: int, tag: str, name: str = "n", value: float | None = None):
@@ -366,3 +380,97 @@ async def test_is_notable_slow_path_populates_cache(db, httpx_mock, monkeypatch)
 
     assert await is_notable("NEW") is False
     assert await NotabilityCache.get_or_none(guild_tag="NEW") is not None
+
+
+# --------------------------------------------------------------------------
+# Sweep bookkeeping — single-flight, progress, summary
+# --------------------------------------------------------------------------
+
+
+def _empty_boards(httpx_mock):
+    httpx_mock.add_response(
+        url="https://api.wynnpool.com/leaderboard/guild-average-online", json={}
+    )
+    httpx_mock.add_response(
+        url="https://api.wynnpool.com/leaderboard/guildLevel", json={}
+    )
+    httpx_mock.add_response(url="https://api.wynncraft.com/v3/guild/seasons", json={})
+
+
+async def test_refresh_reports_progress_and_a_summary(db, httpx_mock, monkeypatch):
+    monkeypatch.setattr(
+        "hall_monitor.external.wynncraft.settings.wynncraft_api_token", ""
+    )
+    _empty_boards(httpx_mock)
+    await ForceOverride.create(kind="notable", subject="AAAA", expires_at=None)
+    await ForceOverride.create(kind="notable", subject="BBBB", expires_at=None)
+
+    seen: list[tuple[int, int]] = []
+
+    async def on_progress(done, total):
+        seen.append((done, total))
+
+    summary = await refresh_all(on_progress=on_progress)
+
+    assert seen == [(1, 2), (2, 2)]
+    assert summary is not None
+    assert (summary.evaluated, summary.notable, summary.failed) == (2, 2, 0)
+    assert summary.seconds >= 0
+
+
+async def test_refresh_is_single_flight(db, httpx_mock):
+    """The scheduler firing while an operator's `~script` sweep is mid-run
+    would double the per-guild API load, so the later trigger is dropped
+    rather than queued behind it.
+
+    ``httpx_mock`` is requested with nothing registered on purpose: it
+    blocks outbound HTTP, so a broken guard fails immediately instead of
+    reaching the real APIs and looking like a hang.
+    """
+    await notability._refresh_lock.acquire()  # stand in for a sweep in flight
+    try:
+        assert notability.is_refreshing()
+        assert await refresh_all() is None
+    finally:
+        notability._refresh_lock.release()
+    assert not notability.is_refreshing()
+
+
+async def test_refresh_survives_a_broken_progress_callback(db, httpx_mock, monkeypatch):
+    """Reporting is a nicety — it must not cost us the sweep."""
+    monkeypatch.setattr(
+        "hall_monitor.external.wynncraft.settings.wynncraft_api_token", ""
+    )
+    _empty_boards(httpx_mock)
+    await ForceOverride.create(kind="notable", subject="AAAA", expires_at=None)
+
+    async def on_progress(done, total):
+        raise RuntimeError("discord fell over")
+
+    summary = await refresh_all(on_progress=on_progress)
+    assert summary is not None and summary.evaluated == 1
+    assert await NotabilityCache.get_or_none(guild_tag="AAAA") is not None
+
+
+async def test_refresh_counts_a_failure_without_aborting(db, httpx_mock, monkeypatch):
+    monkeypatch.setattr(
+        "hall_monitor.external.wynncraft.settings.wynncraft_api_token", ""
+    )
+    _empty_boards(httpx_mock)
+    await ForceOverride.create(kind="notable", subject="AAAA", expires_at=None)
+    await ForceOverride.create(kind="notable", subject="BBBB", expires_at=None)
+
+    calls: list[str] = []
+    real = notability._evaluate_and_cache
+
+    async def flaky(tag, context):
+        calls.append(tag)
+        if tag == "AAAA":
+            raise RuntimeError("boom")
+        return await real(tag, context)
+
+    monkeypatch.setattr(notability, "_evaluate_and_cache", flaky)
+    summary = await refresh_all()
+
+    assert calls == ["AAAA", "BBBB"], "a failure must not stop the sweep"
+    assert (summary.evaluated, summary.failed, summary.notable) == (1, 1, 1)
