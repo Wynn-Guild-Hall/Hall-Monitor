@@ -10,6 +10,7 @@ The sidecar factory needs a ``bot`` object but only reads
 method suffices — we don't spin up a real discord.py Client.
 """
 
+import re
 from unittest.mock import AsyncMock, MagicMock
 
 import httpx
@@ -24,6 +25,17 @@ from hall_monitor.db.models import (
     PendingInvite,
 )
 from hall_monitor.sidecar import build_app
+
+
+# Tags pico_text_component's MiniMessage parser recognises — the vanilla
+# colour names plus formatting. Anything else renders as literal text on
+# the player's disconnect screen.
+_MINI_MESSAGE_TAGS = {
+    "black", "dark_blue", "dark_green", "dark_aqua", "dark_red", "dark_purple",
+    "gold", "gray", "dark_gray", "blue", "green", "aqua", "red", "light_purple",
+    "yellow", "white", "bold", "b", "italic", "i", "em", "underlined", "u",
+    "strikethrough", "st", "obfuscated", "obf", "newline",
+}
 
 
 class _StubBot:
@@ -126,6 +138,12 @@ async def test_verify_happy_path_mints_invite(db, app, httpx_mock, monkeypatch):
         assert "discord.gg/abc123" in kick, "keep the URL as an alternative path"
         assert "Click" not in kick, "nothing on a disconnect screen is clickable"
         assert "VETS" in kick
+        # Picolimbo renders this as MiniMessage; only tags its parser
+        # knows are safe, and a stray `&` or `<` would break the XML read.
+        assert "<green>" in kick, "the code should stand out from the prose"
+        assert "&" not in kick
+        for tag in re.findall(r"</?([a-z_]+)>", kick):
+            assert tag in _MINI_MESSAGE_TAGS, f"picolimbo can't render <{tag}>"
 
     # A PendingInvite row was persisted with the correct role bits.
     row = await PendingInvite.get(mc_uuid="uuid-chief")

@@ -58,12 +58,18 @@ def _welcome(guild_tag: str, invite_code: str) -> str:
     comes first and on its own line — that's what gets typed into
     Discord's join dialog. The full URL follows for anyone who'd rather
     paste a link than find that dialog.
+
+    Picolimbo renders kick reasons as MiniMessage (auth-stack patch 0005),
+    so the code can be picked out in colour from the instructions around
+    it. Tags are limited to the vanilla colour names and ``bold``. An
+    older picolimbo would print these literally, so this needs the newer
+    image deployed first.
     """
     return (
-        f"Welcome, {guild_tag} representative.\n\n"
-        f"Invite code:  {invite_code}\n"
-        f"In Discord: + (Add a Server) > Join a Server > paste the code\n\n"
-        f"Or open  https://discord.gg/{invite_code}"
+        f"<gold>Welcome, <bold>{guild_tag}</bold> representative.</gold>\n\n"
+        f"<gray>Invite code:</gray>  <green><bold>{invite_code}</bold></green>\n"
+        f"<gray>In Discord: + (Add a Server) > Join a Server > paste the code</gray>\n\n"
+        f"<gray>Or open</gray>  <aqua>https://discord.gg/{invite_code}</aqua>"
     )
 
 
