@@ -9,7 +9,7 @@ class Manage(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
 
-    @commands.group(name="manage", invoke_without_command=True)
+    @commands.group(name="manage", invoke_without_command=True, hidden=True)
     @is_monitor()
     async def manage(self, ctx: commands.Context) -> None:
         raise NotImplementedError

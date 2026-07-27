@@ -14,6 +14,7 @@ import discord
 from discord.ext import commands
 
 from hall_monitor.config import settings
+from hall_monitor.discord_bot import errors
 
 log = logging.getLogger(__name__)
 
@@ -23,6 +24,10 @@ def build_bot() -> commands.Bot:
     intents.members = True
     intents.message_content = True
     bot = commands.Bot(command_prefix=settings.prefix, intents=intents)
+
+    @bot.event
+    async def on_command_error(ctx: commands.Context, error: Exception) -> None:
+        await errors.handle(ctx, error)
 
     async def _setup_hook() -> None:
         for module_name in _discover_cog_modules("hall_monitor.discord_bot.cogs"):

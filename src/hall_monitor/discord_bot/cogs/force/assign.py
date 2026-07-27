@@ -106,6 +106,7 @@ def register(cog: commands.Cog) -> None:
     async def force_assign(
         ctx: commands.Context, user: discord.Member, contact_type: str
     ) -> None:
+        """hand a guild's contact slot to a delegate"""
         try:
             role = parse_contact_type(contact_type)
             target = await resolve_target(ctx, user)
@@ -130,6 +131,7 @@ def register(cog: commands.Cog) -> None:
     async def unforce_assign(
         ctx: commands.Context, user: discord.Member, contact_type: str
     ) -> None:
+        """leave a guild's contact slot unclaimed"""
         try:
             role = parse_contact_type(contact_type)
             target = await resolve_target(ctx, user)

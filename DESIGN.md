@@ -111,6 +111,10 @@ Guild tags are matched case-insensitively (`services/guild_tag.py`) so `~force a
 
 Ad-hoc admin scripts live at `cogs/admin/scripts/` — drop a file with `async def main(ctx, *args)` and it's callable as `~script <name>`.
 
+**A command that isn't built yet is registered `hidden=True`, and implementing it means dropping that flag.** `~help` and the bare-group listings both build from the live command tree via `discord_bot/command_help.py`, filtered through each command's own checks (`can_run`), so they show exactly what the caller can run and nothing else — `hidden` is the one marker keeping unfinished work out of both. A command's first docstring line is its description in those listings.
+
+`discord_bot/errors.py` owns a single `on_command_error`. Without it discord.py logs a traceback and tells the invoker nothing, so a stub reads in Discord as the bot being broken rather than as a feature that isn't built. It maps: a `NotImplementedError` from any stub → "isn't built yet"; a failed role check → "you don't have the role for that one"; a bad or missing argument → the command's usage line; an unknown command → silence, since `~` opens plenty of ordinary sentences. Anything else is logged and owned up to. Note the asymmetry this covers: a stub behind a *command* misbehaves only when someone types it, but a stub on a **group callback** fires the moment someone types the group name alone — `~force` did exactly that until Stage 7.
+
 ## 8. External API clients
 
 **Status:** implemented (Stage 1)

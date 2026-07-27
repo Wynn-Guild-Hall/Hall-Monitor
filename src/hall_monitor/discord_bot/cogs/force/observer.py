@@ -6,12 +6,12 @@ from hall_monitor.discord_bot.permissions import is_janitor
 
 
 def register(cog: commands.Cog) -> None:
-    @cog.force.command(name="observer")
+    @cog.force.command(name="observer", hidden=True)
     @is_janitor()
     async def force_observer(ctx: commands.Context, username: str) -> None:
         raise NotImplementedError
 
-    @cog.unforce.command(name="observer")
+    @cog.unforce.command(name="observer", hidden=True)
     @is_janitor()
     async def unforce_observer(ctx: commands.Context, username: str) -> None:
         raise NotImplementedError

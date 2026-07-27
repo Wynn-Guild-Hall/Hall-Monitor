@@ -9,7 +9,7 @@ class Echo(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
 
-    @commands.command(name="echo")
+    @commands.command(name="echo", hidden=True)
     @is_janitor()
     async def echo(self, ctx: commands.Context, *, content: str = "") -> None:
         raise NotImplementedError

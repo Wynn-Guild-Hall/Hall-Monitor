@@ -1,6 +1,13 @@
-"""``~help`` — replaces discord.py's built-in help with a Hall-Monitor-tailored one."""
+"""``~help`` — replaces discord.py's built-in help with a Hall-Monitor-tailored one.
+
+Scoped to the caller: a delegate shouldn't have to read past a wall of
+janitor commands to find the two they can run, and advertising a command
+someone can't use is a support question waiting to happen.
+"""
 
 from discord.ext import commands
+
+from hall_monitor.discord_bot import command_help
 
 
 class Help(commands.Cog):
@@ -9,7 +16,8 @@ class Help(commands.Cog):
 
     @commands.command(name="help")
     async def help(self, ctx: commands.Context) -> None:
-        raise NotImplementedError
+        """list the commands you can run"""
+        await ctx.reply(await command_help.render_all(ctx, self.bot))
 
 
 async def setup(bot: commands.Bot) -> None:

@@ -7,6 +7,8 @@ vs. monitor) stay adjacent to the logic they gate.
 
 from discord.ext import commands
 
+from hall_monitor.discord_bot import command_help
+
 
 class ForceGroup(commands.Cog):
     """Container cog that owns the two top-level command groups."""
@@ -16,11 +18,13 @@ class ForceGroup(commands.Cog):
 
     @commands.group(name="force", invoke_without_command=True)
     async def force(self, ctx: commands.Context) -> None:
-        raise NotImplementedError
+        """override a piece of state by hand"""
+        await ctx.reply(await command_help.render_group(ctx, self.force))
 
     @commands.group(name="unforce", invoke_without_command=True)
     async def unforce(self, ctx: commands.Context) -> None:
-        raise NotImplementedError
+        """undo a `~force`"""
+        await ctx.reply(await command_help.render_group(ctx, self.unforce))
 
 
 async def setup(bot: commands.Bot) -> None:

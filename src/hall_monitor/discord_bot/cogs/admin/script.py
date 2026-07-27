@@ -13,6 +13,7 @@ class Script(commands.Cog):
     @commands.command(name="script")
     @is_monitor()
     async def script(self, ctx: commands.Context, name: str, *args: str) -> None:
+        """run a one-off script from admin/scripts/"""
         await _loader.run_script(name, ctx, *args)
 
 

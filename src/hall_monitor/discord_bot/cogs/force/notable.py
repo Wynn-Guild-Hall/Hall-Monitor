@@ -51,6 +51,7 @@ def register(cog: commands.Cog) -> None:
     async def force_notable(
         ctx: commands.Context, guild_tag: str, duration: str
     ) -> None:
+        """treat a guild as notable for a while, whatever the signals say"""
         try:
             delta = parse_duration(duration)
         except InvalidDuration:
@@ -87,6 +88,7 @@ def register(cog: commands.Cog) -> None:
     @cog.unforce.command(name="notable")
     @is_janitor()
     async def unforce_notable(ctx: commands.Context, guild_tag: str) -> None:
+        """drop a notability override and go back to the signals"""
         deleted = await ForceOverride.filter(
             kind="notable", subject__iexact=guild_tag
         ).delete()

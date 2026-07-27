@@ -10,12 +10,12 @@ from hall_monitor.discord_bot.permissions import is_monitor
 
 
 def register(cog: commands.Cog) -> None:
-    @cog.force.command(name="expel")
+    @cog.force.command(name="expel", hidden=True)
     @is_monitor()
     async def force_expel(ctx: commands.Context, guild_tag: str) -> None:
         raise NotImplementedError
 
-    @cog.unforce.command(name="expel")
+    @cog.unforce.command(name="expel", hidden=True)
     @is_monitor()
     async def unforce_expel(ctx: commands.Context, guild_tag: str) -> None:
         raise NotImplementedError

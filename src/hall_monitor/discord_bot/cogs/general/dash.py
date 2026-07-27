@@ -9,20 +9,20 @@ class Dash(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
 
-    @commands.group(name="dash", invoke_without_command=True)
+    @commands.group(name="dash", invoke_without_command=True, hidden=True)
     @is_contact()
     async def dash(self, ctx: commands.Context) -> None:
         raise NotImplementedError
 
-    @dash.command(name="toggle")
+    @dash.command(name="toggle", hidden=True)
     async def toggle(self, ctx: commands.Context, key: str, value: bool) -> None:
         raise NotImplementedError
 
-    @dash.command(name="set")
+    @dash.command(name="set", hidden=True)
     async def set_(self, ctx: commands.Context, key: str, *, value: str) -> None:
         raise NotImplementedError
 
-    @dash.command(name="add")
+    @dash.command(name="add", hidden=True)
     async def add(self, ctx: commands.Context, key: str, *, value: str) -> None:
         raise NotImplementedError
 

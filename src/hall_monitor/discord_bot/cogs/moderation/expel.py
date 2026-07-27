@@ -9,7 +9,7 @@ class ExpelMotion(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
 
-    @commands.command(name="expel_motion")
+    @commands.command(name="expel_motion", hidden=True)
     @is_delegate()
     async def expel_motion(self, ctx: commands.Context, guild_tag: str) -> None:
         raise NotImplementedError
