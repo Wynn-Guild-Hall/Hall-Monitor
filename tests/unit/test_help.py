@@ -173,6 +173,14 @@ async def test_unbuilt_command_answers_instead_of_raising():
     assert "isn't built yet" in ctx.reply.await_args.args[0]
 
 
+async def test_unbuilt_command_says_so_even_when_the_gate_rejected_first():
+    """A check runs before the body, so an unbuilt *gated* command would
+    otherwise report a missing role — which is what `~dash` told a monitor."""
+    ctx = _ctx(command=stub)
+    await errors.handle(ctx, commands.CheckFailure())
+    assert "isn't built yet" in ctx.reply.await_args.args[0]
+
+
 async def test_missing_role_says_so():
     ctx = _ctx(command=gated)
     await errors.handle(ctx, commands.CheckFailure())

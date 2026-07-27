@@ -18,11 +18,7 @@ from discord.ext import commands
 
 from hall_monitor.config import settings
 from hall_monitor.db.models import Delegate
-from hall_monitor.discord_bot.permissions import (
-    has_any_role,
-    is_janitor,
-    is_ownership_contact,
-)
+from hall_monitor.discord_bot.permissions import has_any_role, is_ownership_contact
 from hall_monitor.services import contacts, delegate_registry, guild_tag as guild_tag_service
 
 
@@ -102,7 +98,7 @@ def displacement_note(displaced: contacts.Displacement | None) -> str:
 
 def register(cog: commands.Cog) -> None:
     @cog.force.command(name="assign")
-    @commands.check_any(is_ownership_contact(), is_janitor())
+    @is_ownership_contact()  # nests: janitors and monitors pass too
     async def force_assign(
         ctx: commands.Context, user: discord.Member, contact_type: str
     ) -> None:
@@ -127,7 +123,7 @@ def register(cog: commands.Cog) -> None:
         )
 
     @cog.unforce.command(name="assign")
-    @commands.check_any(is_ownership_contact(), is_janitor())
+    @is_ownership_contact()  # nests: janitors and monitors pass too
     async def unforce_assign(
         ctx: commands.Context, user: discord.Member, contact_type: str
     ) -> None:

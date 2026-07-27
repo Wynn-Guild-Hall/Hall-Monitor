@@ -21,6 +21,15 @@ async def handle(ctx: commands.Context, error: Exception) -> None:
     if isinstance(error, commands.CommandNotFound):
         return  # `~` starts plenty of ordinary sentences
 
+    if ctx.command is not None and ctx.command.hidden:
+        # `hidden` means not built yet (DESIGN.md §7), and that outranks
+        # whatever the gate or the parser objected to first. A check runs
+        # before the body, so an unbuilt gated command would otherwise
+        # answer "you don't have the role" — sending someone off editing
+        # roles for a command that would do nothing if they had them.
+        await _reply(ctx, _not_built(ctx))
+        return
+
     if isinstance(error, commands.CheckFailure):
         await _reply(ctx, "you don't have the role for that one.")
         return
@@ -30,16 +39,20 @@ async def handle(ctx: commands.Context, error: Exception) -> None:
         return
 
     # `.original` rather than `__cause__`: it's what CommandInvokeError
-    # documents, and it survives an error re-raised without `from`.
+    # documents, and it survives an error re-raised without `from`. This
+    # catches a stub that was never marked `hidden`.
     if isinstance(getattr(error, "original", None), NotImplementedError):
-        name = f"{ctx.clean_prefix}{ctx.command.qualified_name}"
-        await _reply(ctx, f"`{name}` isn't built yet.")
+        await _reply(ctx, _not_built(ctx))
         return
 
     logger.error(
         "command %s raised", ctx.command and ctx.command.qualified_name, exc_info=error
     )
     await _reply(ctx, "that broke on my end — the details are in my logs.")
+
+
+def _not_built(ctx: commands.Context) -> str:
+    return f"`{ctx.clean_prefix}{ctx.command.qualified_name}` isn't built yet."
 
 
 async def _reply(ctx: commands.Context, message: str) -> None:
