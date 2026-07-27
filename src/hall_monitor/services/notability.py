@@ -109,6 +109,11 @@ async def _load_context() -> _BulkContext:
     tag_to_name: dict[str, str] = {}
     for board in (avg_online, guild_level, *season_boards):
         for entry in board:
+            # Season boards carry no prefix, so their entries arrive with
+            # tag=None. Letting one into the map poisons every later
+            # `sorted()` over the candidate tags.
+            if entry.tag is None:
+                continue
             tag_to_name.setdefault(entry.tag, entry.name)
     return _BulkContext(
         tag_to_name=tag_to_name,
@@ -147,16 +152,19 @@ async def _evaluate(tag: str, context: _BulkContext) -> dict[str, bool]:
     """
     sig1 = _signal_top25_avg_online(tag, context)
     sig2 = _signal_level_100_plus(tag, context)
-    sig3 = _signal_season_placement(tag, context)
 
-    # Per-guild data (used by signals 4 and 5).
+    # Per-guild data. Signals 4 and 5 read the payload; signal 3 needs the
+    # guild's name, because season boards identify guilds by name only.
     name = context.tag_to_name.get(tag)
     guild = None
     if name is not None:
         guild = await wynncraft.get_guild(name)
     if guild is None:
         guild = await wynncraft.get_guild_by_prefix(tag)
+    if guild is not None:
+        name = guild.name
 
+    sig3 = _signal_season_placement(tag, name, context)
     sig4 = _signal_territory_ownership(guild, context.current_season_active)
     sig5 = _signal_war_count(guild)
     sig6 = await _has_active_notable_override(tag)
@@ -187,14 +195,27 @@ def _signal_level_100_plus(tag: str, ctx: _BulkContext) -> bool:
     return False
 
 
-def _signal_season_placement(tag: str, ctx: _BulkContext) -> bool:
+def _signal_season_placement(
+    tag: str, name: str | None, ctx: _BulkContext
+) -> bool:
+    """Whether ``tag`` placed well enough in recent seasons.
+
+    Season boards identify guilds by name only — Wynnpool's season-rating
+    payload has no prefix field — so a tag-only match silently never fires.
+    Names are compared case-insensitively; the tag is still checked first
+    in case the shape gains a prefix later.
+    """
     boards = ctx.season_boards  # newest first
     if not boards:
         return False
 
+    folded = name.casefold() if name else None
+
     def rank_in(board: tuple[wynnpool.LeaderboardEntry, ...]) -> int | None:
         for e in board:
             if e.tag == tag:
+                return e.rank
+            if folded and e.name and e.name.casefold() == folded:
                 return e.rank
         return None
 

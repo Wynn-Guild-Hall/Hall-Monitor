@@ -1,5 +1,6 @@
 """Coverage for each of the 6 notability signals + force-override precedence."""
 
+import json
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -94,38 +95,69 @@ def test_signal_2_treats_missing_value_as_qualifying():
 # --------------------------------------------------------------------------
 
 
+def _season_lb(rank: int, name: str = "Returners"):
+    """A season-board row as Wynnpool actually ships it: named, **untagged**.
+
+    Building these with a tag is what let a tag-only match pass its tests
+    while never once firing in production.
+    """
+    return wynnpool.LeaderboardEntry(rank=rank, name=name, tag=None, value=1.0)
+
+
 def test_signal_3_top_3_in_any_of_last_10_seasons():
     seasons = tuple(
-        (_lb(rank=3, tag="VETS"),) if i == 7 else (_lb(rank=80, tag="VETS"),)
+        (_season_lb(rank=3),) if i == 7 else (_season_lb(rank=80),)
         for i in range(10)
     )
     ctx = _ctx(season_boards=seasons)
-    assert _signal_season_placement("VETS", ctx) is True
+    assert _signal_season_placement("VETS", "Returners", ctx) is True
 
 
 def test_signal_3_top_10_in_any_of_last_5_seasons():
     seasons = tuple(
-        (_lb(rank=8, tag="VETS"),) if i == 2 else (_lb(rank=50, tag="VETS"),)
+        (_season_lb(rank=8),) if i == 2 else (_season_lb(rank=50),)
         for i in range(5)
     )
     ctx = _ctx(season_boards=seasons)
-    assert _signal_season_placement("VETS", ctx) is True
+    assert _signal_season_placement("VETS", "Returners", ctx) is True
 
 
 def test_signal_3_mean_rank_across_last_5_below_25():
-    seasons = tuple((_lb(rank=r, tag="VETS"),) for r in (11, 15, 20, 25, 30))
+    seasons = tuple((_season_lb(rank=r),) for r in (11, 15, 20, 25, 30))
     ctx = _ctx(season_boards=seasons)
-    assert _signal_season_placement("VETS", ctx) is True
+    assert _signal_season_placement("VETS", "Returners", ctx) is True
 
 
 def test_signal_3_false_when_never_placed():
-    seasons = tuple((_lb(rank=100, tag="VETS"),) for _ in range(10))
+    seasons = tuple((_season_lb(rank=100),) for _ in range(10))
     ctx = _ctx(season_boards=seasons)
-    assert _signal_season_placement("VETS", ctx) is False
+    assert _signal_season_placement("VETS", "Returners", ctx) is False
 
 
 def test_signal_3_false_when_no_seasons():
-    assert _signal_season_placement("VETS", _ctx()) is False
+    assert _signal_season_placement("VETS", "Returners", _ctx()) is False
+
+
+def test_signal_3_matches_name_case_insensitively():
+    ctx = _ctx(season_boards=((_season_lb(rank=1, name="RETURNERS"),),))
+    assert _signal_season_placement("VETS", "Returners", ctx) is True
+
+
+def test_signal_3_ignores_a_different_guild_with_a_good_rank():
+    ctx = _ctx(season_boards=((_season_lb(rank=1, name="Sequoia"),),))
+    assert _signal_season_placement("VETS", "Returners", ctx) is False
+
+
+def test_signal_3_false_when_the_guild_name_is_unknown():
+    """No name and no tag on the board means nothing to match on — the
+    signal has to stay false rather than match the first row."""
+    ctx = _ctx(season_boards=((_season_lb(rank=1),),))
+    assert _signal_season_placement("VETS", None, ctx) is False
+
+
+def test_signal_3_still_matches_on_tag_if_wynnpool_adds_one():
+    ctx = _ctx(season_boards=((_lb(rank=1, tag="VETS"),),))
+    assert _signal_season_placement("VETS", None, ctx) is True
 
 
 # --------------------------------------------------------------------------
@@ -266,6 +298,53 @@ async def test_refresh_all_writes_cache_for_all_candidates(db, httpx_mock, monke
     # DELEG has neither — not notable.
     deleg = await NotabilityCache.get(guild_tag="DELEG")
     assert deleg.is_notable is False
+
+
+async def test_refresh_all_survives_untagged_season_entries(db, httpx_mock, monkeypatch):
+    """The season boards are the one source of tag-less entries. Letting a
+    None into the candidate set made `sorted(tags)` raise, and because it
+    raises *before* the per-tag try/except, the whole hourly refresh died —
+    every run, silently, until someone read the logs."""
+    monkeypatch.setattr(
+        "hall_monitor.external.wynncraft.settings.wynncraft_api_token", ""
+    )
+    httpx_mock.add_response(
+        url="https://api.wynnpool.com/leaderboard/guild-average-online",
+        json={"1": {"name": "Returners", "prefix": "VETS", "averageOnline": 40}},
+    )
+    httpx_mock.add_response(
+        url="https://api.wynnpool.com/leaderboard/guildLevel", json={}
+    )
+    httpx_mock.add_response(
+        url="https://api.wynncraft.com/v3/guild/seasons",
+        json={"31": {"startDate": "2020-01-01T00:00:00Z", "endDate": "2020-02-01T00:00:00Z"}},
+    )
+    # Season boards: named, no prefix — exactly what Wynnpool returns.
+    httpx_mock.add_response(
+        url="https://api.wynnpool.com/leaderboard/season-rating/31",
+        json={
+            "season": 31,
+            "ranking": [
+                {"rank": 1, "guild_uuid": "x", "guild_name": "Returners", "rating": 999},
+                {"rank": 2, "guild_uuid": "y", "guild_name": "Sequoia", "rating": 500},
+            ],
+        },
+    )
+    httpx_mock.add_response(
+        url="https://api.wynncraft.com/v3/guild/Returners",
+        json={
+            "uuid": "u", "name": "Returners", "prefix": "VETS",
+            "level": 93, "territories": 0, "wars": 47, "members": {},
+        },
+    )
+
+    await refresh_all()
+
+    cached = {r.guild_tag for r in await NotabilityCache.all()}
+    assert cached == {"VETS"}, "a None tag must not reach the candidate set"
+    # Rank 1 last season → signal 3, matched by name since the board has no tag.
+    vets = await NotabilityCache.get(guild_tag="VETS")
+    assert json.loads(vets.signals_json)["season_placement"] is True
 
 
 async def test_is_notable_slow_path_populates_cache(db, httpx_mock, monkeypatch):

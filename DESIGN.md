@@ -60,7 +60,7 @@ Reading the invite list requires **Manage Server**. With only View Audit Log, Di
 
 1. Top-25 average online (last 5 days) on `api.wynnpool.com/leaderboard/guild-average-online`.
 2. Level 100+ on `api.wynnpool.com/leaderboard/guildLevel`.
-3. Season placements — top 3 in any of the last 10 seasons, top 10 in any of the last 5, or mean rank across the last 5 ≤ 25.
+3. Season placements — top 3 in any of the last 10 seasons, top 10 in any of the last 5, or mean rank across the last 5 ≤ 25. Wynnpool's season-rating payload identifies guilds by name only (no prefix field), so this signal matches on guild name, case-insensitively — the tag is still checked first should the shape ever gain one.
 4. Territory ownership > 20 while a Wynncraft season is currently running (`api.wynncraft.com/v3/guild/seasons`). Implemented as a current snapshot; a full 5-day average will need historical polling we don't yet do.
 5. War count > 50 000 on the Wynncraft guild payload.
 6. A janitor/monitor-issued force override (`force_override` table with `kind="notable"`) with no expiry or an expiry in the future.
