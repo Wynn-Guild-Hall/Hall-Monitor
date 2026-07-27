@@ -12,7 +12,7 @@ import uvicorn
 from tortoise import Tortoise
 
 from hall_monitor.config import settings
-from hall_monitor.db import TORTOISE_ORM, ensure_columns
+from hall_monitor.db import TORTOISE_ORM, migrate
 from hall_monitor.discord_bot import build_bot
 from hall_monitor.scheduler import build_scheduler
 from hall_monitor.sidecar import build_app
@@ -22,8 +22,9 @@ log = logging.getLogger("hall_monitor")
 
 async def _run() -> None:
     await Tortoise.init(config=TORTOISE_ORM)
-    await Tortoise.generate_schemas(safe=True)
-    await ensure_columns()  # safe generation won't add columns to a live table
+    # Aerich owns the schema now — `generate_schemas` used to stand in for
+    # it, and silently didn't add columns to tables that already existed.
+    await migrate()
 
     bot = build_bot()
     app = build_app(bot)

@@ -30,6 +30,12 @@ dev = [
 [tool.setuptools.packages.find]
 where = ["src"]
 
+# Migrations are data, not a package — no `__init__.py`, because Aerich
+# discovers version files by walking the directory. Without this they'd be
+# left out of the wheel and the container would boot with nothing to apply.
+[tool.setuptools.package-data]
+"hall_monitor.db" = ["migrations/*/*.py"]
+
 [tool.aerich]
 tortoise_orm = "hall_monitor.db.TORTOISE_ORM"
 location = "src/hall_monitor/db/migrations"

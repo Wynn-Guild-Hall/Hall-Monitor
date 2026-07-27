@@ -16,7 +16,7 @@ Discord bot for the Wynncraft Guild Hall. Full architecture reference is in [DES
 - `src/hall_monitor/services/` — framework-agnostic business logic. Importable from cogs OR routes.
 - `src/hall_monitor/external/` — one HTTP client per third-party API.
 - `src/hall_monitor/sidecar/routes/` — FastAPI routes.
-- `src/hall_monitor/db/models.py` — Tortoise models. Model edits require `aerich migrate -n <slug>`.
+- `src/hall_monitor/db/models.py` — Tortoise models. Model edits require `aerich migrate -n <slug>`, committed with the change; `db.migrate()` applies them at boot. Migrations are package *data*, not a package — see DESIGN.md §10 before touching how they're shipped.
 - `src/hall_monitor/discord_bot/cogs/admin/scripts/` — ad-hoc scripts callable via `~script <name>`.
 
 ## Required Discord permissions

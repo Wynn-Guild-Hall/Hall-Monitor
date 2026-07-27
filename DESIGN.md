@@ -138,3 +138,22 @@ To move off Wynncraft Veterans infrastructure:
 
 - Change the picolimbo forwarding endpoint (currently `verify.wynnvets.org`) to point at a new limbo server; the chat-forward patch contract is `GET /api/verify/{uuid}/{msg}` returning `{"kick_message": str | null}`.
 - Change any mentions of `hall.wynnvets.org` to the new domain.
+
+## 10. Schema migrations
+
+**Status:** implemented (Stage 7 follow-up)
+
+Model edits ship with an Aerich migration: `aerich migrate -n <slug>`, committed alongside the `db/models.py` change. `db.migrate()` applies whatever is outstanding at boot — one process, one SQLite file, so there's no window for two instances to race, and a deploy needing a remembered manual step eventually gets one nobody remembered.
+
+Migrations live at `db/migrations/models/` and reach the image as **package data** (`[tool.setuptools.package-data]` in `pyproject.toml`), not as a package. Aerich discovers version files by walking the directory, so they get no `__init__.py`; without the package-data entry `pip install .` would leave them out of the wheel and the container would boot with nothing to apply and nothing to say about it.
+
+### The pre-migration database
+
+Stages 1–7 ran on `Tortoise.generate_schemas(safe=True)`, which creates missing *tables* and stops. A column added to an existing model stayed absent until something SELECTed it — which is how `mc_username` would have taken the bot down on deploy. Aerich was half set up: `aerich init` had run during the scaffold and `init-db` never had, so production ended up with every table, an **empty `aerich` bookkeeping table** (`aerich.models` is in the app's model list, so `generate_schemas` had been creating it all along), and no record of a migration ever being applied.
+
+`migrate()` recognises that shape — our tables present, nothing recorded — and records the initial migration as applied *without running it*, since the tables it would create already exist. Two guards, because a wrong baseline is quiet and durable:
+
+- **More than one migration exists** → refuse. Faking the lot would skip real schema changes.
+- **The live schema doesn't match the models** → refuse, naming the missing columns. Marking a drifted schema as migrated buries the difference until some later migration trips over it.
+
+Both raise at boot rather than degrading, and neither can fire after the first successful baseline. The emptiness of the `aerich` table is the signal, not its absence — an easy thing to get backwards.
