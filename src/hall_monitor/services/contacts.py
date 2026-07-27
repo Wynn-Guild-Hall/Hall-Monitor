@@ -52,7 +52,9 @@ async def current_contacts_for_guild(
     against the DB not having caught up to the leave listener yet).
     """
     result: dict[str, Delegate | None] = {role: None for role in CONTACT_ROLES}
-    rows = await GuildContact.filter(guild_tag=guild_tag).prefetch_related("delegate")
+    rows = await GuildContact.filter(
+        guild_tag__iexact=guild_tag
+    ).prefetch_related("delegate")
     for row in rows:
         if row.role not in result:
             continue  # legacy role no longer in CONTACT_ROLES — ignore

@@ -77,6 +77,12 @@ Candidates are drawn from **every** board Wynnpool publishes — the four signal
 
 Transitions (delegate ↔ relegate role swaps on notability change) land in Stage 9.
 
+### Guild tags
+
+`services/guild_tag.py` is the one place that decides whether two tags mean the same guild. Tags are normally three or four characters and case-agnostic, but Wynncraft permits two rarities worth not being surprised by: case *can* in principle be significant, and spaces and underscores are legal characters.
+
+So Wynncraft's spelling is what gets stored and displayed — uppercasing on the way in would discard information we were handed — and only comparison folds case. DB lookups on a tag use `__iexact` for the same reason. This matters most where a human types the tag: `~force notable vets` has to reach the guild the sweep cached as `VETS`, or the override silently applies to nothing. A tag containing a space needs quoting at the call site (`~force notable "My Guild" 3mo`), which discord.py's argument parser handles.
+
 ## 5. The code
 
 A representative types `HALL<NN>` on the verify server: a fixed `HALL` marker plus the role-bits integer, zero-padded to two digits. That's six characters — deliberately the same width as a dazebot account-link code, because the verify server prompts for "your code" and shouldn't need to explain which kind.

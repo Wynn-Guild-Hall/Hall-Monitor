@@ -65,11 +65,22 @@ def register(cog: commands.Cog) -> None:
             return
 
         expires_at = None if delta is None else datetime.now(timezone.utc) + delta
-        await ForceOverride.update_or_create(
-            kind="notable",
-            subject=guild_tag,
-            defaults={"expires_at": expires_at, "payload_json": "{}"},
-        )
+        # Match an existing row case-insensitively before creating one:
+        # `~force notable vets` and `~force notable VETS` are the same
+        # guild, and two rows would mean re-forcing silently did nothing.
+        existing = await ForceOverride.filter(
+            kind="notable", subject__iexact=guild_tag
+        ).first()
+        if existing is None:
+            await ForceOverride.create(
+                kind="notable",
+                subject=guild_tag,
+                expires_at=expires_at,
+                payload_json="{}",
+            )
+        else:
+            existing.expires_at = expires_at
+            await existing.save()
         window = "permanently" if expires_at is None else f"until {expires_at.isoformat(timespec='minutes')}"
         await ctx.reply(f"forced `{guild_tag}` notable {window}.")
 
@@ -77,7 +88,7 @@ def register(cog: commands.Cog) -> None:
     @is_janitor()
     async def unforce_notable(ctx: commands.Context, guild_tag: str) -> None:
         deleted = await ForceOverride.filter(
-            kind="notable", subject=guild_tag
+            kind="notable", subject__iexact=guild_tag
         ).delete()
         if deleted:
             await ctx.reply(f"cleared notable override on `{guild_tag}`.")

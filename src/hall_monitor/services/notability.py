@@ -31,12 +31,13 @@ import json
 import logging
 import time
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 from hall_monitor import external
 from hall_monitor.db.models import Delegate, ForceOverride, NotabilityCache
 from hall_monitor.external import wynncraft, wynnpool
+from hall_monitor.services import guild_tag as tags
 
 logger = logging.getLogger(__name__)
 
@@ -84,6 +85,12 @@ class _BulkContext:
     # anything and we have to ask per guild again.
     wars_board_decisive: bool = True
     territories_board_decisive: bool = True
+    # tag_to_name keeps Wynncraft's spelling, because that's what gets
+    # cached and displayed; this is the same map keyed for lookup.
+    folded_to_name: dict[str, str] = field(default_factory=dict)
+
+    def name_for(self, tag: str) -> str | None:
+        return self.folded_to_name.get(tags.normalise(tag))
 
 
 async def is_notable(guild_tag: str) -> bool:
@@ -91,7 +98,7 @@ async def is_notable(guild_tag: str) -> bool:
     if the cache doesn't know this tag yet."""
     if await _has_active_notable_override(guild_tag):
         return True
-    cached = await NotabilityCache.get_or_none(guild_tag=guild_tag)
+    cached = await NotabilityCache.get_or_none(guild_tag__iexact=guild_tag)
     if cached is not None:
         return cached.is_notable
     return await _evaluate_and_cache_single(guild_tag)
@@ -150,6 +157,8 @@ async def refresh_all(
 async def _refresh_all(on_progress: "ProgressCallback | None" = None) -> RefreshSummary:
     started = time.monotonic()
     context = await _load_context()
+    # Keep the miss path fast: it reuses whatever the last sweep loaded.
+    _remember_context(context)
 
     delegate_tags = {
         row["guild_tag"]
@@ -243,6 +252,7 @@ async def _load_context() -> _BulkContext:
         territories=territories,
         season_boards=season_boards,
         current_season_active=_any_active(seasons),
+        folded_to_name={tags.normalise(k): v for k, v in tag_to_name.items()},
         wars_board_decisive=_board_decides(wars, _SIGNAL_5_MIN_WARS, "guildWars"),
         territories_board_decisive=_board_decides(
             territories, _SIGNAL_4_MIN_TERRITORIES, "guildTerritories"
@@ -285,7 +295,7 @@ def _board_value(
     board: tuple[wynnpool.LeaderboardEntry, ...], tag: str
 ) -> float | None:
     for entry in board:
-        if entry.tag == tag:
+        if tags.matches(entry.tag, tag):
             return entry.value
     return None
 
@@ -306,7 +316,45 @@ async def _evaluate_and_cache(tag: str, context: _BulkContext) -> bool:
 
 
 async def _evaluate_and_cache_single(tag: str) -> bool:
-    return await _evaluate_and_cache(tag, await _load_context())
+    return await _evaluate_and_cache(tag, await _memoised_context())
+
+
+_CONTEXT_TTL_S = 3600
+_context_memo: "tuple[float, _BulkContext] | None" = None
+
+
+def _remember_context(context: _BulkContext) -> None:
+    global _context_memo
+    _context_memo = (time.monotonic(), context)
+
+
+def reset_context_memo() -> None:
+    """Drop the memoised bulk context. Tests use this to keep module state
+    from leaking between cases."""
+    global _context_memo
+    _context_memo = None
+
+
+async def _memoised_context() -> _BulkContext:
+    """The bulk leaderboards, reused from the last sweep when they're fresh.
+
+    ``is_notable`` falls through to a single-guild evaluation on a cache
+    miss, and rebuilding the context there means twenty-odd sequential
+    leaderboard fetches — on a request a player is waiting on in
+    Minecraft. Picolimbo blocks that client's connection handling for the
+    duration, keep-alives included, so a slow answer here surfaces to them
+    as a dropped connection rather than a slow one.
+
+    The hourly sweep keeps this warm, so the miss path normally costs
+    nothing at all. The TTL only matters if no sweep has run.
+    """
+    if _context_memo is not None:
+        loaded_at, context = _context_memo
+        if time.monotonic() - loaded_at < _CONTEXT_TTL_S:
+            return context
+    context = await _load_context()
+    _remember_context(context)
+    return context
 
 
 async def _evaluate(tag: str, context: _BulkContext) -> dict[str, bool | None]:
@@ -338,7 +386,7 @@ async def _evaluate(tag: str, context: _BulkContext) -> dict[str, bool | None]:
         # Leaderboard names come from the same source as the season boards,
         # so they match more reliably than the Wynncraft spelling would.
         "season_placement": _signal_season_placement(
-            tag, context.tag_to_name.get(tag), context
+            tag, context.name_for(tag), context
         ),
         "territory_ownership": _signal_territory_ownership(
             territories, context.current_season_active
@@ -348,26 +396,28 @@ async def _evaluate(tag: str, context: _BulkContext) -> dict[str, bool | None]:
     }
 
 
-async def _stat(tag: str, context: _BulkContext, field: str) -> float | None:
+async def _stat(tag: str, context: _BulkContext, attribute: str) -> float | None:
     """One per-guild number, for when a board has stopped being decisive."""
     stats = await _fetch_stats(tag, context)
-    return None if stats is None else getattr(stats, field)
+    return None if stats is None else getattr(stats, attribute)
 
 
 async def _fetch_stats(
     tag: str, context: _BulkContext
 ) -> external.GuildStats | None:
     """Per-guild numbers for ``tag``, from Wynnpool where it can answer."""
-    return await external.guild_stats(context.tag_to_name.get(tag), tag)
+    return await external.guild_stats(context.name_for(tag), tag)
 
 
 def _signal_top25_avg_online(tag: str, ctx: _BulkContext) -> bool:
-    return any(e.tag == tag and e.rank <= _SIGNAL_1_TOP_N for e in ctx.avg_online)
+    return any(
+        tags.matches(e.tag, tag) and e.rank <= _SIGNAL_1_TOP_N for e in ctx.avg_online
+    )
 
 
 def _signal_level_100_plus(tag: str, ctx: _BulkContext) -> bool:
     for entry in ctx.guild_level:
-        if entry.tag != tag:
+        if not tags.matches(entry.tag, tag):
             continue
         # If the payload reports a value, gate on it; otherwise treat
         # appearance on the leaderboard as sufficient.
@@ -395,7 +445,7 @@ def _signal_season_placement(
 
     def rank_in(board: tuple[wynnpool.LeaderboardEntry, ...]) -> int | None:
         for e in board:
-            if e.tag == tag:
+            if tags.matches(e.tag, tag):
                 return e.rank
             if folded and e.name and e.name.casefold() == folded:
                 return e.rank
@@ -439,7 +489,9 @@ def _signal_war_count(wars: float | None) -> bool:
 
 async def _has_active_notable_override(tag: str) -> bool:
     now = datetime.now(timezone.utc)
-    override = await ForceOverride.filter(kind="notable", subject=tag).first()
+    override = await ForceOverride.filter(
+        kind="notable", subject__iexact=tag
+    ).first()
     if override is None:
         return False
     return override.expires_at is None or override.expires_at > now

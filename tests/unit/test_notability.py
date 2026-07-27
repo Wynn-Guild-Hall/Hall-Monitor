@@ -29,9 +29,15 @@ def fresh_refresh_lock():
     every test on a new event loop. A lock left in any state by one test —
     or bound to a loop that has since closed — makes the next test's
     ``acquire`` wait on a future nothing will ever resolve.
+
+    The memoised bulk context is module state too: left in place, one
+    test's leaderboards would answer another's lookup and its registered
+    mocks would go unrequested.
     """
     notability._refresh_lock = asyncio.Lock()
+    notability.reset_context_memo()
     yield
+    notability.reset_context_memo()
 
 
 def _lb(rank: int, tag: str, name: str = "n", value: float | None = None):
@@ -500,3 +506,53 @@ async def test_refresh_counts_a_failure_without_aborting(db, httpx_mock, monkeyp
 
     assert calls == ["VETS", "WYNN"], "a failure must not stop the sweep"
     assert (summary.evaluated, summary.failed, summary.notable) == (1, 1, 1)
+
+
+async def test_a_cache_miss_reuses_the_last_sweep_s_leaderboards(db, httpx_mock, monkeypatch):
+    """The miss path runs inside `/api/verify`, which a player is waiting
+    on in Minecraft. Rebuilding the context there was twenty-odd
+    sequential fetches; picolimbo blocks that client's connection for the
+    duration, so slow reads back as disconnected."""
+    monkeypatch.setattr(
+        "hall_monitor.external.wynncraft.settings.wynncraft_api_token", ""
+    )
+    _boards(httpx_mock)          # one set of boards, for the sweep only
+    await refresh_all()
+
+    # No further boards registered: a second load would fail on an
+    # unmatched request, which is the assertion.
+    assert await is_notable("NEWG") is False
+    assert await NotabilityCache.get_or_none(guild_tag="NEWG") is not None
+
+
+async def test_the_memo_expires(db, httpx_mock, monkeypatch):
+    monkeypatch.setattr(
+        "hall_monitor.external.wynncraft.settings.wynncraft_api_token", ""
+    )
+    monkeypatch.setattr(notability, "_CONTEXT_TTL_S", -1)  # instantly stale
+    _boards(httpx_mock)
+    await refresh_all()
+    _boards(httpx_mock)          # a stale memo must fetch again
+    assert await is_notable("NEWG") is False
+
+
+async def test_a_force_override_matches_the_tag_whatever_its_case(db):
+    """A janitor types the tag by hand; Wynncraft's capitalisation is
+    whatever it is. An override keyed differently to the lookup is an
+    override that does nothing."""
+    await ForceOverride.create(kind="notable", subject="vets", expires_at=None)
+    assert await is_notable("VETS") is True
+    assert await is_notable("Vets") is True
+
+
+async def test_signals_match_a_differently_cased_board_entry(db):
+    ctx = _ctx(
+        avg_online=(_lb(3, "VETS"),),
+        guild_level=(_lb(1, "VETS", value=130),),
+        wars=(_lb(1, "VETS", value=99_999),),
+        tag_to_name={"VETS": "Returners"},
+        folded_to_name={"vets": "Returners"},
+    )
+    assert _signal_top25_avg_online("vets", ctx) is True
+    assert _signal_level_100_plus("vets", ctx) is True
+    assert ctx.name_for("vEtS") == "Returners"
