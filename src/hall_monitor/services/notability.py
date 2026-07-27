@@ -143,40 +143,63 @@ async def _evaluate_and_cache_single(tag: str) -> bool:
     return await _evaluate_and_cache(tag, await _load_context())
 
 
-async def _evaluate(tag: str, context: _BulkContext) -> dict[str, bool]:
+async def _evaluate(tag: str, context: _BulkContext) -> dict[str, bool | None]:
     """Compute each signal for ``tag`` and return a labelled dict.
 
     The dict is persisted verbatim to ``NotabilityCache.signals_json`` so a
     janitor can see exactly why a guild is (or isn't) notable without
-    re-running the refresh.
-    """
-    sig1 = _signal_top25_avg_online(tag, context)
-    sig2 = _signal_level_100_plus(tag, context)
+    re-running the refresh. ``None`` there means *not evaluated* — an
+    earlier signal had already settled it — as distinct from ``False``,
+    which means checked and not met.
 
-    # Per-guild data. Signals 4 and 5 read the payload; signal 3 needs the
-    # guild's name, because season boards identify guilds by name only.
+    Four of the six signals are answered by bulk payloads we already hold.
+    Only territory ownership and war count need a per-guild Wynncraft
+    fetch, so that request is deferred until the free signals have all
+    come back negative. Notability is an ``any()``, so for a guild that
+    already qualifies the fetch could not change the answer — and doing it
+    anyway meant a full guild payload per candidate per hour, which is how
+    a refresh sweep walks into a 429 and stays there.
+    """
+    signals: dict[str, bool | None] = {
+        "top25_average_online": _signal_top25_avg_online(tag, context),
+        "level_100_plus": _signal_level_100_plus(tag, context),
+        # Leaderboard names come from the same source as the season boards,
+        # so they match more reliably than the Wynncraft spelling would.
+        "season_placement": _signal_season_placement(
+            tag, context.tag_to_name.get(tag), context
+        ),
+        "territory_ownership": None,
+        "war_count": None,
+        "force_override": await _has_active_notable_override(tag),
+    }
+    if any(signals.values()):
+        return signals
+
+    guild = await _fetch_guild(tag, context)
+    if guild is not None and context.tag_to_name.get(tag) is None:
+        # A guild on no leaderboard has no name in the context; the
+        # Wynncraft payload is the only place to learn it.
+        signals["season_placement"] = _signal_season_placement(
+            tag, guild.name, context
+        )
+    signals["territory_ownership"] = _signal_territory_ownership(
+        guild, context.current_season_active
+    )
+    signals["war_count"] = _signal_war_count(guild)
+    return signals
+
+
+async def _fetch_guild(
+    tag: str, context: _BulkContext
+) -> wynncraft.Guild | None:
+    """The Wynncraft payload for ``tag``, by name if we know it, else by prefix."""
     name = context.tag_to_name.get(tag)
     guild = None
     if name is not None:
         guild = await wynncraft.get_guild(name)
     if guild is None:
         guild = await wynncraft.get_guild_by_prefix(tag)
-    if guild is not None:
-        name = guild.name
-
-    sig3 = _signal_season_placement(tag, name, context)
-    sig4 = _signal_territory_ownership(guild, context.current_season_active)
-    sig5 = _signal_war_count(guild)
-    sig6 = await _has_active_notable_override(tag)
-
-    return {
-        "top25_average_online": sig1,
-        "level_100_plus": sig2,
-        "season_placement": sig3,
-        "territory_ownership": sig4,
-        "war_count": sig5,
-        "force_override": sig6,
-    }
+    return guild
 
 
 def _signal_top25_avg_online(tag: str, ctx: _BulkContext) -> bool:

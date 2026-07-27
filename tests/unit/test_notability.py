@@ -268,36 +268,40 @@ async def test_refresh_all_writes_cache_for_all_candidates(db, httpx_mock, monke
     # Force override expands candidate set (with a distinct tag).
     await ForceOverride.create(kind="notable", subject="OVRD", expires_at=None)
 
-    # For each per-guild fetch, wynncraft.get_guild(name) is called; DELEG has
-    # no name mapping so it falls through to get_guild_by_prefix. Mock both.
-    for name in ("Wynncraft Veterans",):
-        httpx_mock.add_response(
-            url=f"https://api.wynncraft.com/v3/guild/{name}",
-            json={
-                "uuid": "u", "name": name, "prefix": "VETS",
-                "level": 130, "territories": 25, "wars": 60000,
-                "members": {},
-            },
-        )
-    for tag in ("DELEG", "OVRD"):
-        httpx_mock.add_response(
-            url=f"https://api.wynncraft.com/v3/guild/prefix/{tag}",
-            status_code=404,
-        )
+    # Only DELEG needs a per-guild fetch. VETS is settled by the
+    # leaderboards and OVRD by its override, so mocking their guild
+    # endpoints would leave pytest-httpx holding unrequested responses —
+    # which is the assertion that the fetch really is skipped.
+    httpx_mock.add_response(
+        url="https://api.wynncraft.com/v3/guild/prefix/DELEG",
+        status_code=404,
+    )
 
     await refresh_all()
 
     cached_tags = {r.guild_tag for r in await NotabilityCache.all()}
     assert cached_tags == {"VETS", "DELEG", "OVRD"}
-    # VETS should be notable (level + war count + override-less).
+
+    # VETS is notable on the leaderboards alone; the two signals that would
+    # have cost a Wynncraft call are recorded as unevaluated, not false.
     vets = await NotabilityCache.get(guild_tag="VETS")
     assert vets.is_notable is True
-    # OVRD has no signals but has a force override — notable.
+    vets_signals = json.loads(vets.signals_json)
+    assert vets_signals["top25_average_online"] is True
+    assert vets_signals["territory_ownership"] is None
+    assert vets_signals["war_count"] is None
+
+    # OVRD has no real signals but has a force override — notable, and it
+    # short-circuits before the fetch just the same.
     ovrd = await NotabilityCache.get(guild_tag="OVRD")
     assert ovrd.is_notable is True
-    # DELEG has neither — not notable.
+    assert json.loads(ovrd.signals_json)["war_count"] is None
+
+    # DELEG qualifies on nothing, so it does pay for the lookup — and the
+    # 404 leaves the per-guild signals evaluated-and-false rather than None.
     deleg = await NotabilityCache.get(guild_tag="DELEG")
     assert deleg.is_notable is False
+    assert json.loads(deleg.signals_json)["war_count"] is False
 
 
 async def test_refresh_all_survives_untagged_season_entries(db, httpx_mock, monkeypatch):
@@ -330,13 +334,8 @@ async def test_refresh_all_survives_untagged_season_entries(db, httpx_mock, monk
             ],
         },
     )
-    httpx_mock.add_response(
-        url="https://api.wynncraft.com/v3/guild/Returners",
-        json={
-            "uuid": "u", "name": "Returners", "prefix": "VETS",
-            "level": 93, "territories": 0, "wars": 47, "members": {},
-        },
-    )
+    # No Wynncraft guild mock: VETS is settled by the leaderboards before
+    # the per-guild fetch would happen.
 
     await refresh_all()
 

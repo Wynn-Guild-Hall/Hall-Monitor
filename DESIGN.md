@@ -65,6 +65,8 @@ Reading the invite list requires **Manage Server**. With only View Audit Log, Di
 5. War count > 50 000 on the Wynncraft guild payload.
 6. A janitor/monitor-issued force override (`force_override` table with `kind="notable"`) with no expiry or an expiry in the future.
 
+Four of the six signals are answered by bulk payloads the refresh already holds; only territory ownership and war count need a per-guild Wynncraft fetch. Since notability is an `any()`, that fetch is deferred until the free signals have all come back negative — a guild that already qualifies can't have its answer changed by it. `signals_json` records a skipped signal as `null` (not evaluated) rather than `false` (checked, not met).
+
 `is_notable(tag)` reads from the cache; on a miss it falls back to an inline single-guild evaluation that hits every relevant API and populates the cache row. `refresh_all()` collects candidate tags from every Wynnpool leaderboard, every `Delegate` row, and every `ForceOverride(kind="notable")`, then re-evaluates them all. The scheduler runs it every `NOTABILITY_REFRESH_SECONDS` (default 3600).
 
 `~force notable <tag> <time>` writes a `ForceOverride` row. Janitors are capped at three months — long enough to carry a guild through a quiet patch, short enough that nobody parks a guild in the Hall indefinitely. There's no floor. Monitors have no ceiling and can pass `0` for a permanent override (`services/time_parse.py` owns the parsing). `~unforce notable <tag>` deletes the row.
