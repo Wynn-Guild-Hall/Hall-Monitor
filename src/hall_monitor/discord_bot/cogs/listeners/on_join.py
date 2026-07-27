@@ -8,9 +8,10 @@ without roles is worse than one who has to type their code again,
 and a lingering ``Delegate`` row would make ``mint_invite`` refuse the
 retry.
 
-Contact-conflict displacement, the guild aesthetic role, and nickname
-enforcement are deliberately absent here — later stages hang off the same
-listener.
+Claiming the contact slots comes last, once the delegate row exists —
+see ``services/contacts.py`` for what displacing a prior holder costs
+them. The guild aesthetic role and nickname enforcement are still absent
+here; later stages hang off the same listener.
 """
 
 import logging
@@ -129,14 +130,39 @@ class OnJoin(commands.Cog):
             )
             return
 
-        await delegate_registry.register(pending.mc_uuid, member.id, pending.guild_tag)
+        delegate = await delegate_registry.register(
+            pending.mc_uuid, member.id, pending.guild_tag
+        )
+        guild_tag, roles_bits = pending.guild_tag, pending.roles_bits
         await pending.delete()
         logger.info(
             "join: %s is now a %s delegate with roles %s",
             member.id,
-            pending.guild_tag,
+            guild_tag,
             ", ".join(role.name for role in roles),
         )
+
+        # Claiming the slots is deliberately after the promotion: the
+        # member is already a delegate by this point, so a displacement
+        # that half-fails is a contact-roster problem, not a reason to
+        # unwind a verification that otherwise worked.
+        displaced = await contacts.resolve_conflicts_and_kick_if_empty(
+            guild_tag,
+            role_bits.decode(roles_bits),
+            delegate,
+            discord_guild=member.guild,
+            grant=False,  # add_roles above already applied the whole set
+            reason=f"hall-monitor: {guild_tag} contact reassigned on verification",
+        )
+        for loss in displaced:
+            logger.info(
+                "join: %s took the %s %s slot from %s (kicked=%s)",
+                member.id,
+                guild_tag,
+                loss.role,
+                loss.delegate.discord_user_id,
+                loss.kicked,
+            )
 
 
 async def setup(bot: commands.Bot) -> None:

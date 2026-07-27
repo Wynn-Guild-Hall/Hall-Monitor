@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 import discord
 import pytest
 
-from hall_monitor.db.models import Delegate, PendingInvite
+from hall_monitor.db.models import Delegate, GuildContact, PendingInvite
 from hall_monitor.discord_bot.cogs.listeners import on_join
 from hall_monitor.services import contacts, discord_invites
 from hall_monitor.services.discord_invites import (
@@ -445,6 +445,48 @@ async def test_join_applies_roles_and_promotes_to_delegate(db, configured_roles)
     assert delegate.discord_user_id == 555
     assert delegate.guild_tag == "VETS"
     assert await PendingInvite.filter(discord_invite_code="used-code").count() == 0
+
+
+async def test_join_claims_the_contact_slots_and_displaces_the_prior_holder(
+    db, configured_roles
+):
+    """Verification is how a guild swaps a contact — the join has to run the
+    same displacement path `~force assign` does."""
+    await _pending("used-code", mc_uuid="uuid-new", bits=0b0001, tag="VETS")
+    old = await Delegate.create(
+        mc_uuid="uuid-old", discord_user_id=999, guild_tag="VETS"
+    )
+    await GuildContact.create(guild_tag="VETS", role="events", delegate=old)
+
+    old_member = MagicMock()
+    old_member.id = 999
+    old_member.remove_roles = AsyncMock()
+    old_member.kick = AsyncMock()
+    guild = _fake_guild()
+    old_member.guild = guild
+    guild.get_member = lambda uid: old_member if uid == 999 else None
+    member = _fake_member(guild, user_id=555)
+
+    await on_join.OnJoin(MagicMock()).on_member_join(member)
+
+    holder = await contacts.current_holder("VETS", "events")
+    assert holder.discord_user_id == 555
+    old_member.remove_roles.assert_awaited_once()
+    old_member.kick.assert_awaited_once()  # events was their only slot
+
+
+async def test_join_doesnt_re_add_roles_it_already_applied(db, configured_roles):
+    """`add_roles` covers the whole set in one request; the slot claim must
+    not spend four more calls re-applying them."""
+    await _pending("used-code", mc_uuid="uuid-new", bits=0b1111, tag="VETS")
+    guild = _fake_guild()
+    member = _fake_member(guild, user_id=555)
+    guild.get_member = lambda uid: member if uid == 555 else None
+
+    await on_join.OnJoin(MagicMock()).on_member_join(member)
+
+    member.add_roles.assert_awaited_once()
+    assert await GuildContact.filter(guild_tag="VETS").count() == 4
 
 
 async def test_join_without_a_match_changes_nothing(db, configured_roles):
