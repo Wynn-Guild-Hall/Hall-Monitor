@@ -29,6 +29,17 @@ The verify flow mints single-use invites and hands out roles when they're redeem
 
 Administrator covers all three (and overrides channel overwrites), which is how the bot is set up in production — it holds the monitor role. What Administrator does **not** waive is role position: only the guild owner can assign a role above their own highest one. The bot's role has to sit above Guild Hall Delegate and the four contact roles, or `add_roles` comes back 403 and the join lands in the failed-role-application path.
 
+## Test guilds
+
+Use **`WYNN`** for anything that needs a live guild to poke at. It's a
+real but tiny admin guild, so every API call resolves the way it would in
+production while no real signal marks it notable — which makes it the
+honest subject for `~force notable`, since you can watch a guild flip
+false → true → false. An invented tag like `ZZZZ` 404s at the per-guild
+lookup and never exercises that path at all.
+
+`VETS` is the stock example for a guild that *is* notable.
+
 ## Poking the clients on a running container
 
 Each `external/` module holds one long-lived `httpx.AsyncClient` with a

@@ -402,8 +402,8 @@ async def test_refresh_reports_progress_and_a_summary(db, httpx_mock, monkeypatc
         "hall_monitor.external.wynncraft.settings.wynncraft_api_token", ""
     )
     _empty_boards(httpx_mock)
-    await ForceOverride.create(kind="notable", subject="AAAA", expires_at=None)
-    await ForceOverride.create(kind="notable", subject="BBBB", expires_at=None)
+    await ForceOverride.create(kind="notable", subject="WYNN", expires_at=None)
+    await ForceOverride.create(kind="notable", subject="VETS", expires_at=None)
 
     seen: list[tuple[int, int]] = []
 
@@ -442,14 +442,14 @@ async def test_refresh_survives_a_broken_progress_callback(db, httpx_mock, monke
         "hall_monitor.external.wynncraft.settings.wynncraft_api_token", ""
     )
     _empty_boards(httpx_mock)
-    await ForceOverride.create(kind="notable", subject="AAAA", expires_at=None)
+    await ForceOverride.create(kind="notable", subject="WYNN", expires_at=None)
 
     async def on_progress(done, total):
         raise RuntimeError("discord fell over")
 
     summary = await refresh_all(on_progress=on_progress)
     assert summary is not None and summary.evaluated == 1
-    assert await NotabilityCache.get_or_none(guild_tag="AAAA") is not None
+    assert await NotabilityCache.get_or_none(guild_tag="WYNN") is not None
 
 
 async def test_refresh_counts_a_failure_without_aborting(db, httpx_mock, monkeypatch):
@@ -457,20 +457,20 @@ async def test_refresh_counts_a_failure_without_aborting(db, httpx_mock, monkeyp
         "hall_monitor.external.wynncraft.settings.wynncraft_api_token", ""
     )
     _empty_boards(httpx_mock)
-    await ForceOverride.create(kind="notable", subject="AAAA", expires_at=None)
-    await ForceOverride.create(kind="notable", subject="BBBB", expires_at=None)
+    await ForceOverride.create(kind="notable", subject="WYNN", expires_at=None)
+    await ForceOverride.create(kind="notable", subject="VETS", expires_at=None)
 
     calls: list[str] = []
     real = notability._evaluate_and_cache
 
     async def flaky(tag, context):
         calls.append(tag)
-        if tag == "AAAA":
+        if tag == "VETS":
             raise RuntimeError("boom")
         return await real(tag, context)
 
     monkeypatch.setattr(notability, "_evaluate_and_cache", flaky)
     summary = await refresh_all()
 
-    assert calls == ["AAAA", "BBBB"], "a failure must not stop the sweep"
+    assert calls == ["VETS", "WYNN"], "a failure must not stop the sweep"
     assert (summary.evaluated, summary.failed, summary.notable) == (1, 1, 1)
