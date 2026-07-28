@@ -14,8 +14,23 @@ from hall_monitor.db.models import DashKV, Delegate
 from hall_monitor.discord_bot.cogs.general import dash as dash_cog
 from hall_monitor.services import dash, dash_schema
 
-A_BOOL = "recruiting"
-A_SCALAR = "recruitment_info"
+# The live schema is deliberately **empty** — nothing renders these yet,
+# so a key that could be filled in but is displayed nowhere would invite
+# guilds to write into a place nobody is looking. These tests declare
+# their own, which is the right coupling anyway: they're about the
+# machinery, not about which questions the Hall happens to ask this week.
+A_BOOL = "a_bool_key"
+A_SCALAR = "a_scalar_key"
+
+FIXTURE_KEYS = {
+    A_BOOL: dash_schema.Key(A_BOOL, dash_schema.BOOL, "A yes/no question"),
+    A_SCALAR: dash_schema.Key(A_SCALAR, dash_schema.SCALAR, "A question with text"),
+}
+
+
+@pytest.fixture(autouse=True)
+def schema(monkeypatch):
+    monkeypatch.setattr(dash_schema, "KEYS", FIXTURE_KEYS)
 
 
 def _ctx(user_id: int = 1):
@@ -63,10 +78,10 @@ def test_every_declared_key_is_self_consistent():
 
 
 def test_keys_match_case_insensitively():
-    """A human types these. `Recruiting` and `recruiting` are the same
+    """A human types these. `A_Bool_Key` and `a_bool_key` are the same
     question, and refusing the first would be a puzzle, not a rule."""
-    assert dash_schema.get("RECRUITING").name == A_BOOL
-    assert dash_schema.get("  Recruiting  ").name == A_BOOL
+    assert dash_schema.get(A_BOOL.upper()).name == A_BOOL
+    assert dash_schema.get(f"  {A_BOOL.title()}  ").name == A_BOOL
 
 
 def test_an_undeclared_key_is_unknown():
@@ -314,3 +329,46 @@ async def test_a_departed_delegate_cannot_edit(db, cog):
 
     with pytest.raises(dash_cog.NoGuild):
         await dash_cog.speaking_for(_ctx())
+
+
+# --------------------------------------------------------------------------
+# The empty schema — what actually ships
+# --------------------------------------------------------------------------
+
+
+def test_the_live_schema_is_empty():
+    """Deliberate, and this test is the reminder of why. Nothing renders
+    a guild's answers yet, and a key that can be filled in but is
+    displayed nowhere invites guilds to write into a place nobody is
+    looking — worse than a missing feature, because it looks like a
+    working one. A key arrives when its consumer does; deleting this test
+    is part of adding the first.
+    """
+    import importlib
+
+    assert importlib.reload(dash_schema).KEYS == {}
+
+
+async def test_the_listing_says_nothing_is_asked_rather_than_showing_none(
+    db, cog, monkeypatch
+):
+    """An empty list under a header reads as something having gone
+    wrong."""
+    monkeypatch.setattr(dash_schema, "KEYS", {})
+    await _delegate()
+    ctx = _ctx()
+
+    await _run(cog, "dash", ctx)
+
+    body = _said(ctx)
+    assert "isn't asking anything yet" in body
+    assert "dashboard**" not in body
+
+
+def test_an_unknown_key_with_no_schema_doesnt_offer_an_empty_list(monkeypatch):
+    monkeypatch.setattr(dash_schema, "KEYS", {})
+
+    body = dash_cog.unknown_key("anything")
+
+    assert "isn't asking anything yet" in body
+    assert not body.rstrip().endswith("These are:")

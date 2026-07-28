@@ -553,7 +553,9 @@ The embed commands take **one-shot `key=value` syntax rather than an interactive
 
 **Status:** implemented (Stage 16)
 
-Each guild answers a short set of questions about itself — are you recruiting, how do you apply, when do you war — and a Hallway page renders the answers. `~dash` is how a contact fills them in, `services/dash_schema.py` declares what can be asked, and `services/dash.py` stores it.
+Each guild answers a short set of questions about itself, and a Hallway page renders the answers. `~dash` is how a contact fills them in, `services/dash_schema.py` declares what can be asked, and `services/dash.py` stores it.
+
+**The declared set is currently empty, on purpose.** Nothing renders these yet — the Hallway page is out of scope for the build plan — and a key that can be filled in but is displayed nowhere invites guilds to write into a place nobody is looking. That's worse than a missing feature, because it looks like a working one. A key arrives when its consumer does: one entry in `dash_schema.KEYS`, no migration, settable immediately. Both surfaces read correctly with none declared — `~dash` says the Hall isn't asking anything yet rather than printing an empty list under a header, which would look like a fault.
 
 ### 19.1 Keys are declared, not invented
 

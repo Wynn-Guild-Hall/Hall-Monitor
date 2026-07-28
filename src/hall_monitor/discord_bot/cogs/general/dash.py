@@ -43,12 +43,26 @@ async def speaking_for(ctx: commands.Context) -> str:
     return await delegate_registry.represented_guild(delegate)
 
 
+# What to say when the schema is empty. It is, for now, and deliberately
+# — nothing renders these yet, so a key that could be filled in but is
+# displayed nowhere would invite guilds to write into a place nobody is
+# looking (`services/dash_schema.py`). Both surfaces have to read as
+# "there's nothing to fill in" rather than as an empty list, which looks
+# like something went wrong.
+NOTHING_ASKED = (
+    "the Hall isn't asking anything yet — no dashboard questions are set up. "
+    "A monitor adds them in `services/dash_schema.py`."
+)
+
+
 def unknown_key(name: str) -> str:
     """Refuse an undeclared key, naming the ones that exist.
 
     The list is the point. Somebody who can't invent a key has no other
     way to find out what they may set.
     """
+    if not dash_schema.KEYS:
+        return f"`{name}` isn't a dashboard question — and {NOTHING_ASKED}"
     return (
         f"`{name}` isn't one of the Hall's questions. These are:\n"
         + "\n".join(
@@ -67,6 +81,8 @@ def wrong_kind(exc: dash_schema.WrongKind) -> str:
 
 
 async def render_all(guild_tag: str) -> str:
+    if not dash_schema.KEYS:
+        return NOTHING_ASKED[0].upper() + NOTHING_ASKED[1:]
     values = await dash.values_for(guild_tag)
     lines = [f"**`{guild_tag}`'s dashboard**"]
     for key in dash_schema.KEYS.values():

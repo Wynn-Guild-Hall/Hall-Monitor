@@ -67,22 +67,20 @@ class Key:
         return "toggle" if self.kind == BOOL else "set"
 
 
-# The starter set. Deliberately small — every one of these is a question
-# a guild can actually answer and a page can actually render, and adding
-# the next is a single line.
-KEYS: dict[str, Key] = {
-    key.name: key
-    for key in (
-        Key("recruiting", BOOL, "Whether you're currently taking applications"),
-        Key(
-            "recruitment_info",
-            SCALAR,
-            "How to apply, and anything you require of applicants",
-        ),
-        Key("discord_invite", SCALAR, "A permanent invite to your own Discord"),
-        Key("war_times", SCALAR, "Roughly when your guild wars, and in what timezone"),
-    )
-}
+# Deliberately empty, and it stays that way until something *reads*
+# these. Nothing renders a guild's answers yet — the Hallway page is out
+# of scope — and a key that can be filled in but is displayed nowhere
+# invites guilds to write things into a place nobody is looking. Worse
+# than a missing feature: it looks like a working one.
+#
+# A key arrives when its consumer does. Add the entry here, no migration,
+# settable immediately:
+#
+#     Key("recruiting", BOOL, "Whether you're taking applications"),
+#
+# The commands read correctly with none declared — `~dash` says the Hall
+# isn't asking anything yet rather than printing an empty list.
+KEYS: dict[str, Key] = {}
 
 
 def get(name: str) -> Key:
