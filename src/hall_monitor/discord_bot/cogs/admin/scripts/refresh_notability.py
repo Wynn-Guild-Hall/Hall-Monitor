@@ -12,7 +12,7 @@ drop guilds with "database is locked".
 
 import time
 
-from hall_monitor.services import notability
+from hall_monitor.services import notability, roster
 
 # Discord allows roughly 5 edits per 5 s on a channel. A sweep steps
 # through a hundred-odd guilds, so throttle well clear of that.
@@ -43,6 +43,11 @@ async def main(ctx, *args: str) -> None:
         # Lost a race with the scheduler between the check and the call.
         await message.edit(content="a notability refresh was already running.")
         return
+
+    # The sweep decides who's on the roster, so publish the new answer
+    # rather than leaving the channel an hour behind the numbers.
+    if ctx.guild is not None:
+        roster.request_sync(ctx.guild)
 
     lines = [
         f"notability refresh done in {summary.seconds:.0f}s",

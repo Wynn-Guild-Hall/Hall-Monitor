@@ -8,6 +8,7 @@ vs. monitor) stay adjacent to the logic they gate.
 from discord.ext import commands
 
 from hall_monitor.discord_bot import command_help
+from hall_monitor.services import roster
 
 
 class ForceGroup(commands.Cog):
@@ -15,6 +16,26 @@ class ForceGroup(commands.Cog):
 
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
+
+    async def cog_after_invoke(self, ctx: commands.Context) -> None:
+        """Redraw the roster after any force command that ran cleanly.
+
+        Every `~force`/`~unforce` moves something the roster prints —
+        which guild is notable, who represents it, who holds its slots —
+        so the hook belongs on the group rather than on each sub-command.
+        Hooking them one at a time is how `~force guild` and
+        `~force notable` shipped without one: the roster went stale and
+        the command said nothing was wrong. This way a sub-command added
+        later, including the two Stage 14 and 15 still owe, is covered
+        without anyone remembering to.
+
+        The sync is debounced and a pass with nothing to do is a single
+        channel read, so redrawing after a command that happened not to
+        change anything costs effectively nothing.
+        """
+        if ctx.command_failed or ctx.guild is None:
+            return
+        roster.request_sync(ctx.guild)
 
     @commands.group(name="force", invoke_without_command=True)
     async def force(self, ctx: commands.Context) -> None:

@@ -44,8 +44,9 @@ class FakeMessage:
         self.deleted = False
         self.edits: list[str] = []
 
-    async def edit(self, *, content: str) -> None:
+    async def edit(self, *, content: str, allowed_mentions=None) -> None:
         self.edits.append(content)
+        self.allowed_mentions = allowed_mentions
         self.content = content
 
     async def delete(self) -> None:
@@ -68,9 +69,10 @@ class FakeChannel:
 
         return walk()
 
-    async def send(self, content: str) -> FakeMessage:
+    async def send(self, content: str, *, allowed_mentions=None) -> FakeMessage:
         self.sent.append(content)
         message = FakeMessage(content, channel=self)
+        message.allowed_mentions = allowed_mentions
         self.messages.append(message)
         return message
 
@@ -460,6 +462,29 @@ async def test_a_failed_send_stops_rather_than_posting_out_of_order(db, monkeypa
     assert await RosterMessage.all().count() == 0
 
 
+async def test_the_roster_never_pings_the_people_on_it(db):
+    """It redraws on every join, leave, force and hourly sweep. Four
+    contacts a guild getting notified each time is unusable."""
+    guild = FakeGuild()
+    await _one_guild(guild)
+    delegate = await _delegate("uuid-a", 1, "VETS")
+    guild.add_member(1)
+    await GuildContact.create(guild_tag="VETS", role="events", delegate=delegate)
+
+    await roster.sync_channel(guild)
+    posted = guild.channel.messages[0]
+
+    assert "<@1>" in posted.content, "still a real mention, so it links"
+    assert posted.allowed_mentions is roster.SILENT
+
+    # And on the edit path too — an edit that omits it falls back to the
+    # default and pings, which is the half of this that's easy to miss.
+    await GuildContact.create(guild_tag="VETS", role="housing", delegate=delegate)
+    await roster.sync_channel(guild)
+
+    assert posted.edits and posted.allowed_mentions is roster.SILENT
+
+
 # --------------------------------------------------------------------------
 # A representative leaving the server
 # --------------------------------------------------------------------------
@@ -526,6 +551,39 @@ async def test_a_leaving_guest_is_left_alone(db, monkeypatch):
 # --------------------------------------------------------------------------
 # The debounced request
 # --------------------------------------------------------------------------
+
+
+async def test_every_force_command_redraws_the_roster(db, monkeypatch):
+    """`~force guild` and `~force notable` shipped without a hook, and the
+    roster silently went stale. The group owns it now, so a sub-command
+    added later can't repeat that."""
+    from hall_monitor.discord_bot.cogs import force
+
+    asked = []
+    monkeypatch.setattr(roster, "request_sync", lambda guild: asked.append(guild))
+    guild = FakeGuild()
+    ctx = MagicMock()
+    ctx.guild = guild
+    ctx.command_failed = False
+
+    await force.ForceGroup(MagicMock()).cog_after_invoke(ctx)
+
+    assert asked == [guild]
+
+
+async def test_a_failed_force_command_doesnt_redraw(db, monkeypatch):
+    """Nothing moved, so there's nothing to publish."""
+    from hall_monitor.discord_bot.cogs import force
+
+    asked = []
+    monkeypatch.setattr(roster, "request_sync", lambda guild: asked.append(guild))
+    ctx = MagicMock()
+    ctx.guild = FakeGuild()
+    ctx.command_failed = True
+
+    await force.ForceGroup(MagicMock()).cog_after_invoke(ctx)
+
+    assert asked == []
 
 
 async def test_a_burst_of_requests_costs_one_sync(db, monkeypatch):

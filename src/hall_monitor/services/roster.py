@@ -69,6 +69,15 @@ FALLBACK_EMOTE = "\N{WAVING WHITE FLAG}"
 
 UNCLAIMED = "`unclaimed`"
 
+# Contacts are named with a real `<@id>` so the entry stays a live link to
+# the person — but the roster is redrawn on every join, leave, force and
+# hourly sweep, and none of those are a reason to notify four people per
+# guild. This suppresses the *notification* only: the mention still
+# renders as their name, in the usual highlight, and still clicks through.
+# It has to be passed on `edit` as well as `send`, because an edit that
+# omits it falls back to the default and pings.
+SILENT = discord.AllowedMentions.none()
+
 # Guilds with no level-board rank sort after every guild that has one.
 _UNRANKED = 10**6
 
@@ -447,7 +456,7 @@ async def _edit(message: discord.Message, chunk_: RosterChunk) -> int:
     if message.content == chunk_.content:
         return 0  # already right — an hourly pass must be quiet
     try:
-        await message.edit(content=chunk_.content)
+        await message.edit(content=chunk_.content, allowed_mentions=SILENT)
     except discord.HTTPException:
         logger.exception("roster: couldn't edit message %s", message.id)
         return 0
@@ -458,7 +467,7 @@ async def _send(
     channel: discord.TextChannel, position: int, chunk_: RosterChunk
 ) -> bool:
     try:
-        sent = await channel.send(chunk_.content)
+        sent = await channel.send(chunk_.content, allowed_mentions=SILENT)
     except discord.HTTPException:
         logger.exception("roster: couldn't post roster message %d", position)
         return False
