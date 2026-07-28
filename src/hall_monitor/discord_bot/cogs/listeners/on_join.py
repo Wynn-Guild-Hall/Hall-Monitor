@@ -28,6 +28,7 @@ from hall_monitor.services import (
     guild_roles,
     nicknames,
     role_bits,
+    roster,
 )
 
 logger = logging.getLogger(__name__)
@@ -196,6 +197,10 @@ class OnJoin(commands.Cog):
         await nicknames.enforce(
             member, reason=f"hall-monitor: {guild_tag} delegate verification"
         )
+
+        # The roster now names a contact it didn't before. Debounced, so a
+        # verification that claims four slots redraws the channel once.
+        roster.request_sync(member.guild)
 
 
 async def setup(bot: commands.Bot) -> None:

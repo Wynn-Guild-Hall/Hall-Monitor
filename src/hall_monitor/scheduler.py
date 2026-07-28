@@ -11,6 +11,7 @@ from hall_monitor.services import (
     delegate_registry,
     discord_invites,
     notability,
+    roster,
     transitions,
 )
 
@@ -39,10 +40,16 @@ def build_scheduler(bot: commands.Bot) -> AsyncIOScheduler:
 async def refresh_and_reconcile(bot: commands.Bot) -> None:
     """Re-gather the facts, then make Discord match them.
 
-    One job rather than three intervals, in this order deliberately: the
+    One job rather than four intervals, in this order deliberately: the
     reconcile reads both the notability cache and each delegate's current
     guild, so gathering them separately would spend an hour of every
-    change acting on the previous sweep's numbers.
+    change acting on the previous sweep's numbers. The roster goes last
+    for the same reason — it publishes what the pass just settled.
+
+    The roster sync here is also the backstop for the event-driven
+    `roster.request_sync` calls: a hook someone forgets to add, or a pass
+    that lost a race with Discord, costs at most an hour of staleness
+    rather than permanent drift.
     """
     await notability.refresh_all()
     checked, external = await delegate_registry.refresh_current_guilds()
@@ -62,3 +69,11 @@ async def refresh_and_reconcile(bot: commands.Bot) -> None:
         return
     summary = await transitions.reconcile(guild)
     logger.info("reconcile: %s", summary.line())
+
+    try:
+        published = await roster.sync_channel(guild)
+    except Exception:  # noqa: BLE001 — a channel edit must not cost the sweep
+        logger.exception("roster: sync failed")
+        return
+    if published is not None:
+        logger.info("roster: %s", published.line())

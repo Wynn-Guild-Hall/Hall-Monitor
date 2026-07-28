@@ -19,7 +19,12 @@ from discord.ext import commands
 from hall_monitor.config import settings
 from hall_monitor.db.models import Delegate
 from hall_monitor.discord_bot.permissions import has_any_role, is_ownership_contact
-from hall_monitor.services import contacts, delegate_registry, guild_tag as guild_tag_service
+from hall_monitor.services import (
+    contacts,
+    delegate_registry,
+    guild_tag as guild_tag_service,
+    roster,
+)
 
 
 class Rejected(Exception):
@@ -134,6 +139,7 @@ def register(cog: commands.Cog) -> None:
                 f"`~force guild {user.mention} {target.guild_tag} 3mo` first."
             )
             return
+        roster.request_sync(ctx.guild)
         await ctx.reply(
             f"{user.mention} is now the `{role}` contact for "
             f"`{target.guild_tag}`.{displacement_note(displaced)}"
@@ -165,6 +171,7 @@ def register(cog: commands.Cog) -> None:
                 f"`{target.guild_tag}` — nothing to clear."
             )
             return
+        roster.request_sync(ctx.guild)
         tail = (
             " They were kicked — it was their last contact role."
             if cleared.kicked
