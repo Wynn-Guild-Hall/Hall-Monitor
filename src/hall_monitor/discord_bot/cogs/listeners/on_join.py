@@ -168,16 +168,16 @@ class OnJoin(commands.Cog):
                 grant=False,  # add_roles above already applied the whole set
                 reason=f"hall-monitor: {guild_tag} contact reassigned on verification",
             )
-        except contacts.ExternalDelegate as exc:
+        except contacts.NotTheirGuild as exc:
             # Only reachable with a `~force guild` override written before
             # they verified — the registration seeds them into their own
             # guild. They're a delegate either way; the slots wait.
             logger.warning(
-                "join: %s verified for %s but is forced to %s, so no contact "
+                "join: %s verified for %s but represents %s, so no contact "
                 "slots were claimed",
                 member.id,
                 guild_tag,
-                exc.playing_for,
+                exc.represents,
             )
             displaced = []
         for loss in displaced:

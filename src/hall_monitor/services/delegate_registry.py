@@ -9,13 +9,20 @@
 available, so the DB not being caught up yet doesn't produce a false
 positive between the leave event and the listener firing.
 
-Two guild tags, deliberately: ``guild_tag`` is the guild they verified as
-a representative of and never changes, while ``current_guild_tag`` is
-where Wynncraft last saw them and is refreshed by
-:func:`refresh_current_guilds`. A representative who moves guilds stops
-representing the old one — see :data:`EXTERNAL` — but they don't start
-representing the new one, which would need them to be a chief of it and
-to verify again.
+Two guild tags on the row, plus an override, and they answer different
+questions:
+
+- ``guild_tag`` — the guild they verified as a chief of. Never changes.
+- ``current_guild_tag`` — where Wynncraft last saw them, refreshed hourly
+  by :func:`refresh_current_guilds`.
+- ``ForceOverride(kind="guild")`` — a janitor asserting who they
+  represent, which outranks both.
+
+:func:`represented_guild` folds those into the one answer everything
+downstream keys on. A representative who drifts to a different guild on
+their own stops representing the old one (:data:`EXTERNAL`) and doesn't
+start representing the new one — that would need them to be a chief of it
+and to verify again, or a janitor to say so with ``~force guild``.
 """
 
 import json
@@ -135,30 +142,40 @@ async def clear_forced_guild(discord_user_id: int) -> int:
     ).delete()
 
 
-async def current_guild(delegate: Delegate) -> str | None:
-    """Where the Hall treats this representative as playing.
+async def represented_guild(delegate: Delegate) -> str:
+    """Which guild this member speaks for, right now.
 
-    A live ``~force guild`` wins over the watch. It has to: the watch
-    rewrites ``current_guild_tag`` every hour from Wynncraft, so an
-    override stored in that column would last exactly until the next
-    sweep quietly reverted it.
+    Normally the one they verified as a chief of. A live ``~force guild``
+    replaces it outright — the janitor is asserting who they represent,
+    and everything downstream follows from that single answer: the tag on
+    their nickname, the colour they wear, which guild's contact slots they
+    may hold, and whose notability decides their standing.
+
+    The override can't live in ``current_guild_tag``: the watch rewrites
+    that column every hour from Wynncraft, so a forced value stored there
+    would survive exactly until the next sweep.
     """
-    forced = await forced_guild(delegate.discord_user_id)
-    return forced if forced is not None else delegate.current_guild_tag
+    return await forced_guild(delegate.discord_user_id) or delegate.guild_tag
 
 
 async def is_external(delegate: Delegate) -> bool:
-    """Whether this representative has moved to a different guild.
+    """Whether this representative has drifted away from the guild they speak for.
 
     Being *guildless* doesn't count, per the design brief: someone between
     guilds is still the person their guild sent, and the alternative is
     relegating anyone who leaves for an afternoon. Only actively
     representing one guild while sitting in another does.
+
+    **A forced representation is never external.** The watch reporting a
+    different guild is exactly the situation the janitor overrode; letting
+    it relegate them anyway would make the override useless in the case it
+    exists for.
     """
-    current = await current_guild(delegate)
-    if not current:
+    if await forced_guild(delegate.discord_user_id):
         return False
-    return not tags.matches(current, delegate.guild_tag)
+    if not delegate.current_guild_tag:
+        return False
+    return not tags.matches(delegate.current_guild_tag, delegate.guild_tag)
 
 
 async def standing(delegate: Delegate, *, notable: bool) -> str:

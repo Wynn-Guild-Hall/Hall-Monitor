@@ -41,9 +41,10 @@ async def main(ctx, *args: str) -> None:
         return
 
     forced = await delegate_registry.forced_guild(member.id)
-    notable = await notability.is_notable(delegate.guild_tag)
+    represents = await delegate_registry.represented_guild(delegate)
+    notable = await notability.is_notable(represents)
     standing = await delegate_registry.standing(delegate, notable=notable)
-    role = await guild_roles.resolve_role(ctx.guild, delegate.guild_tag)
+    role = await guild_roles.resolve_role(ctx.guild, represents)
     slots = await GuildContact.filter(delegate_id=delegate.id).values_list(
         "role", flat=True
     )
@@ -51,7 +52,7 @@ async def main(ctx, *args: str) -> None:
     me = ctx.guild.me
     if role is None:
         role_line = (
-            f"**guild role:** none resolved for `{delegate.guild_tag}` — nothing "
+            f"**guild role:** none resolved for `{represents}` — nothing "
             "to add or remove, which is itself worth knowing"
         )
     else:
@@ -67,10 +68,10 @@ async def main(ctx, *args: str) -> None:
         "\n".join(
             [
                 f"**{member}** ({member.id})",
-                f"**represents:** `{delegate.guild_tag}` "
-                f"({'notable' if notable else 'not notable'})",
+                f"**represents:** `{represents}` "
+                f"({'notable' if notable else 'not notable'})"
+                + (f" — forced; verified for `{delegate.guild_tag}`" if forced else ""),
                 f"**watch last saw:** `{delegate.current_guild_tag or 'no guild'}`",
-                f"**forced to:** `{forced}`" if forced else "**forced to:** nothing",
                 f"**standing:** `{standing}`",
                 role_line,
                 f"**contact slots:** {', '.join(sorted(slots)) or 'none'}",

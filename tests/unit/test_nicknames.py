@@ -189,3 +189,17 @@ async def test_an_impossible_rename_is_only_reported_once(db, caplog):
     assert caplog.text.count("not allowed to rename") == 1
     assert member.edit.await_count == 5, "still tried — only the logging is throttled"
     nicknames.reset_unrenameable()
+
+
+async def test_a_repointed_rep_is_named_for_the_guild_they_now_speak_for(db):
+    """The tag and the colour have to agree, or the nickname tells the room
+    something the member list contradicts."""
+    from hall_monitor.services import delegate_registry
+
+    await _delegate(1, tag="VETS")
+    await delegate_registry.set_forced_guild(1, "ANO", None)
+    member = _member(1, nick="Bob [VETS]")
+
+    await nicknames.enforce(member)
+
+    assert _new_nick(member) == "Bob [ANO]"

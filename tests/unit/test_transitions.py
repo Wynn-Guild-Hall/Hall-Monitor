@@ -469,3 +469,68 @@ async def test_the_summary_reads_as_a_log_line(db, notable):
     summary = await transitions.reconcile(FakeGuild())
     assert "0 guilds (0 notable)" in summary.line()
     assert "nothing to do" in summary.line()
+
+
+# --------------------------------------------------------------------------
+# A repointed representative — `~force guild @them ANO`
+# --------------------------------------------------------------------------
+
+
+async def test_a_repointed_rep_moves_guild_role_and_stays_a_delegate(db, notable):
+    """The operator's ask: forced to ANO means representing ANO. ANO's
+    colour, ANO's role, delegate standing — not External Relegate."""
+    notable.update({"VETS", "ANO"})
+    vets = _role(1, "VETS", members=[MagicMock()])
+    ano = _role(2, "ANO")
+    guild = FakeGuild([vets, ano])
+    await GuildRole.create(guild_tag="VETS", discord_role_id=1)
+    await GuildRole.create(guild_tag="ANO", discord_role_id=2)
+    await _delegate("uuid-a", 1, "VETS", currently="VETS")
+    member = guild.add_member(
+        1, standing=delegate_registry.DELEGATE, guild_role=vets
+    )
+    await delegate_registry.set_forced_guild(1, "ANO", None)
+
+    await transitions.reconcile(guild)
+
+    assert STANDING_ROLE_IDS[delegate_registry.DELEGATE] not in _removed(member)
+    assert ano.id in _added(member), "wears the guild they now speak for"
+    assert vets.id in _removed(member), "and only that one"
+
+
+async def test_the_repointed_guild_is_visited_even_with_no_other_presence(db, notable):
+    """ANO has no delegates, no slots and no role of its own — but somebody
+    now represents it, so it has to be reconciled."""
+    await _delegate("uuid-a", 1, "VETS", currently="VETS")
+    await delegate_registry.set_forced_guild(1, "ANO", None)
+
+    assert "ANO" in await transitions.guilds_present()
+
+
+async def test_the_repointed_guilds_role_is_minted_on_demand(db, notable):
+    """Nobody verified for ANO, so nothing has created its role yet."""
+    notable.add("ANO")
+    guild = FakeGuild()
+    guild.create_role = AsyncMock(return_value=_role(9, "ANO"))
+    await _delegate("uuid-a", 1, "VETS", currently="VETS")
+    guild.add_member(1, standing=delegate_registry.DELEGATE)
+    await delegate_registry.set_forced_guild(1, "ANO", None)
+
+    await transitions.reconcile(guild)
+
+    assert guild.create_role.await_args.kwargs["name"] == "ANO"
+
+
+async def test_the_old_guilds_pass_leaves_a_repointed_member_alone(db, notable):
+    """Settling by row rather than by representation would have VETS's pass
+    undo what ANO's just did."""
+    notable.update({"VETS", "ANO"})
+    vets = _role(1, "VETS", members=[MagicMock()])
+    guild = FakeGuild([vets])
+    await GuildRole.create(guild_tag="VETS", discord_role_id=1)
+    await _delegate("uuid-a", 1, "VETS", currently="VETS")
+    await delegate_registry.set_forced_guild(1, "ANO", None)
+
+    changed = await transitions.settle_members(guild, "VETS", notable=True)
+
+    assert changed == 0, "not VETS's member any more"

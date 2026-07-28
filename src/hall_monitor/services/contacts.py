@@ -22,7 +22,7 @@ import discord
 
 from hall_monitor.config import settings
 from hall_monitor.db.models import Delegate, GuildContact
-from hall_monitor.services import delegate_registry
+from hall_monitor.services import delegate_registry, guild_tag as tags
 
 logger = logging.getLogger(__name__)
 
@@ -40,16 +40,24 @@ class UnknownContactRole(KeyError):
     """Raised for a role name outside :data:`CONTACT_ROLES`."""
 
 
-class ExternalDelegate(Exception):
-    """Raised when a slot is claimed for someone playing for another guild.
+class NotTheirGuild(Exception):
+    """Raised when a slot is claimed for someone who doesn't speak for it.
 
-    Carries the guild they're currently seen in, so the caller can say
-    which one and point at ``~force guild``.
+    Two ways to get here, and the caller wants to say which: they
+    represent a *different* guild (``represents``), or they represent this
+    one but have drifted off to another (``playing_for``).
     """
 
-    def __init__(self, delegate: "Delegate", playing_for: str | None) -> None:
-        super().__init__(playing_for)
+    def __init__(
+        self,
+        delegate: "Delegate",
+        *,
+        represents: str,
+        playing_for: str | None = None,
+    ) -> None:
+        super().__init__(represents)
         self.delegate = delegate
+        self.represents = represents
         self.playing_for = playing_for
 
 
@@ -134,17 +142,13 @@ async def assign_contact(
     request, and re-adding it here would just spend rate limit. The DB
     move and the displacement happen either way.
 
-    Raises :class:`ExternalDelegate` for someone playing for a different
-    guild. They can't be this guild's contact — the reconcile withholds
-    contact roles from external representatives (see
-    :func:`sync_contact_roles`), so granting one here would look like it
-    worked and then be stripped within the hour.
+    Raises :class:`NotTheirGuild` unless they actually speak for
+    ``guild_tag`` — the reconcile grants a contact role on exactly that
+    condition (see :func:`sync_contact_roles`), so claiming a slot for
+    anyone else would look like it worked and be stripped within the hour.
     """
     _require_known(role)
-    if await delegate_registry.is_external(delegate):
-        raise ExternalDelegate(
-            delegate, await delegate_registry.current_guild(delegate)
-        )
+    await _require_represents(delegate, guild_tag)
     reason = reason or f"hall-monitor: {guild_tag} {role} contact reassigned"
 
     row = await _slot(guild_tag, role)
@@ -213,8 +217,9 @@ async def sync_contact_roles(
     The contact channels are for representatives of guilds that are
     currently in the Hall, so a guild that stops being notable has its
     contact roles withdrawn — and gets them back, to the same people, when
-    it returns. A holder who has since moved to a different guild is
-    withheld from either way (``delegate_registry.is_external``).
+    it returns. A holder who no longer speaks for this guild is withheld
+    from either way: the role goes to whoever represents the guild, not to
+    whoever the row remembers.
 
     The ``GuildContact`` rows are left alone either way. Notability decides
     who may *use* a contact role; the row decides who holds the slot.
@@ -247,9 +252,11 @@ async def sync_contact_roles(
         discord_role = _discord_role(discord_guild, row.role)
         if discord_role is None:
             continue
-        # A holder who has moved guilds keeps the slot but not the role:
-        # they aren't who to ask about this guild any more.
-        wanted = granted and not await delegate_registry.is_external(row.delegate)
+        # A holder keeps the slot but not the role once they stop speaking
+        # for this guild — whether they drifted off on their own or a
+        # janitor pointed them at a different one. Either way they aren't
+        # who to ask about this guild any more.
+        wanted = granted and await _represents(row.delegate, guild_tag)
         holds = any(existing.id == discord_role.id for existing in member.roles)
         if holds == wanted:
             continue  # already correct — an hourly pass must be quiet
@@ -299,6 +306,29 @@ async def resolve_conflicts_and_kick_if_empty(
 def _require_known(role: str) -> None:
     if role not in _CONTACT_ROLE_SETTINGS:
         raise UnknownContactRole(role)
+
+
+async def _represents(delegate: Delegate, guild_tag: str) -> bool:
+    """Whether this delegate currently speaks for ``guild_tag``.
+
+    Both halves matter: the guild has to be the one they represent (which
+    ``~force guild`` can repoint), and they can't have drifted off to
+    somewhere else on their own.
+    """
+    represented = await delegate_registry.represented_guild(delegate)
+    if not tags.matches(represented, guild_tag):
+        return False
+    return not await delegate_registry.is_external(delegate)
+
+
+async def _require_represents(delegate: Delegate, guild_tag: str) -> None:
+    if await _represents(delegate, guild_tag):
+        return
+    raise NotTheirGuild(
+        delegate,
+        represents=await delegate_registry.represented_guild(delegate),
+        playing_for=delegate.current_guild_tag,
+    )
 
 
 async def _slot(guild_tag: str, role: str) -> GuildContact | None:

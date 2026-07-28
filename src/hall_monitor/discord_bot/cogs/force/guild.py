@@ -1,20 +1,24 @@
-"""``~force guild`` — override where the Hall thinks a member is playing.
+"""``~force guild`` — say which guild a member represents.
 
-This is the counterweight to the hourly guild watch. Wynncraft is the
-authority on who's in which guild, and mostly that's what you want, but
-it can be wrong for us in both directions: a rep mid-transfer flickers
-between guilds, an alt account shows the wrong one, and a shared account
-shows whoever logged in last. A janitor who knows better says so here.
+A janitor asserting who someone speaks for, which outranks both the guild
+they verified as a chief of and whatever the hourly watch sees. Everything
+follows from that one answer: the tag on their nickname, the colour they
+wear, whose contact slots they may hold, and whose notability decides
+their standing. Force someone to ANO and they are, for every purpose the
+Hall has, an ANO representative.
+
+Two shapes of problem it solves. **Repointing:** somebody now speaks for
+a different guild than the one they verified with, and re-verifying isn't
+possible while their delegate row is live (DESIGN.md §12.2). **Correcting
+the watch:** a rep mid-transfer flickers, an alt account shows the wrong
+guild, a shared account shows whoever logged in last — forcing the guild
+they already represent pins it and undoes a wrong External Relegate.
 
 The override sits in front of ``Delegate.current_guild_tag`` rather than
-in it, because the watch rewrites that column every hour — a forced value
-stored there would survive exactly until the next sweep. Forcing the
-guild a member already represents is the useful common case: it undoes an
-incorrect External Relegate.
-
-Note this is *not* the same as re-representing a different guild, which
-changes who they speak for and needs `~force rep` (Stage 15). This only
-changes where they're seen to be playing.
+in it, because the watch rewrites that column every hour: a forced value
+stored there would survive exactly until the next sweep. And a forced
+representative is never external, since the watch disagreeing is the
+whole situation being overridden.
 """
 
 from datetime import datetime, timezone
@@ -99,7 +103,8 @@ def register(cog: commands.Cog) -> None:
             "them until they verify."
         )
         await ctx.reply(
-            f"{user.mention} is treated as playing for `{guild_tag}` {window}.{note}"
+            f"{user.mention} represents `{guild_tag}` {window} — tag, colour, "
+            f"role and contact slots follow.{note}"
         )
 
     @cog.unforce.command(name="guild")
@@ -112,6 +117,6 @@ def register(cog: commands.Cog) -> None:
             return
         await apply_now(ctx, user)
         await ctx.reply(
-            f"cleared the guild override on {user.mention} — back to whatever "
-            "the hourly watch sees."
+            f"cleared the guild override on {user.mention} — back to the guild "
+            "they verified with, and to whatever the watch sees."
         )

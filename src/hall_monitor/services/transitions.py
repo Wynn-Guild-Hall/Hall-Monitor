@@ -114,21 +114,42 @@ async def reconcile(discord_guild: discord.Guild) -> ReconcileSummary:
 async def settle_members(
     discord_guild: discord.Guild, guild_tag: str, *, notable: bool
 ) -> int:
-    """Give one guild's representatives the standing their state implies.
+    """Give a guild's representatives the standing their state implies.
 
-    Three states, one role each — Delegate while their guild is notable,
-    Relegate while it isn't, External Relegate once they've moved to a
-    different guild — plus membership of the guild's aesthetic role, which
-    an external rep loses: wearing ``VETS`` while playing for someone else
-    misinforms every other guild in the room.
+    Membership is by who *represents* ``guild_tag`` (``~force guild`` can
+    repoint that), not by which row they were written with — otherwise a
+    repointed member would be settled by their old guild's pass, which is
+    the one pass that shouldn't touch them.
+
+    Three states, one role each: Delegate while the guild is notable,
+    Relegate while it isn't, External Relegate for someone who has drifted
+    to a guild they don't speak for. Plus the guild's aesthetic role,
+    which the last of those loses.
 
     Nobody is kicked and no row is deleted. Losing notability is a state
     the Hall expects guilds to move in and out of, and the whole point of
     keeping the ``Delegate`` row is that coming back costs nothing.
     """
-    role = await guild_roles.resolve_role(discord_guild, guild_tag)
+    mine = [
+        delegate
+        for delegate in await Delegate.filter(left_at=None)
+        if tags.matches(
+            await delegate_registry.represented_guild(delegate), guild_tag
+        )
+    ]
+    if not mine:
+        return 0
+
+    # Created here as well as at join: a member repointed by `~force guild`
+    # needs their new guild's role to exist, and nobody verified for it.
+    # Non-notable guilds get the flat colour rather than Athena's, so this
+    # can't undo the greying the reconcile just did.
+    role = await guild_roles.ensure_guild_role(
+        discord_guild, guild_tag, colour_hex=None if notable else "#000000"
+    )
+
     changed = 0
-    for delegate in await Delegate.filter(guild_tag__iexact=guild_tag, left_at=None):
+    for delegate in mine:
         member = discord_guild.get_member(delegate.discord_user_id)
         if member is None:
             continue  # left the server; the leave path owns that, not this
@@ -147,10 +168,15 @@ async def guilds_present() -> list[str]:
     ``VETS`` and ``vets`` are one guild (``services/guild_tag.py``) and
     reconciling both would have the second undo the first.
     """
+    live = await Delegate.filter(left_at=None)
     seen: dict[str, str] = {}
     for source in (
         await GuildRole.all().values_list("guild_tag", flat=True),
-        await Delegate.filter(left_at=None).values_list("guild_tag", flat=True),
+        [delegate.guild_tag for delegate in live],
+        # The guild a `~force guild` points them at, which may have no
+        # other presence here at all — and still needs its role minted and
+        # its notability consulted.
+        [await delegate_registry.represented_guild(delegate) for delegate in live],
         await GuildContact.all().values_list("guild_tag", flat=True),
     ):
         for tag in source:

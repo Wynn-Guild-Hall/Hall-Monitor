@@ -205,21 +205,40 @@ async def sync_guild_role_membership(
     wanted: bool,
     reason: str | None = None,
 ) -> bool:
-    """Put ``member`` in (or out of) their guild's aesthetic role.
+    """Leave ``member`` wearing ``role`` and no other guild's role.
 
-    Out is for a representative who has moved guilds: wearing ``VETS``
-    while playing for someone else misinforms every other guild in the
-    room, which is the one thing the colour exists to get right.
+    Exactly one guild colour at a time, because the colour is a claim
+    about who someone speaks for. Two of them is two claims; the wrong one
+    is worse — a member repointed at ``ANO`` still showing ``VETS``
+    misinforms every other guild in the room.
+
+    ``wanted=False`` strips the lot: that's a representative who has
+    drifted off to a guild they don't represent, and speaks for nobody
+    until they come back.
+
+    Only roles we created are stripped (``GuildRole``). A role adopted by
+    name might be somebody's own, and taking it off a member is as
+    unrecoverable for them as deleting it.
     """
-    if role is None:
-        return False
-    holds = any(existing.id == role.id for existing in member.roles)
-    if holds == wanted:
-        return False
-    reason = reason or f"hall-monitor: {role.name} membership"
-    if wanted:
-        return await _add(member, role, reason=reason)
-    return await _remove(member, [role], reason=reason)
+    ours = {
+        row.discord_role_id
+        for row in await GuildRole.all()
+        if role is None or row.discord_role_id != role.id
+    }
+    stale = [existing for existing in member.roles if existing.id in ours]
+    holds = role is not None and any(
+        existing.id == role.id for existing in member.roles
+    )
+
+    changed = False
+    reason = reason or "hall-monitor: guild membership"
+    if wanted and role is not None and not holds:
+        changed |= await _add(member, role, reason=reason)
+    if not wanted and holds:
+        stale.append(role)
+    if stale:
+        changed |= await _remove(member, stale, reason=reason)
+    return changed
 
 
 # --------------------------------------------------------------------------

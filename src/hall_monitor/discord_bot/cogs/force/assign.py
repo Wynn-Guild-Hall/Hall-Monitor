@@ -75,11 +75,17 @@ def resolve_guild_tag(
 
 
 async def resolve_target(ctx: commands.Context, user: discord.Member) -> Target:
+    """Which guild's slot this is, using the guild each side *represents*.
+
+    Not the tag on their row: `~force guild` repoints who someone speaks
+    for, and the slot they can be given has to follow that or the command
+    hands out a role the reconcile will take straight back.
+    """
     caller = await delegate_registry.get_by_discord_user_id(ctx.author.id)
     target = await delegate_registry.get_by_discord_user_id(user.id)
     guild_tag = resolve_guild_tag(
-        caller.guild_tag if caller else None,
-        target.guild_tag if target else None,
+        await delegate_registry.represented_guild(caller) if caller else None,
+        await delegate_registry.represented_guild(target) if target else None,
         caller_is_janitor=has_any_role(
             ctx, settings.janitor_role_id, settings.monitor_role_id
         ),
@@ -118,13 +124,13 @@ def register(cog: commands.Cog) -> None:
                 discord_guild=ctx.guild,
                 reason=f"hall-monitor: ~force assign by {ctx.author}",
             )
-        except contacts.ExternalDelegate as exc:
+        except contacts.NotTheirGuild as exc:
             # Granting it anyway would look like it worked until the next
             # reconcile stripped it — which is exactly how this was found.
             where = f"`{exc.playing_for}`" if exc.playing_for else "another guild"
             await ctx.reply(
-                f"{user.mention} is playing for {where}, so they can't be a "
-                f"`{target.guild_tag}` contact. If that's wrong, "
+                f"{user.mention} has drifted to {where}, so they can't hold "
+                f"`{target.guild_tag}`'s slots. If that's wrong, "
                 f"`~force guild {user.mention} {target.guild_tag} 3mo` first."
             )
             return

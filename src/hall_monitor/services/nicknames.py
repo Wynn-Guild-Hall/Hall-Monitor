@@ -4,7 +4,7 @@ Every representative wears their guild's tag in the member list, so a
 conversation with someone in the Hall carries who they speak for without
 anyone having to check a roster. The tag is chosen the same way the
 standing role is (``delegate_registry.standing``): their guild's, or
-``[EXT]`` once they've moved elsewhere.
+``[EXT]`` once they've drifted somewhere they don't speak for.
 
 **Only the suffix is ours.** The visible part is whatever the member set
 — a nickname, or their Minecraft username on the way in — and enforcement
@@ -69,11 +69,16 @@ def desired(visible: str, tag: str) -> str:
 
 
 async def tag_for(delegate: Delegate) -> str:
-    return (
-        EXTERNAL_TAG
-        if await delegate_registry.is_external(delegate)
-        else delegate.guild_tag
-    )
+    """The tag this member wears: the guild they speak for, or ``EXT``.
+
+    Reads the *represented* guild rather than the row's, so a member
+    repointed by ``~force guild`` is named for the guild they now speak
+    for — the tag and the colour have to agree, or the nickname is telling
+    the room something the member list contradicts.
+    """
+    if await delegate_registry.is_external(delegate):
+        return EXTERNAL_TAG
+    return await delegate_registry.represented_guild(delegate)
 
 
 def is_observer(member: discord.Member) -> bool:

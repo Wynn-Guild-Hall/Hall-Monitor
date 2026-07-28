@@ -105,7 +105,7 @@ Two things reach the assign path: `on_member_join` claims every slot a verificat
 
 Guild tags are matched case-insensitively (`services/guild_tag.py`) so `~force assign` hits the row the join flow wrote, and the slot's *stored* spelling is left alone: two rows differing only in case would break an invariant the `unique_together` can't see. Discord-side failures (role removal, kick) are logged rather than raised — the database is the roster's source of truth, and a stale role on a displaced holder is visible and fixable in a way a slot that silently refused to move is not.
 
-**Contact roles are gated on notability** (`sync_contact_roles`, driven by §12's reconcile). The contact channels are for representatives of guilds currently in the Hall, so a guild that drops out has its four contact roles withdrawn and gets them back — to the same people — when it returns. The `GuildContact` rows never move: notability decides who may *use* a contact role, the row decides who holds the slot. Clearing the rows would cost a returning guild four re-verifications and lose the record of who to hand the roles back to. Nobody is kicked for it either, which is the same distinction — the kick is what happens when you lose your slot to someone else, not when your guild has a quiet quarter.
+**Contact roles are gated on notability and on representation** (`sync_contact_roles`, driven by §12's reconcile). A contact role goes to whoever speaks for the guild — not to whoever the row remembers — so a holder who has drifted elsewhere, or been repointed at another guild by `~force guild`, is withheld from it while keeping the slot. The contact channels are for representatives of guilds currently in the Hall, so a guild that drops out has its four contact roles withdrawn and gets them back — to the same people — when it returns. The `GuildContact` rows never move: notability decides who may *use* a contact role, the row decides who holds the slot. Clearing the rows would cost a returning guild four re-verifications and lose the record of who to hand the roles back to. Nobody is kicked for it either, which is the same distinction — the kick is what happens when you lose your slot to someone else, not when your guild has a quiet quarter.
 
 ## 7. Cog organisation
 
@@ -210,17 +210,25 @@ The poll only gathers facts; the reconcile that follows in the same job acts on 
 
 A brand-new delegate gets `current_guild_tag` seeded at registration — verification proves they're a chief of that guild right then, so starting them as unknown would only invite a wrong answer until the first poll.
 
-**Known gap — re-representation.** An external representative who becomes a chief of their *new* guild can't verify for it. `mint_invite` refuses while their `Delegate` row is live (§3), and releasing the row wouldn't help: clicking an invite as an **existing member fires no `GUILD_MEMBER_ADD`**, so nothing consumes the `PendingInvite`. Short of leaving the server, only a direct edit of the `Delegate` row fixes it.
+**Known gap — re-representation.** An external representative who becomes a chief of their *new* guild can't verify for it. (`~force guild` covers this in practice — §12.3 — but as an override with an expiry rather than a durable change to the row.) `mint_invite` refuses while their `Delegate` row is live (§3), and releasing the row wouldn't help: clicking an invite as an **existing member fires no `GUILD_MEMBER_ADD`**, so nothing consumes the `PendingInvite`. Short of leaving the server, only a direct edit of the `Delegate` row fixes it.
 
 This is accepted rather than solved. These are major guilds, so someone becoming a *new* guild's representative within a day or two of switching is rare, and the hourly watch means the switch itself is always noticed. The fix is a monitor command (`~force rep`, Stage 15) that re-points the row, vacates the old guild's contact slots without a kick, and verifies chief-hood of the new guild itself rather than trusting the operator.
 
-### 12.3 Overriding the watch — `~force guild`
+### 12.3 Saying who someone represents — `~force guild`
 
-Wynncraft is the authority on who's in which guild, and mostly that's what we want, but it can be wrong *for us* in both directions: a representative mid-transfer flickers, an alt account shows the wrong guild, a shared account shows whoever logged in last. `~force guild <user> <TAG> <time>` lets a janitor say otherwise, and the most useful case is forcing the guild someone already represents — that's how an incorrect External Relegate gets undone.
+`~force guild <user> <TAG> <time>` is a janitor asserting **who a member speaks for**, and it outranks both the guild they verified as a chief of and whatever the watch sees. `delegate_registry.represented_guild` folds the three sources into the one answer everything downstream keys on: the tag on their nickname, the colour they wear, whose contact slots they may hold, and whose notability decides their standing. Force someone to `ANO` and they are, for every purpose the Hall has, an ANO representative — including `~force assign`, which gives them ANO's slot rather than refusing.
 
-The override sits **in front of** `current_guild_tag`, never in it: the watch rewrites that column every hour, so a forced value stored there would survive exactly until the next sweep. `delegate_registry.current_guild` prefers a live `ForceOverride(kind="guild", subject=<discord user id>)` and falls back to the column. Expired rows read as absent but are left in place, so a janitor can still see what was forced and when it ran out. Duration gating is the shared one (`time_parse.gating_rejection`): janitors capped at three months, monitors unbounded and allowed `0`.
+It solves two shapes of problem:
 
-This is deliberately *not* the same as re-representing a different guild, which changes who someone speaks for — that's `~force rep`, and the gap it fills is in §12.2.
+- **Repointing.** Somebody now speaks for a different guild than the one they verified with, and re-verifying isn't available while their delegate row is live (§12.2). This is the supported answer to that until `~force rep` makes it durable.
+- **Correcting the watch.** A rep mid-transfer flickers, an alt account shows the wrong guild, a shared account shows whoever logged in last. Forcing the guild they already represent pins it and undoes a wrong External Relegate.
+
+**A forced representative is never external**, because the watch disagreeing is the entire situation being overridden. The override sits *in front of* `current_guild_tag`, never in it: the watch rewrites that column hourly, so a forced value stored there would survive exactly until the next sweep. Expired rows read as absent but are left in place, so a janitor can still see what was forced and when it ran out. Duration gating is the shared one (`time_parse.gating_rejection`): janitors capped at three months, monitors unbounded and allowed `0`.
+
+Two consequences worth stating, because both were bugs first:
+
+- **A member wears exactly one guild role.** The colour is a claim about who they speak for; two of them is two claims. `sync_guild_role_membership` strips every *other* role we created, so a repoint moves the colour rather than adding one. Roles adopted by name are never stripped, for the same reason they're never deleted.
+- **The reconcile groups members by who they represent, not by the row they were written with.** Otherwise the repointed member's old guild would settle them, undoing what their new guild's pass just did — and their new guild might have no other presence at all, so `guilds_present` counts forced tags too, and `settle_members` mints the role on demand.
 
 ### 12.4 The aesthetic role
 
