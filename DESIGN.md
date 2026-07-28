@@ -419,19 +419,40 @@ The split that carried a motion is recorded on the row at resolution rather than
 
 ### 16.3 Anonymity
 
-**The bot never says who voted which way.** The live post carries turnout and the bar — "9 of 20 guilds have voted · 11 yay needed" — and the split is published only once the motion is resolved. That isn't squeamishness: a running yay counter next to a member list is enough to infer individual votes, which would make the anonymity decorative. The test for it doesn't check that a number is absent, it checks that two motions with the same turnout and opposite splits render *identically*, which is the property that actually has to hold.
+**The bot never says who voted which way, or who moved it.** The live post carries turnout and the bar — "9 of 20 guilds have voted · 11 yay needed" — and the split is published only once the motion is resolved. Nothing anywhere names the mover or the guild they moved for.
 
-`~script motions` shows a monitor the same turnout and no more. Anonymity a staff command quietly opts out of isn't something anyone can rely on. What it adds is the **electorate itself** — which guilds are seated, and so entitled to vote — since that's the number a motion's fate turns on, and nothing else could answer why a motion was stuck needing seven yays in a Hall that felt smaller than that.
+Neither is squeamishness. A running yay counter next to a member list is enough to infer individual votes, which would make the vote anonymity decorative; and a named mover turns "the Hall is considering this" into "these people came for you", which is a thing guilds would retaliate over and a reason not to move a motion that ought to be moved. The tests are written as indistinguishability rather than absence — two motions with the same turnout and opposite splits must render *identically*, and no rendered string may contain the mover's tag or ID — because "the number isn't printed" is a weaker claim that a reworded sentence can quietly break.
 
-Note that anonymity is a property of what the bot *renders*, not of what it stores. The rows record who cast what: a vote nobody can audit is a different and worse problem.
+`~script motions` shows a monitor exactly that and no more. Anonymity a staff command quietly opts out of isn't something anyone can rely on. What it adds is the **electorate itself** — which guilds are seated, and so entitled to vote — since that's the number a motion's fate turns on, and nothing else could answer why a motion was stuck needing seven yays in a Hall that felt smaller than that.
 
-### 16.4 The ballot
+Note that anonymity is a property of what the bot *renders*, not of what it stores. The rows record who moved and who cast what: something unauditable is a worse problem than something unpublished.
 
-Two buttons under one message, with fixed `custom_id`s; the *message* identifies which motion they belong to. That's what lets one registered view serve every motion, including ones opened before the last restart — per-motion custom_ids would need re-registering on boot, and buttons that went dead after a deploy would be indistinguishable from a bot that had stopped working. Every press replies **ephemerally**, whatever the outcome, including every rejection: a button that does nothing visible is the same to the voter as a bot that's down.
+**The result bar is unattributed, and that's the decision, not the default.** A resolved motion shows its outcome as one row of squares — yay, then silent, then nay — sorted by outcome and carrying no identity at all. `services/guild_bar.py` can render the *attributed* form, each guild's banner emote directly over its own square, and it is genuinely clearer:
 
-The command itself posts nothing. It DMs the mover what a motion actually does — every delegate notified, a guild removed if it carries — with a button to go ahead, and re-checks every precondition when that button is pressed, because minutes can pass and in them the guild can be banned by a monitor or another motion can open. When the mover's DMs are closed the warning goes in the invoking channel instead, restricted to them: refusing outright would make the command unusable for a large share of people for a reason that has nothing to do with them.
+```
+:SEQ::Aeq::TAq::AVO::PUN::ANO:
+🟩🟩🟩⬜⬜🟥
+```
 
-**The motion post is the one thing in this bot that deliberately notifies.** The roster must never ping (§14.2) because it's redrawn hourly and four contacts a guild would make it unreadable within a day. A motion is the opposite case — rare, discrete, and requiring an action from every delegate — and one nobody saw is the same as none at all. So it mentions the delegate role, once.
+It is not used here. That row is a permanent, screenshottable record of which guild voted to remove which other guild, and the entire point of settling this by vote is that a guild can leave without anybody being left with somebody to blame. The clarity is real and the cost is a grudge that outlives the argument. The module exists so the attributed form is available to everything *else* — turnouts, sign-ups, territory splits — where telling the guilds apart is the point rather than the hazard.
+
+The bar appears **only on a resolved motion**. One that grew as votes arrived would let anyone watching correlate a new square with whoever happened to be online, which is precisely the leak the turnout-only rule closes.
+
+### 16.4 The ballot, and the one ping
+
+**`~expel_motion` is DM-only**, and that follows directly from the mover being anonymous: running it in a channel names them to everyone who can read it, and nothing the bot does afterwards takes that back. So a public invocation is refused, the message deleted if we have Manage Messages there, and the explanation sent by DM rather than posted underneath — a reply saying "motions are anonymous" under a visible one only draws eyes to it. When the delete fails the DM says so outright, because being told nothing would leave the mover thinking they were covered. Anonymity you have to remember to use isn't anonymity.
+
+The command still posts nothing on its own: it answers with what a motion does and a button, and re-checks every precondition when that button is pressed, since minutes can pass and in them a monitor can ban the guild or another motion can open.
+
+The ballot is two buttons under one message with fixed `custom_id`s; the *message* identifies which motion they belong to. That's what lets one registered view serve every motion, including ones opened before the last restart — per-motion custom_ids would need re-registering on boot, and buttons that went dead after a deploy would be indistinguishable from a bot that had stopped working. Every press replies **ephemerally**, whatever the outcome, including every rejection: a button that does nothing visible is the same to the voter as a bot that's down.
+
+**The motion post notifies nobody.** One member deciding to ping the server is not something this bot permits — people leave servers over stray pings, and a motion nobody else has backed is one member's opinion, not the Hall's business. Instead the Hall is called to a motion **once**, with an `@here` in the delegate channel (`DELEGATE_CHANNEL_ID`), and only once `ANNOUNCE_AT_YAY` — three — guilds have voted yay. At that point the vote is genuinely live and everyone's attention is fairly claimed.
+
+Three conditions on that announcement, and the last two matter as much as the first: the motion must still be **open** (a carried motion needs no audience and a lapsed one has none), and it must not already have been announced — hence `ExpelMotion.announced_at`, since "three guilds are behind it" stays true for the rest of the vote and would otherwise fire on every hourly pass. The row is stamped only once the message is actually out, so a send that failed is retried next pass rather than silently spending the one announcement a motion gets. The message says "at least three guilds" rather than the live count: the trigger is public and the two are the same number in every case but a shrinking electorate, so printing the count would leak the tally to buy nothing.
+
+An unset `DELEGATE_CHANNEL_ID` means motions are never announced. They still run, still resolve, and still remove a guild — the ping is how people find out sooner, not part of the mechanism.
+
+This is the **only** `@here` or role mention the bot ever sends. The roster must never ping (§14.2) because it's redrawn hourly; this one is rare, gated on other people's support, and capped at one per motion.
 
 ### 16.5 Where a ban bites
 
@@ -446,4 +467,4 @@ It has to hold in four places, and all four, or a removed guild finds its own wa
 
 Removal goes by who *represents* the tag, not by the tag on the row — `~force guild` can repoint that, and settling by the row would miss a repointed member while catching one who has moved on. The ban is written **first**, before anybody is removed: a removal that dies partway still leaves the door shut, whereas the other order leaves a window in which the representatives are gone and the door is open. Kicks that fail are logged and counted rather than raised, and `Delegate` rows are marked left rather than deleted — the history survives, and `mint_invite` reads the same column.
 
-**Needs Kick Members**, which §6 already required, and nothing else new. It does need `NOTIFICATIONS_CHANNEL_ID` set: without it `~expel_motion` refuses rather than posting a vote somewhere only the mover can see.
+**Needs Kick Members**, which §6 already required; **Manage Messages** on any channel a motion might be typed in, to scrub a public invocation; and **Mention @everyone** on the delegate channel, or the one `@here` renders as plain text. It needs `NOTIFICATIONS_CHANNEL_ID` set — without it `~expel_motion` refuses rather than posting a vote somewhere only the mover can see — and `DELEGATE_CHANNEL_ID` if the Hall is ever to be called to one.

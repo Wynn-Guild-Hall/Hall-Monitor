@@ -3,10 +3,12 @@
 Read-only. It reports; it doesn't settle anything (`~script reconcile`
 does that, along with everything else the hourly job settles).
 
-**It shows turnout, not the split**, exactly like the public post does —
-even to a monitor. Anonymity that a staff command quietly opts out of
-isn't a property anyone can rely on, and "the bot never says who voted
-which way" has to be true of every screen or it isn't true.
+**It shows turnout, not the split, and never the mover** — exactly what
+the public post shows, even to a monitor. Anonymity that a staff command
+quietly opts out of isn't a property anyone can rely on, and "the bot
+never says who moved this or who voted which way" has to be true of every
+screen or it isn't true. Both are on the rows for auditing; neither is
+rendered anywhere.
 
 The one thing here that isn't on the public post is the **electorate
 itself**: which guilds are seated and therefore entitled to vote. That's
@@ -40,12 +42,12 @@ async def main(ctx, *args: str) -> None:
         voters = await expel_motion.electorate(ctx.guild, exclude=motion.guild_tag)
         standing = await expel_motion.tally(motion, voters)
         closes = int(expel_motion.deadline(motion).timestamp())
+        called = "called" if motion.announced_at is not None else "not called"
         lines += [
-            f"**Motion against `{motion.guild_tag}`** "
-            f"(moved by `{motion.opened_by_guild_tag}`)",
+            f"**Motion against `{motion.guild_tag}`**",
             f"· {standing.voted} of {standing.electorate} voted · "
             f"{standing.needed} yay needed · closes <t:{closes}:R>",
-            f"· post: {_link(ctx, motion)}",
+            f"· Hall {called} to it · post: {_link(ctx, motion)}",
         ]
 
     banned = await ExpelBan.all().order_by("guild_tag")

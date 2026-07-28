@@ -18,6 +18,10 @@ class Settings(BaseSettings):
     # Where an expel motion is put to the Hall. Unset means `~expel_motion`
     # refuses rather than posting somewhere only the mover can see it.
     notifications_channel_id: int = 0
+    # Delegate general. The only place this bot ever sends an `@here`, and
+    # only for a motion that already has real support behind it. Unset
+    # means motions are never announced — they still run.
+    delegate_channel_id: int = 0
 
     delegate_role_id: int = 0
     relegate_role_id: int = 0

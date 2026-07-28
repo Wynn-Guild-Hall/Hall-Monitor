@@ -13,7 +13,6 @@ from hall_monitor.services import (
     discord_invites,
     emote_slots,
     expel,
-    expel_motion,
     notability,
     roster,
     transitions,
@@ -118,10 +117,9 @@ async def _settle_expulsions(bot: commands.Bot, guild) -> None:
     what it checks.
     """
     try:
-        for resolution in await expel_motion.resolve_open(guild):
-            await expel_cog.refresh(bot, resolution.motion)
+        await expel_cog.sync_all(bot, guild)
     except Exception:  # noqa: BLE001 — a vote must not cost the sweep
-        logger.exception("expel: couldn't resolve open motions")
+        logger.exception("expel: couldn't settle open motions")
 
     try:
         await expel.enforce(guild)

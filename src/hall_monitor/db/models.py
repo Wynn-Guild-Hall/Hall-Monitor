@@ -208,10 +208,18 @@ class ExpelMotion(Model):
 
     id = fields.IntField(pk=True)
     guild_tag = fields.CharField(max_length=8)
+    # Who moved it. Recorded, never rendered — the mover is as anonymous
+    # as the voters (DESIGN.md §16.3), which is why the command is run by
+    # DM. Kept for the same reason the votes are: something unauditable
+    # is a worse problem than something unpublished.
     opened_by_discord_user_id = fields.BigIntField()
     opened_by_guild_tag = fields.CharField(max_length=8)
     discord_channel_id = fields.BigIntField(null=True)
     discord_message_id = fields.BigIntField(null=True, unique=True)
+    # When the Hall was called to the vote in the delegate channel. One
+    # motion gets at most one of those, and only once enough guilds are
+    # already behind it — see `expel_motion.ANNOUNCE_AT_YAY`.
+    announced_at = fields.DatetimeField(null=True)
     # OPEN / PASSED / LAPSED — see `services/expel_motion.py`.
     state = fields.CharField(max_length=16, default="open")
     # The split as it stood at resolution. Recorded rather than recomputed

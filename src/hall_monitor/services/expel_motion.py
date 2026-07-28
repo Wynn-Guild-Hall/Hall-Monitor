@@ -41,13 +41,15 @@ naming:
   by passing or by lapsing at its deadline — never by being declared dead
   while it might still recover.
 
-**The bot never says who voted what.** The live post carries turnout and
-the bar, and the split is published only once the motion is resolved.
+**The bot never says who voted what — or who moved it.** The live post
+carries turnout and the bar, and the split is published only once the
+motion is resolved. Nothing anywhere names the mover or their guild.
 That isn't squeamishness: a running yay counter next to a member list is
-enough to infer individual votes, which would make the anonymity
-decorative. Note that anonymity is a property of what the bot *renders* —
-the rows record who cast what, because a vote nobody can audit is a
-different and worse problem.
+enough to infer individual votes, and a named mover turns "the Hall is
+considering this" into "these people came for you". The command is run
+by DM for exactly that reason. Note that anonymity is a property of what
+the bot *renders* — the rows record who cast and moved what, because
+something unauditable is a worse problem than something unpublished.
 """
 
 import json
@@ -67,6 +69,7 @@ from hall_monitor.db.models import (
 from hall_monitor.services import (
     delegate_registry,
     expel,
+    guild_bar,
     guild_tag as tags,
     notability,
 )
@@ -81,6 +84,13 @@ LAPSED = "lapsed"
 # 0.51 has no exact binary representation, so a float comparison decides
 # the 51-of-100 case by rounding error rather than by the rule.
 THRESHOLD_PERCENT = 51
+
+# How many guilds have to be behind a motion before the Hall is called to
+# it with an `@here`. One person deciding to notify everybody is not a
+# thing this bot does — people leave servers over stray pings, and a
+# motion nobody else supports has no claim on anyone's attention. Three
+# guilds is enough to say the Hall is actually considering it.
+ANNOUNCE_AT_YAY = 3
 
 
 class MotionRejected(Exception):
@@ -427,6 +437,53 @@ async def guild_name(guild_tag: str) -> str | None:
     return row.guild_name if row is not None else None
 
 
+def render_bar(standing: Tally) -> str:
+    """The result as one row of squares: yay, then silent, then nay.
+
+    **Deliberately not `guild_bar.attributed`.** That function exists,
+    and it would be genuinely clearer here — each guild's banner over its
+    own square, readable guild by guild. It also publishes exactly what
+    the Hall is built to avoid: a durable, screenshottable record of who
+    voted to remove whom. The point of this vote is that a guild can go
+    without anyone being left with somebody to blame, and a bar with
+    names on it hands out that grudge in a form that outlives the
+    argument.
+
+    So the squares are sorted by outcome and carry no identity at all.
+    Two motions with the same counts and entirely opposite voters render
+    the same row. Only ever shown on a *resolved* motion — a bar that
+    updated as votes arrived would let anyone watching correlate a new
+    square with whoever was just online.
+    """
+    silent = max(0, standing.electorate - standing.voted)
+    return guild_bar.row(
+        guild_bar.GREEN * standing.yay
+        + guild_bar.WHITE * silent
+        + guild_bar.RED * standing.nay
+    )
+
+
+def should_announce(motion: ExpelMotion, standing: Tally) -> bool:
+    """Whether this motion has earned the one `@here` it may ever get.
+
+    Three conditions, and the second two matter as much as the first: it
+    must still be **open** (a carried motion needs no audience, and a
+    lapsed one has none), and it must not have been announced **already**
+    — hence the column, since "three guilds are behind it" stays true for
+    the rest of the vote and would otherwise fire on every pass.
+    """
+    return (
+        motion.state == OPEN
+        and motion.announced_at is None
+        and standing.yay >= ANNOUNCE_AT_YAY
+    )
+
+
+async def mark_announced(motion: ExpelMotion) -> None:
+    motion.announced_at = datetime.now(timezone.utc)
+    await motion.save(update_fields=["announced_at"])
+
+
 def _subject(guild_tag: str, name: str | None) -> str:
     return f"**{name}** (`{guild_tag}`)" if name else f"`{guild_tag}`"
 
@@ -434,18 +491,17 @@ def _subject(guild_tag: str, name: str | None) -> str:
 def render_open(motion: ExpelMotion, standing: Tally, name: str | None) -> str:
     """The live motion post: what's proposed, the bar, and turnout.
 
-    Turnout without the split, deliberately — see the module docstring.
-    The bar is shown because a voter deciding whether to bother needs to
-    know that not voting is a vote against.
+    Turnout without the split, deliberately, and no mover — see the
+    module docstring. The bar is shown because a voter deciding whether
+    to bother needs to know that not voting is a vote against.
     """
     closes = int(deadline(motion).timestamp())
     return "\n".join(
         [
             f"## Motion to expel {_subject(motion.guild_tag, name)}",
             "",
-            f"Moved by `{motion.opened_by_guild_tag}`. If it carries, "
-            f"`{motion.guild_tag}`'s representatives are removed from the Hall "
-            "and the guild is barred from rejoining.",
+            f"If it carries, `{motion.guild_tag}`'s representatives are "
+            "removed from the Hall and the guild is barred from rejoining.",
             "",
             "Every guild seated in the Hall has **one vote** — the last one "
             "cast by any of its representatives. It carries at "
@@ -454,9 +510,31 @@ def render_open(motion: ExpelMotion, standing: Tally, name: str | None) -> str:
             "",
             f"**{standing.voted}** of **{standing.electorate}** guilds have "
             f"voted · **{standing.needed}** yay needed to carry",
-            f"Closes <t:{closes}:R>. Votes are private — nobody sees who voted "
-            "which way, and the split is published when it closes.",
+            f"Closes <t:{closes}:R>. Motions are private — nobody sees who "
+            "moved this or who voted which way, and the split is published "
+            "when it closes.",
         ]
+    )
+
+
+def render_call(motion: ExpelMotion, standing: Tally, name: str | None) -> str:
+    """The one `@here`: enough guilds are behind this that it may carry.
+
+    Short on purpose. Anyone it reaches has been interrupted, so it says
+    what happened, what it would cost, and where to go — and nothing
+    else, because the motion post itself is one click away.
+
+    It says "at least ``ANNOUNCE_AT_YAY``" rather than the live count.
+    The trigger is public and the two are the same number in every case
+    but a shrinking electorate, so printing the count would leak the tally
+    (§16.3) to buy nothing.
+    """
+    return (
+        f"@here **at least {ANNOUNCE_AT_YAY} guilds have voted to expel "
+        f"{_subject(motion.guild_tag, name)}.**\n"
+        f"If {standing.needed} of the {standing.electorate} guilds seated in "
+        "the Hall vote yay, they're removed from the server and barred. Not "
+        "voting counts against them."
     )
 
 
@@ -481,7 +559,7 @@ def render_resolved(
         [
             f"## Motion to expel {_subject(motion.guild_tag, name)} — {headline}",
             "",
-            f"Moved by `{motion.opened_by_guild_tag}`.",
+            render_bar(standing),
             f"**{standing.yay}** yay · **{standing.nay}** nay · "
             f"**{standing.electorate - standing.voted}** did not vote "
             f"(**{standing.needed}** needed to carry)",

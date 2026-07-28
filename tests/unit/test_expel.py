@@ -499,6 +499,84 @@ def test_the_live_post_cannot_distinguish_one_split_from_another():
     assert "**9** of **20**" in mostly_yay, "turnout itself is shown"
 
 
+def test_nothing_rendered_names_the_mover():
+    """A named mover turns "the Hall is considering this" into "these
+    people came for you", which is why the command is DM-only."""
+    motion = ExpelMotion(
+        guild_tag="OTHR",
+        opened_by_discord_user_id=4242,
+        opened_by_guild_tag="VETS",
+        created_at=datetime.now(timezone.utc),
+    )
+    standing = expel_motion.Tally(electorate=20, yay=3, nay=1)
+
+    for body in (
+        expel_motion.render_open(motion, standing, "Others"),
+        expel_motion.render_call(motion, standing, "Others"),
+        expel_motion.render_resolved(motion, standing, "Others"),
+    ):
+        assert "VETS" not in body
+        assert "4242" not in body
+
+
+def test_the_call_to_the_hall_does_not_leak_the_tally():
+    """The trigger is public and the count equals it in every case but a
+    shrinking electorate, so printing the count buys nothing."""
+    motion = ExpelMotion(
+        guild_tag="OTHR",
+        opened_by_discord_user_id=1,
+        opened_by_guild_tag="VETS",
+        created_at=datetime.now(timezone.utc),
+    )
+
+    at_the_line = expel_motion.render_call(
+        motion, expel_motion.Tally(electorate=20, yay=3, nay=0), None
+    )
+    well_past_it = expel_motion.render_call(
+        motion, expel_motion.Tally(electorate=20, yay=9, nay=4), None
+    )
+
+    assert at_the_line == well_past_it
+    assert "@here" in at_the_line
+
+
+def test_the_result_bar_names_nobody():
+    """`guild_bar.attributed` exists and would be clearer here — each
+    guild's banner over its own square. It also publishes a permanent
+    record of who voted to remove whom, which is the thing this vote is
+    designed to avoid, so the bar is sorted by outcome instead."""
+    from hall_monitor.services import guild_bar
+
+    standing = expel_motion.Tally(electorate=10, yay=5, nay=3)
+
+    bar = expel_motion.render_bar(standing)
+
+    assert bar == guild_bar.GREEN * 5 + guild_bar.WHITE * 2 + guild_bar.RED * 3
+    assert ":" not in bar, "no custom emote, so no guild is identifiable"
+    # Same counts, entirely different voters, identical row.
+    assert bar == expel_motion.render_bar(
+        expel_motion.Tally(electorate=10, yay=5, nay=3)
+    )
+
+
+def test_the_bar_appears_only_once_the_motion_is_resolved():
+    """A bar that grew as votes arrived would let anyone watching match a
+    new square to whoever was online — which is the leak the turnout-only
+    rule exists to close."""
+    from hall_monitor.services import guild_bar
+
+    motion = ExpelMotion(
+        guild_tag="OTHR",
+        opened_by_discord_user_id=1,
+        opened_by_guild_tag="VETS",
+        created_at=datetime.now(timezone.utc),
+    )
+    standing = expel_motion.Tally(electorate=10, yay=5, nay=3)
+
+    assert guild_bar.GREEN not in expel_motion.render_open(motion, standing, None)
+    assert guild_bar.GREEN in expel_motion.render_resolved(motion, standing, None)
+
+
 def test_the_split_is_published_once_the_motion_closes():
     motion = ExpelMotion(
         guild_tag="OTHR",
@@ -512,6 +590,192 @@ def test_the_split_is_published_once_the_motion_closes():
     body = expel_motion.render_resolved(motion, standing, "Others")
 
     assert "11" in body and "2" in body
+
+
+# --------------------------------------------------------------------------
+# Keeping the mover out of sight
+# --------------------------------------------------------------------------
+
+
+def _public_ctx():
+    """A ``~expel_motion`` run in a channel where everyone can read it."""
+    ctx = MagicMock()
+    ctx.guild = MagicMock()
+    ctx.author.id = 42
+    ctx.author.send = AsyncMock()
+    ctx.message.delete = AsyncMock()
+    ctx.send = AsyncMock()
+    ctx.reply = AsyncMock()
+    return ctx
+
+
+async def test_a_public_invocation_is_deleted_and_answered_privately(db):
+    """The message itself is the leak, and no care inside the bot takes it
+    back — so it goes, and the explanation is DM'd rather than posted
+    under it where it would only draw eyes."""
+    from hall_monitor.discord_bot.cogs.moderation import expel as cog
+
+    ctx = _public_ctx()
+    await cog.Expel(MagicMock())._redirect_to_dm(ctx)
+
+    ctx.message.delete.assert_awaited()
+    ctx.reply.assert_not_awaited()
+    ctx.send.assert_not_awaited()
+    assert "anonymous" in ctx.author.send.await_args.args[0]
+
+
+async def test_a_public_invocation_we_cant_delete_says_so(db):
+    """Without Manage Messages the mover has to do it themselves, and
+    being told nothing would leave them thinking they were covered."""
+    import discord
+
+    from hall_monitor.discord_bot.cogs.moderation import expel as cog
+
+    ctx = _public_ctx()
+    ctx.message.delete.side_effect = discord.Forbidden(MagicMock(status=403), "no")
+
+    await cog.Expel(MagicMock())._redirect_to_dm(ctx)
+
+    assert "still visible" in ctx.author.send.await_args.args[0]
+
+
+# --------------------------------------------------------------------------
+# Calling the Hall to a motion
+# --------------------------------------------------------------------------
+
+
+@pytest.fixture
+def delegate_channel(monkeypatch):
+    """A stand-in for delegate general, with `DELEGATE_CHANNEL_ID` set."""
+    channel = MagicMock()
+    channel.id = 777
+    channel.send = AsyncMock()
+    monkeypatch.setattr(
+        "hall_monitor.discord_bot.cogs.moderation.expel.settings"
+        ".delegate_channel_id",
+        777,
+    )
+    return channel
+
+
+def _wire(guild, channel):
+    guild.get_channel = lambda channel_id: (
+        channel if channel_id == channel.id else None
+    )
+
+
+async def test_one_guild_alone_never_pings_the_server(
+    db, guild, notable, delegate_channel
+):
+    """The whole point. People leave servers over stray pings, and a
+    motion nobody else has backed is one member's opinion."""
+    from hall_monitor.discord_bot.cogs.moderation import expel as cog
+
+    _wire(guild, delegate_channel)
+    for index, tag in enumerate(("VETS", "ANO", "SEQ", "LOL", "FIVE"), start=1):
+        await seat(guild, notable, tag, index)
+    await seat(guild, notable, "OTHR", 9)
+    motion = await a_motion(target="OTHR")
+    await expel_motion.cast_vote(guild, motion, 1, yay=True)
+
+    assert await cog.announce_if_ready(MagicMock(), guild, motion) is False
+    delegate_channel.send.assert_not_awaited()
+
+
+async def test_three_guilds_in_favour_calls_the_hall_once(
+    db, guild, notable, delegate_channel
+):
+    from hall_monitor.discord_bot.cogs.moderation import expel as cog
+
+    _wire(guild, delegate_channel)
+    for index, tag in enumerate(("VETS", "ANO", "SEQ", "LOL", "FIVE"), start=1):
+        await seat(guild, notable, tag, index)
+    await seat(guild, notable, "OTHR", 9)
+    motion = await a_motion(target="OTHR")
+    for voter in (1, 2, 3):
+        await expel_motion.cast_vote(guild, motion, voter, yay=True)
+
+    assert await cog.announce_if_ready(MagicMock(), guild, motion) is True
+
+    body = delegate_channel.send.await_args.args[0]
+    assert "@here" in body
+    mentions = delegate_channel.send.await_args.kwargs["allowed_mentions"]
+    assert mentions.everyone is True, "otherwise it renders as plain text"
+    assert (await ExpelMotion.get(id=motion.id)).announced_at is not None
+
+    # A fourth yay must not ping the room a second time.
+    await expel_motion.cast_vote(guild, motion, 4, yay=True)
+    assert await cog.announce_if_ready(MagicMock(), guild, motion) is False
+    assert delegate_channel.send.await_count == 1
+
+
+async def test_a_motion_that_has_already_carried_calls_nobody(
+    db, guild, notable, delegate_channel
+):
+    """Nothing left to rally to — and the guild is already gone."""
+    from hall_monitor.discord_bot.cogs.moderation import expel as cog
+
+    _wire(guild, delegate_channel)
+    for index, tag in enumerate(("VETS", "ANO", "SEQ"), start=1):
+        await seat(guild, notable, tag, index)
+    await seat(guild, notable, "OTHR", 9)
+    motion = await a_motion(target="OTHR")
+    for voter in (1, 2, 3):
+        await expel_motion.cast_vote(guild, motion, voter, yay=True)
+    await expel_motion.settle(guild, motion)
+
+    assert await cog.announce_if_ready(MagicMock(), guild, motion) is False
+    delegate_channel.send.assert_not_awaited()
+
+
+async def test_an_unset_delegate_channel_doesnt_stop_the_vote(
+    db, guild, notable, monkeypatch
+):
+    """Nobody is called to it, and it still runs and still resolves."""
+    from hall_monitor.discord_bot.cogs.moderation import expel as cog
+
+    monkeypatch.setattr(
+        "hall_monitor.discord_bot.cogs.moderation.expel.settings"
+        ".delegate_channel_id",
+        0,
+    )
+    for index, tag in enumerate(("VETS", "ANO", "SEQ", "LOL", "FIVE"), start=1):
+        await seat(guild, notable, tag, index)
+    await seat(guild, notable, "OTHR", 9)
+    motion = await a_motion(target="OTHR")
+    for voter in (1, 2, 3):
+        await expel_motion.cast_vote(guild, motion, voter, yay=True)
+
+    assert await cog.announce_if_ready(MagicMock(), guild, motion) is False
+    assert (await ExpelMotion.get(id=motion.id)).announced_at is None
+    assert (await ExpelMotion.get(id=motion.id)).state == expel_motion.OPEN
+
+
+async def test_a_failed_call_is_retried_rather_than_spent(
+    db, guild, notable, delegate_channel
+):
+    """The row is stamped only once the message is out, so a motion never
+    silently loses the single announcement it gets."""
+    import discord
+
+    from hall_monitor.discord_bot.cogs.moderation import expel as cog
+
+    _wire(guild, delegate_channel)
+    for index, tag in enumerate(("VETS", "ANO", "SEQ", "LOL", "FIVE"), start=1):
+        await seat(guild, notable, tag, index)
+    await seat(guild, notable, "OTHR", 9)
+    motion = await a_motion(target="OTHR")
+    for voter in (1, 2, 3):
+        await expel_motion.cast_vote(guild, motion, voter, yay=True)
+    delegate_channel.send.side_effect = discord.HTTPException(
+        MagicMock(status=500), "nope"
+    )
+
+    assert await cog.announce_if_ready(MagicMock(), guild, motion) is False
+    assert (await ExpelMotion.get(id=motion.id)).announced_at is None
+
+    delegate_channel.send.side_effect = None
+    assert await cog.announce_if_ready(MagicMock(), guild, motion) is True
 
 
 # --------------------------------------------------------------------------
@@ -634,6 +898,7 @@ async def test_the_diagnostic_shows_turnout_but_not_the_split(db, guild, notable
     assert "`VETS`" in body and "`ANO`" in body, "the electorate is named"
     assert "1 of 2 voted" in body
     assert "yay ·" not in body and "nay" not in body
+    assert "moved by" not in body.lower(), "the mover is anonymous here too"
 
 
 async def test_the_roster_does_not_list_a_banned_guild(db):

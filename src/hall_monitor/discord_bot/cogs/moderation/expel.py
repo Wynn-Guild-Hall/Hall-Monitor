@@ -1,25 +1,33 @@
 """``~expel_motion`` — put a guild's removal from the Hall to the delegates.
 
 The rules of the vote live in ``services/expel_motion.py``; this is the
-Discord surface for them. Three pieces:
+Discord surface for them. Four pieces:
 
-- **A confirmation step.** The command doesn't post anything on its own.
-  It DMs the mover what a motion actually does — every delegate notified,
-  a guild removed if it carries — with a button to go ahead. A motion is
-  the loudest thing anyone in this server can do, and a typo'd tag
-  shouldn't be enough to start one. When the mover's DMs are closed the
-  warning is posted in the invoking channel instead, because refusing
-  outright would make the command unusable for a large share of people
-  for a reason that has nothing to do with them.
+- **DM-only, because the mover is anonymous.** Running ``~expel_motion``
+  in a channel names you to everyone in it, which no amount of care
+  inside the bot can undo — so the command refuses there, deletes the
+  message if it can, and says to try again in a DM. Anonymity you have to
+  remember to use isn't anonymity.
+- **A confirmation step.** The command posts nothing on its own. It
+  answers with what a motion actually does — a public vote, a guild
+  removed if it carries — and a button to go ahead. A typo'd tag
+  shouldn't be enough to start one.
 - **A persistent ballot.** The two buttons carry fixed ``custom_id``s and
   the *message* identifies which motion they belong to, so one registered
   view serves every motion — including ones opened before the last
   restart. Per-motion custom_ids would need re-registering on boot, and a
   motion whose buttons went dead after a deploy would be indistinguishable
   from a bot that had stopped working.
-- **A live post.** Every vote edits the message: turnout and the bar, never
-  the split. When the motion resolves the message is rewritten with the
-  final numbers and the buttons come off.
+- **A live post**, edited on every vote: turnout and the bar, never the
+  split, never the mover. When the motion resolves the message is
+  rewritten with the final numbers and the buttons come off.
+
+The motion post itself **notifies nobody**. One person deciding to ping
+the server is not a thing this bot does — people leave over stray pings.
+The Hall is called to a vote exactly once, with an ``@here`` in the
+delegate channel, and only once ``ANNOUNCE_AT_YAY`` guilds are already
+behind it: at that point it's the Hall's business rather than one
+member's.
 
 Voting replies **ephemerally**, always, whatever the outcome. A button
 that does nothing visible is the same to the voter as a bot that's down.
@@ -33,7 +41,11 @@ from discord.ext import commands
 
 from hall_monitor.config import settings
 from hall_monitor.db.models import ExpelMotion
-from hall_monitor.discord_bot.permissions import is_delegate
+from hall_monitor.discord_bot.permissions import (
+    CONTACT_ROLE_ATTRS,
+    STAFF_ROLE_ATTRS,
+    has_any_role,
+)
 from hall_monitor.services import (
     delegate_registry,
     expel_motion,
@@ -48,6 +60,25 @@ NAY_ID = "hall-monitor:expel:nay"
 CONFIRM_TIMEOUT_SECONDS = 180.0
 
 
+def may_move():
+    """``is_delegate`` where there are roles to read, the DB where there aren't.
+
+    A DM has no member and no roles, so the usual gate would refuse every
+    invocation of a command that is deliberately DM-only. The authoritative
+    check is ``expel_motion.check_can_open`` anyway — it asks whether they
+    hold a *seat*, which is stricter than holding the role — so the gate
+    here exists only to keep the in-server ``~help`` listing honest.
+    """
+
+    async def predicate(ctx: commands.Context) -> bool:
+        if ctx.guild is None:
+            return True
+        wanted = ("delegate_role_id", *CONTACT_ROLE_ATTRS, *STAFF_ROLE_ATTRS)
+        return has_any_role(ctx, *(getattr(settings, name) for name in wanted))
+
+    return commands.check(predicate)
+
+
 def _warning(guild_tag: str, moving_for: str, seated: int) -> str:
     """What the mover is told before anything is posted."""
     return "\n".join(
@@ -56,15 +87,18 @@ def _warning(guild_tag: str, moving_for: str, seated: int) -> str:
             f"Guild Hall, on behalf of `{moving_for}`.",
             "",
             "If you confirm:",
-            f"· every one of the **{seated}** guilds seated in the Hall is "
-            "asked to vote, in the notifications channel;",
+            f"· a vote goes up in the notifications channel for the "
+            f"**{seated}** guilds seated in the Hall;",
             f"· if **{expel_motion.THRESHOLD_PERCENT}%** of them vote yay, "
             f"`{guild_tag}`'s representatives are removed from the server and "
             "the guild is barred from rejoining;",
             f"· the motion closes on its own after "
             f"{settings.expel_motion_days} days if it doesn't reach that.",
             "",
-            "Your guild is named on the motion. Individual votes are not.",
+            "**Nothing names you or your guild** — not the post, not the "
+            "result, not the staff tools. Individual votes are private too. "
+            f"Nobody is pinged unless {expel_motion.ANNOUNCE_AT_YAY} guilds "
+            "vote yay, at which point the Hall gets one `@here` about it.",
         ]
     )
 
@@ -128,6 +162,9 @@ class ExpelBallot(discord.ui.View):
         # already resolved, and the next reader would press a dead button.
         await expel_motion.settle(interaction.guild, motion)
         await refresh(interaction.client, motion)
+        # And it can be the one that makes the motion the Hall's business
+        # rather than one member's. No-ops unless it just crossed the line.
+        await announce_if_ready(interaction.client, interaction.guild, motion)
 
 
 class ConfirmMotion(discord.ui.View):
@@ -259,13 +296,20 @@ class Expel(commands.Cog):
         self.bot = bot
 
     @commands.command(name="expel_motion")
-    @is_delegate()
+    @may_move()
     async def expel_motion_command(
         self, ctx: commands.Context, guild_tag: str
     ) -> None:
-        """move that a guild be expelled from the Hall"""
-        if ctx.guild is None:
-            await ctx.reply("run this in the server — a motion is put to the Hall.")
+        """move that a guild be expelled from the Hall (DM me)"""
+        if ctx.guild is not None:
+            await self._redirect_to_dm(ctx)
+            return
+        guild = self.bot.get_guild(settings.discord_guild_id)
+        if guild is None:
+            await ctx.reply(
+                "I can't see the Guild Hall server at the moment — try again "
+                "in a minute."
+            )
             return
         if not settings.notifications_channel_id:
             await ctx.reply(
@@ -279,32 +323,53 @@ class Expel(commands.Cog):
         try:
             # Returns the Hall's own spelling of the tag, so the motion is
             # recorded as `OTHR` however the mover typed it.
-            guild_tag = await expel_motion.check_can_open(ctx.guild, mover, guild_tag)
+            guild_tag = await expel_motion.check_can_open(guild, mover, guild_tag)
         except expel_motion.MotionRejected as exc:
             await ctx.reply(str(exc))
             return
 
         moving_for = await delegate_registry.represented_guild(mover)
-        seated = len(await expel_motion.electorate(ctx.guild, exclude=guild_tag))
+        seated = len(await expel_motion.electorate(guild, exclude=guild_tag))
         view = ConfirmMotion(self, ctx.author.id, guild_tag)
-        warning = _warning(guild_tag, moving_for, seated)
-
-        try:
-            view.message = await ctx.author.send(warning, view=view)
-        except discord.Forbidden:
-            # DMs closed. Posting it here is worse — the tag is now public
-            # before anyone voted — but refusing would make the command
-            # unusable for a large share of people, so say what happened
-            # and let them decide.
-            view.message = await ctx.reply(
-                f"{warning}\n\n_(I couldn't DM you, so this is here instead.)_",
-                view=view,
-            )
-            return
-        await ctx.reply(
-            "I've DM'd you what a motion does, with a button to go ahead. "
-            "Nothing is posted until you press it."
+        view.message = await ctx.reply(
+            _warning(guild_tag, moving_for, seated), view=view
         )
+
+    async def _redirect_to_dm(self, ctx: commands.Context) -> None:
+        """Refuse a public invocation, and clean it up if we're allowed to.
+
+        The message itself is the leak — it names the mover to everyone
+        who can read the channel, and nothing the bot does afterwards
+        takes that back. So it goes if we have Manage Messages there, and
+        the explanation is DM'd rather than posted, since a reply saying
+        "motions are anonymous" under a visible one would only draw eyes
+        to it.
+        """
+        deleted = True
+        try:
+            await ctx.message.delete()
+        except discord.HTTPException:
+            deleted = False
+            logger.warning(
+                "expel: couldn't delete a public ~expel_motion from %s "
+                "(needs Manage Messages in that channel)",
+                ctx.author.id,
+            )
+        tail = (
+            "I've removed your message."
+            if deleted
+            else "**Your message is still visible — delete it yourself.**"
+        )
+        note = (
+            "Motions are anonymous, and running that in a channel names you "
+            f"to everyone in it. Send it to me here instead. {tail}"
+        )
+        try:
+            await ctx.author.send(note)
+        except discord.Forbidden:
+            # Nowhere private left to answer. Better a visible refusal than
+            # silence, which reads as the bot being broken.
+            await ctx.send(f"{ctx.author.mention} {note}", delete_after=30)
 
     async def post_motion(
         self, mover_id: int, guild_tag: str, interaction: discord.Interaction
@@ -343,17 +408,15 @@ class Expel(commands.Cog):
         standing = await expel_motion.tally(motion, voters)
         name = await expel_motion.guild_name(guild_tag)
 
-        content = expel_motion.render_open(motion, standing, name)
-        mention = _delegate_mention(guild)
         try:
             message = await channel.send(
-                f"{mention}{content}" if mention else content,
+                expel_motion.render_open(motion, standing, name),
                 view=ExpelBallot(),
-                # The one place in this bot that deliberately notifies.
-                # The roster is redrawn hourly and must never ping; a
-                # motion is a rare, discrete thing every delegate has to
-                # act on, and one nobody saw is the same as none at all.
-                allowed_mentions=discord.AllowedMentions(roles=True),
+                # Notifies nobody. One member deciding to ping the server
+                # is not something this bot lets happen — the Hall is
+                # called to a vote only once other guilds are behind it,
+                # by `announce_if_ready`.
+                allowed_mentions=roster.SILENT,
             )
         except discord.HTTPException:
             await motion.delete()
@@ -379,12 +442,89 @@ class Expel(commands.Cog):
         )
 
 
-def _delegate_mention(guild: discord.Guild) -> str:
-    """The delegate role, if it's configured and present. Blank otherwise."""
-    if not settings.delegate_role_id:
+async def announce_if_ready(
+    bot: discord.Client, guild: discord.Guild, motion: ExpelMotion
+) -> bool:
+    """Call the Hall to a motion enough guilds are already behind.
+
+    The **only** `@here` this bot sends, once per motion ever. A ping is
+    borrowed attention and people leave servers over stray ones, so it
+    has to be the Hall's business rather than one member's — which is
+    what `ANNOUNCE_AT_YAY` establishes — and a motion that has already
+    carried or lapsed doesn't send one at all.
+
+    Best-effort and idempotent: the row is stamped only once the message
+    is actually out, so a failed send is retried by the next pass rather
+    than silently swallowing the one announcement a motion gets.
+    """
+    voters = await expel_motion.electorate(guild, exclude=motion.guild_tag)
+    standing = await expel_motion.tally(motion, voters)
+    if not expel_motion.should_announce(motion, standing):
+        return False
+    if not settings.delegate_channel_id:
+        logger.warning(
+            "expel: %s has %d yay but DELEGATE_CHANNEL_ID is unset; the Hall "
+            "won't be called to it",
+            motion.guild_tag,
+            standing.yay,
+        )
+        return False
+    channel = guild.get_channel(settings.delegate_channel_id)
+    if channel is None:
+        logger.warning(
+            "expel: delegate channel %s is not in the guild; can't call the "
+            "Hall to the motion against %s",
+            settings.delegate_channel_id,
+            motion.guild_tag,
+        )
+        return False
+
+    name = await expel_motion.guild_name(motion.guild_tag)
+    body = expel_motion.render_call(motion, standing, name)
+    link = _link(guild, motion)
+    try:
+        await channel.send(
+            f"{body}\n{link}" if link else body,
+            allowed_mentions=discord.AllowedMentions(everyone=True),
+        )
+    except discord.HTTPException:
+        logger.exception(
+            "expel: couldn't call the Hall to the motion against %s",
+            motion.guild_tag,
+        )
+        return False
+    await expel_motion.mark_announced(motion)
+    logger.info(
+        "expel: called the Hall to the motion against %s (%d yay of %d seated)",
+        motion.guild_tag,
+        standing.yay,
+        standing.electorate,
+    )
+    return True
+
+
+async def sync_all(bot: discord.Client, guild: discord.Guild) -> None:
+    """Settle, redraw and announce every motion. The hourly pass.
+
+    Resolution runs here as well as on each button because the electorate
+    moves on its own (DESIGN.md §16.2), and the announcement does because
+    a send that failed gets exactly one more chance per hour rather than
+    none.
+    """
+    for resolution in await expel_motion.resolve_open(guild):
+        await refresh(bot, resolution.motion)
+    for motion in await ExpelMotion.filter(state=expel_motion.OPEN):
+        await refresh(bot, motion)
+        await announce_if_ready(bot, guild, motion)
+
+
+def _link(guild: discord.Guild, motion: ExpelMotion) -> str:
+    if motion.discord_channel_id is None or motion.discord_message_id is None:
         return ""
-    role = guild.get_role(settings.delegate_role_id)
-    return f"{role.mention}\n" if role is not None else ""
+    return (
+        f"https://discord.com/channels/{guild.id}/"
+        f"{motion.discord_channel_id}/{motion.discord_message_id}"
+    )
 
 
 async def setup(bot: commands.Bot) -> None:
