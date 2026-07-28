@@ -1,4 +1,4 @@
-"""Aggregate the 6 guild-notability signals into a single boolean.
+"""Aggregate the 7 guild-notability signals into a single boolean.
 
 Signals
 -------
@@ -15,7 +15,11 @@ Signals
    take 150 territories for five minutes, and holding twenty for five
    days is what actually needs on-call war teams and eco capacity.
 5. **War count** > 50 000.
-6. **Force override** — a `ForceOverride(kind="notable", subject=tag)`
+6. **Guild raids** — either top 25 on Wynnpool's ``guildTotalRaids``
+   board (the same bound as signal 1, and the same claim: near the top
+   of what the board publishes), or top 15 on any *single* raid's
+   ``<raid>SrGuilds`` board. See ``RAID_RULES``.
+7. **Force override** — a `ForceOverride(kind="notable", subject=tag)`
    row with no expiry or an expiry in the future.
 
 Any single signal being true marks the guild notable. Every one is
@@ -60,19 +64,33 @@ _SIGNAL_5_MIN_WARS = 50_000
 
 
 # Boards that answer a signal directly.
-_SIGNAL_BOARDS = ("guild-average-online", "guildLevel", "guildWars", "guildTerritories")
+_SIGNAL_BOARDS = ("guild-average-online", "guildLevel", "guildWars")
 
-# Boards that answer nothing on their own but widen the candidate set —
-# a guild ranked for raids may still qualify on level, wars or seasons,
-# and it can't do so if we never look at it.
-_CANDIDATE_BOARDS = (
-    "guildTotalRaids",
+# The aggregate raid board, and one per raid. These used to be fetched
+# purely to widen the candidate set; signal 6 reads them now.
+TOTAL_RAIDS_BOARD = "guildTotalRaids"
+RAID_BOARDS = (
     "grootslangSrGuilds",
     "orphionSrGuilds",
     "colossusSrGuilds",
     "frumaSrGuilds",
     "namelessSrGuilds",
 )
+
+# Raid bounds. Top 25 on the aggregate mirrors signal 1's bound against a
+# board of the same published depth; top 15 on a single raid is the
+# narrower claim, since being near the top of one raid says less than
+# being near the top of all of them together.
+RAID_TOTAL_TOP = 25
+RAID_SINGLE_TOP = 15
+
+RAIDS_TOTAL = "total_raids"
+RAIDS_SINGLE = "single_raid"
+RAID_RULES = (RAIDS_TOTAL, RAIDS_SINGLE)
+RAID_RULE_LABELS = {
+    RAIDS_TOTAL: f"top {RAID_TOTAL_TOP} on the combined raid board",
+    RAIDS_SINGLE: f"top {RAID_SINGLE_TOP} on any single raid",
+}
 
 
 @dataclass(frozen=True)
@@ -83,6 +101,10 @@ class _BulkContext:
     avg_online: tuple[wynnpool.LeaderboardEntry, ...]
     guild_level: tuple[wynnpool.LeaderboardEntry, ...]
     wars: tuple[wynnpool.LeaderboardEntry, ...]
+    total_raids: tuple[wynnpool.LeaderboardEntry, ...]
+    # Raid name → that raid's board. Keyed so a report can name which
+    # raid carried a guild rather than only that one of them did.
+    raid_boards: dict[str, tuple[wynnpool.LeaderboardEntry, ...]]
     # Live holdings from Wynncraft's territory map, by comparison key.
     # A dict rather than a board because the map is *complete*: a guild
     # that isn't in it holds nothing, which is a fact and not a gap.
@@ -238,10 +260,11 @@ async def _refresh_all(on_progress: "ProgressCallback | None" = None) -> Refresh
 
 
 async def _load_context() -> _BulkContext:
-    avg_online, guild_level, wars, territory_map, seasons = await asyncio.gather(
+    avg_online, guild_level, wars, total_raids, territory_map, seasons = await asyncio.gather(
         wynnpool.average_online_leaderboard(),
         wynnpool.guild_level_leaderboard(),
         wynnpool.wars_leaderboard(),
+        wynnpool.leaderboard(TOTAL_RAIDS_BOARD),
         # Wynncraft's own territory map rather than Wynnpool's
         # `guildTerritories` board. That board is a snapshot that can lag
         # badly — it credited two guilds with 61 and 57 territories while
@@ -250,17 +273,23 @@ async def _load_context() -> _BulkContext:
         wynncraft.territory_holdings(),
         wynncraft.get_seasons(),
     )
-    candidate_boards = await asyncio.gather(
-        *(wynnpool.leaderboard(name) for name in _CANDIDATE_BOARDS),
+    fetched = await asyncio.gather(
+        *(wynnpool.leaderboard(name) for name in RAID_BOARDS),
         return_exceptions=True,
     )
-    extra_boards = []
-    for name, board in zip(_CANDIDATE_BOARDS, candidate_boards):
+    raid_boards: dict[str, tuple[wynnpool.LeaderboardEntry, ...]] = {}
+    for name, board in zip(RAID_BOARDS, fetched):
         if isinstance(board, BaseException):
-            # Candidate-only, so losing one costs coverage, not correctness.
-            logger.warning("candidate board %s unavailable: %s", name, board)
+            # Treated as an empty board, matching the season boards: it
+            # can only make the signal read false, never true, and one
+            # raid being unavailable must not cost the whole sweep.
+            logger.warning(
+                "raid board %s unavailable: %s; treating it as empty", name, board
+            )
+            raid_boards[name] = ()
             continue
-        extra_boards.append(board)
+        raid_boards[name] = board
+    extra_boards = [total_raids, *raid_boards.values()]
     last_10 = seasons[-_SIGNAL_3_LAST_10:] if seasons else ()
     season_boards = await _season_boards(last_10)
     tag_to_name: dict[str, str] = {}
@@ -298,6 +327,8 @@ async def _load_context() -> _BulkContext:
         avg_online=avg_online,
         guild_level=guild_level,
         wars=wars,
+        total_raids=total_raids,
+        raid_boards=raid_boards,
         territories={
             tags.normalise(holder.prefix): holder.territories
             for holder in territory_map
@@ -514,6 +545,20 @@ def _metrics(tag: str, context: _BulkContext) -> dict[str, float | None]:
         "season_ranks": ranks,
         "season_rules": season_rules(ranks),
         "territories": context.territories_for(tag),
+        "total_raids_rank": _board_rank(context.total_raids, tag),
+        "raid_ranks": raid_ranks(tag, context),
+        "raid_rules": raid_rules(tag, context),
+        "best_raid_rank": min(
+            [
+                rank
+                for rank in (
+                    _board_rank(context.total_raids, tag),
+                    *raid_ranks(tag, context).values(),
+                )
+                if rank is not None
+            ],
+            default=None,
+        ),
         # The record behind the signal, so a report can say *why* rather
         # than only what.
         "territory_sustained_fraction": round(
@@ -533,6 +578,7 @@ SIGNAL_ORDER = (
     "season_placement",
     "territory_ownership",
     "war_count",
+    "guild_raids",
     "force_override",
 )
 
@@ -576,6 +622,11 @@ def _margin(
         return float(metrics.get("territories") or 0)
     if name == "war_count":
         return float(metrics.get("wars") or 0)
+    if name == "guild_raids":
+        # Inverted like the other rank-based signals: best rank across
+        # the aggregate and the five raids, so first place is strongest.
+        rank = metrics.get("best_raid_rank")
+        return 0.0 if rank is None else float(max(0, 101 - rank))
     # A force override has no magnitude — a janitor said yes, and that's
     # the whole of it.
     return 1.0
@@ -677,6 +728,7 @@ async def _evaluate(tag: str, context: _BulkContext) -> dict[str, bool | None]:
             context.current_season_active,
         ),
         "war_count": _signal_war_count(wars),
+        "guild_raids": any(raid_rules(tag, context).values()),
         "force_override": await _has_active_notable_override(tag),
     }
 
@@ -802,6 +854,32 @@ def _signal_territory_ownership(sustained: bool, season_active: bool) -> bool:
     costs nothing to keep and proves nothing about war capacity.
     """
     return bool(sustained and season_active)
+
+
+def raid_rules(tag: str, ctx: _BulkContext) -> dict[str, bool]:
+    """Which raid rules a guild satisfies.
+
+    Kept apart like the season rules, and for the same reason: "near the
+    top of every raid combined" and "near the top of one raid" are
+    different claims, and a report that collapses them can't say which
+    bound is doing the admitting.
+    """
+    total = _board_rank(ctx.total_raids, tag)
+    single = raid_ranks(tag, ctx)
+    return {
+        RAIDS_TOTAL: total is not None and total <= RAID_TOTAL_TOP,
+        RAIDS_SINGLE: any(rank <= RAID_SINGLE_TOP for rank in single.values()),
+    }
+
+
+def raid_ranks(tag: str, ctx: _BulkContext) -> dict[str, int]:
+    """Where ``tag`` sits on each single-raid board it appears on."""
+    ranks = {}
+    for name, board in ctx.raid_boards.items():
+        rank = _board_rank(board, tag)
+        if rank is not None:
+            ranks[name] = rank
+    return ranks
 
 
 def _signal_war_count(wars: float | None) -> bool:

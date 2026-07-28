@@ -56,16 +56,17 @@ Reading the invite list requires **Manage Server**. With only View Audit Log, Di
 
 **Status:** implemented (Stage 2)
 
-`services/notability.py` aggregates six independent signals against a guild tag and stores the result in `notability_cache`. Signals:
+`services/notability.py` aggregates seven independent signals against a guild tag and stores the result in `notability_cache`. Signals:
 
 1. Top-25 average online (last 5 days) on `api.wynnpool.com/leaderboard/guild-average-online`.
 2. Level 100+ on `api.wynnpool.com/leaderboard/guildLevel`.
 3. Season placements — top **5** in any of the last 10 seasons, top **6** in any of the last 5, or mean rank across the last 5 **≤ 15**. The bounds live in `notability.SEASON_PEAK_LAST_10` / `SEASON_PEAK_LAST_5` / `SEASON_MEAN_LAST_5`, named for what they are rather than their values — an earlier pair called `TOP_3` and `TOP_10` outlived the numbers they were named after. Wynnpool's season-rating payload identifies guilds by name only (no prefix field), so this signal matches on guild name, case-insensitively — the tag is still checked first should the shape ever gain one. The three rules are kept apart in `notability.season_rules` and recorded per guild, because they make very different claims: one outstanding season two years ago and a steady mid-table record both satisfy "season placement", and only one of them is a case for tightening. Tightened once already, from 3/10/25 to 5/6/15 — which took season placement from 29 guilds to 16. The loose one was the five-season peak: at ≤10 a single top-10 season carried a guild for two and a half years. `~script season` reports them separately, and `~script season <TAG>` shows a guild's rank in each of the last ten. Note the boards are top-100, so a missing season is *outside the top 100* rather than a bad rank — and the mean rule deliberately requires a placement in every one of the last five, or a guild that turned up once and came second would qualify on a single appearance.
 4. Territory ownership — more than 20 territories **sustained across five days**, while a Wynncraft season is running (`api.wynncraft.com/v3/guild/seasons`). See §4.1.
 5. War count > 50 000 on the Wynncraft guild payload.
-6. A janitor/monitor-issued force override (`force_override` table with `kind="notable"`) with no expiry or an expiry in the future.
+6. Guild raids — top 25 on Wynnpool's `guildTotalRaids`, **or** top 15 on any single raid's `<raid>SrGuilds` board. Two rules kept apart in `notability.raid_rules` for the same reason as §3's three: "near the top of every raid combined" and "near the top of one raid" are different claims. The bounds differ deliberately — 25 on the aggregate mirrors signal 1 against a board of comparable depth, while a single raid is held tighter because placing well on one of five says less than placing well across all of them. The six boards were already being fetched to widen the candidate set; this reads them.
+7. A janitor/monitor-issued force override (`force_override` table with `kind="notable"`) with no expiry or an expiry in the future.
 
-**All six signals come from bulk leaderboards.** A sweep makes no per-guild call at all, and costs about a dozen requests in steady state no matter how many guilds it evaluates.
+**All seven signals come from bulk data.** A sweep makes no per-guild call at all, and costs about a dozen requests in steady state no matter how many guilds it evaluates.
 
 Most of what it *used* to cost was season boards: ten of them, every hour. A finished season's ratings never change again, so its board is fetched once per process and kept (`_season_boards`), leaving at most one live board to re-read. And a board that can't be fetched is treated as an **empty** board rather than a failed sweep — the `gather` originally had no `return_exceptions`, so a single 429 aborted the entire refresh. An empty board keeps the list positionally aligned, so "the last five seasons" still means the last five and the guild simply doesn't place in the one that couldn't be read; the only effect is that signal 3 may read false. A missing season is worth far less than a missing sweep.
 

@@ -67,6 +67,8 @@ def _ctx(**overrides) -> _BulkContext:
         avg_online=(),
         guild_level=(),
         wars=(),
+        total_raids=(),
+        raid_boards={},
         territories={},
         territory_window=_window(),
         season_boards=(),
@@ -509,9 +511,15 @@ def _boards(httpx_mock, **overrides):
         "guild-average-online": {},
         "guildLevel": {},
         "guildWars": {},
-        **{name: {} for name in notability._CANDIDATE_BOARDS},
+        notability.TOTAL_RAIDS_BOARD: {},
+        **{name: {} for name in notability.RAID_BOARDS},
     }
     boards.update(overrides.pop("boards", {}))
+    # A case that wants to control one board's response registers it
+    # itself; pytest-httpx serves registrations in order, so ours would
+    # otherwise always win.
+    for name in overrides.pop("skip", ()):
+        boards.pop(name, None)
     for name, payload in boards.items():
         httpx_mock.add_response(
             url=f"https://api.wynnpool.com/leaderboard/{name}", json=payload
@@ -948,3 +956,101 @@ async def test_old_readings_are_pruned(db):
     await territory_history.record({"AEQ": 97}, at=now)
 
     assert await TerritorySample.filter(guild_tag="AEQ").count() == 1
+
+
+# --------------------------------------------------------------------------
+# Signal 6 — guild raids
+# --------------------------------------------------------------------------
+
+
+def _raid_ctx(total=None, singles=None):
+    boards = {name: () for name in notability.RAID_BOARDS}
+    for name, entries in (singles or {}).items():
+        boards[name] = entries
+    return _ctx(total_raids=total or (), raid_boards=boards)
+
+
+def test_raids_top_of_the_combined_board_qualifies():
+    ctx = _raid_ctx(total=(_lb(notability.RAID_TOTAL_TOP, "SEQ"),))
+    assert notability.raid_rules("SEQ", ctx)[notability.RAIDS_TOTAL] is True
+
+
+def test_raids_just_outside_the_combined_board_doesnt():
+    ctx = _raid_ctx(total=(_lb(notability.RAID_TOTAL_TOP + 1, "SEQ"),))
+    assert notability.raid_rules("SEQ", ctx)[notability.RAIDS_TOTAL] is False
+
+
+def test_raids_a_single_raid_is_the_narrower_bound():
+    """Being near the top of one raid says less than being near the top
+    of all of them together, so it's held to a tighter rank."""
+    rank = notability.RAID_SINGLE_TOP
+    ctx = _raid_ctx(singles={"orphionSrGuilds": (_lb(rank, "Cosm"),)})
+    rules = notability.raid_rules("Cosm", ctx)
+
+    assert rules[notability.RAIDS_SINGLE] is True
+    assert rules[notability.RAIDS_TOTAL] is False
+
+
+def test_raids_any_single_raid_counts():
+    ctx = _raid_ctx(singles={"frumaSrGuilds": (_lb(3, "VNP"),)})
+    assert notability.raid_rules("VNP", ctx)[notability.RAIDS_SINGLE] is True
+
+
+def test_raids_a_good_rank_on_no_board_in_particular_doesnt_qualify():
+    ctx = _raid_ctx(
+        total=(_lb(60, "MEH"),),
+        singles={name: (_lb(40, "MEH"),) for name in notability.RAID_BOARDS},
+    )
+    assert not any(notability.raid_rules("MEH", ctx).values())
+
+
+def test_raid_ranks_name_which_raid_carried_a_guild(db):
+    ctx = _raid_ctx(
+        singles={"namelessSrGuilds": (_lb(4, "FUMO"),),
+                 "colossusSrGuilds": (_lb(80, "FUMO"),)}
+    )
+    assert notability.raid_ranks("FUMO", ctx) == {
+        "namelessSrGuilds": 4, "colossusSrGuilds": 80
+    }
+
+
+async def test_an_unavailable_raid_board_is_empty_not_fatal(db, httpx_mock, monkeypatch):
+    """One raid failing must not cost the sweep, and can only make the
+    signal read false — never true."""
+    monkeypatch.setattr(
+        "hall_monitor.external.wynncraft.settings.wynncraft_api_token", ""
+    )
+    _boards(httpx_mock, skip=("orphionSrGuilds",), boards={
+        "guildLevel": {"1": {"name": "Returners", "prefix": "VETS", "level": 130}},
+    })
+    # A 429 that survives the client's own retry, so the board is
+    # genuinely unavailable to this sweep.
+    httpx_mock.add_response(
+        url="https://api.wynnpool.com/leaderboard/orphionSrGuilds", status_code=429
+    )
+    httpx_mock.add_response(
+        url="https://api.wynnpool.com/leaderboard/orphionSrGuilds", status_code=429
+    )
+
+    summary = await refresh_all()
+
+    assert summary is not None and summary.failed == 0
+
+
+async def test_the_sweep_records_which_raids_a_guild_placed_on(db, httpx_mock, monkeypatch):
+    monkeypatch.setattr(
+        "hall_monitor.external.wynncraft.settings.wynncraft_api_token", ""
+    )
+    _boards(httpx_mock, boards={
+        "guildTotalRaids": {"3": {"name": "Astrologica", "prefix": "Cosm", "score": 9}},
+        "orphionSrGuilds": {"2": {"name": "Astrologica", "prefix": "Cosm", "score": 9}},
+    })
+
+    await refresh_all()
+
+    cached = await NotabilityCache.get(guild_tag="Cosm")
+    assert json.loads(cached.signals_json)["guild_raids"] is True
+    metrics = json.loads(cached.metrics_json)
+    assert metrics["total_raids_rank"] == 3
+    assert metrics["raid_ranks"] == {"orphionSrGuilds": 2}
+    assert metrics["best_raid_rank"] == 2

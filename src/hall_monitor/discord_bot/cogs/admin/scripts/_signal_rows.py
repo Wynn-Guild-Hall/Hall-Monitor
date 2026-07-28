@@ -17,16 +17,18 @@ SIGNALS = (
     "season_placement",
     "territory_ownership",
     "war_count",
+    "guild_raids",
     "force_override",
 )
 
-# Column headings short enough to line up 6 of them in a Discord message.
+# Column headings short enough to line up all of them in a Discord message.
 ABBREVIATIONS = {
     "top25_average_online": "online",
     "level_100_plus": "level",
     "season_placement": "season",
     "territory_ownership": "terr",
     "war_count": "wars",
+    "guild_raids": "raids",
     "force_override": "forced",
 }
 
