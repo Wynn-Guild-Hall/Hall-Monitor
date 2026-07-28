@@ -225,6 +225,8 @@ It solves two shapes of problem:
 
 **A forced representative is never external**, because the watch disagreeing is the entire situation being overridden. The override sits *in front of* `current_guild_tag`, never in it: the watch rewrites that column hourly, so a forced value stored there would survive exactly until the next sweep. Expired rows read as absent but are left in place, so a janitor can still see what was forced and when it ran out. Duration gating is the shared one (`time_parse.gating_rejection`): janitors capped at three months, monitors unbounded and allowed `0`.
 
+**A command that applies an override says what it applied.** `~force guild` and `~unforce guild` settle the target on the spot and report the end state — "Now standing `delegate`, wearing `ANO`" — or say plainly that nothing needed changing. That wording exists because three separate bugs reached production wearing the same disguise: the command replied with confident success, the hourly reconcile silently disagreed, and the gap between them read as a delay rather than a fault. A no-op that announces itself is a bug report; a no-op that doesn't is a support ticket a week later.
+
 Two consequences worth stating, because both were bugs first:
 
 - **A member wears exactly one guild role.** The colour is a claim about who they speak for; two of them is two claims. `sync_guild_role_membership` strips every *other* role we created, so a repoint moves the colour rather than adding one. Roles adopted by name are never stripped, for the same reason they're never deleted.

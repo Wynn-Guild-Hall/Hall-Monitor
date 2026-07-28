@@ -21,6 +21,7 @@ representative is never external, since the watch disagreeing is the
 whole situation being overridden.
 """
 
+from dataclasses import dataclass
 from datetime import datetime, timezone
 
 import discord
@@ -43,7 +44,45 @@ from hall_monitor.services.time_parse import (
 )
 
 
-async def apply_now(ctx: commands.Context, user: discord.Member) -> None:
+@dataclass(frozen=True)
+class Applied:
+    """What applying an override actually did, for the reply to say out loud."""
+
+    settlement: transitions.Settlement | None
+    contacts_changed: int
+    nickname_changed: bool
+
+    @property
+    def changed(self) -> bool:
+        return bool(
+            (self.settlement and self.settlement.changes)
+            or self.contacts_changed
+            or self.nickname_changed
+        )
+
+    def line(self) -> str:
+        """A sentence naming the end state, or saying nothing moved.
+
+        Both halves matter. Naming the end state means a command that
+        settled on something unexpected is visible immediately, and saying
+        so when nothing moved means a no-op can't pass for success — the
+        failure mode that took three bugs to notice, because the hourly
+        reconcile made every one of them look like a delay.
+        """
+        if self.settlement is None:
+            return "They aren't in the server, so there was nothing to apply."
+        parts = [self.settlement.line()]
+        if self.contacts_changed:
+            parts.append(f"{self.contacts_changed} contact role change(s)")
+        if self.nickname_changed:
+            parts.append("nickname updated")
+        state = ", ".join(parts)
+        if not self.changed:
+            return f"Already {state} — nothing needed changing."
+        return f"Now {state}."
+
+
+async def apply_now(ctx: commands.Context, user: discord.Member) -> Applied:
     """Settle the target's standing, roles and nickname immediately.
 
     **Both guilds, and in this order.** A repoint is a move: the guild
@@ -60,16 +99,24 @@ async def apply_now(ctx: commands.Context, user: discord.Member) -> None:
     """
     delegate = await delegate_registry.get_by_discord_user_id(user.id)
     if delegate is None or ctx.guild is None:
-        return
+        return Applied(settlement=None, contacts_changed=0, nickname_changed=False)
 
     represents = await delegate_registry.represented_guild(delegate)
+    contacts_changed = 0
     for tag in _affected(delegate.guild_tag, represents):
         notable = await notability.is_notable(tag)
-        await contacts.sync_contact_roles(
+        contacts_changed += await contacts.sync_contact_roles(
             tag, discord_guild=ctx.guild, granted=notable
         )
-        await transitions.settle_members(ctx.guild, tag, notable=notable)
-    await nicknames.enforce(user, reason=f"hall-monitor: ~force guild by {ctx.author}")
+    settlement = await transitions.settle_representative(ctx.guild, delegate)
+    renamed = await nicknames.enforce(
+        user, reason=f"hall-monitor: ~force guild by {ctx.author}"
+    )
+    return Applied(
+        settlement=settlement,
+        contacts_changed=contacts_changed,
+        nickname_changed=renamed,
+    )
 
 
 def _affected(*tags_in_order: str) -> list[str]:
@@ -105,7 +152,7 @@ def register(cog: commands.Cog) -> None:
 
         expires_at = None if delta is None else datetime.now(timezone.utc) + delta
         await delegate_registry.set_forced_guild(user.id, guild_tag, expires_at)
-        await apply_now(ctx, user)
+        applied = await apply_now(ctx, user)
 
         delegate = await delegate_registry.get_by_discord_user_id(user.id)
         window = (
@@ -120,8 +167,8 @@ def register(cog: commands.Cog) -> None:
             "them until they verify."
         )
         await ctx.reply(
-            f"{user.mention} represents `{guild_tag}` {window} — tag, colour, "
-            f"role and contact slots follow.{note}"
+            f"{user.mention} represents `{guild_tag}` {window}. "
+            f"{applied.line()}{note}"
         )
 
     @cog.unforce.command(name="guild")
@@ -132,8 +179,8 @@ def register(cog: commands.Cog) -> None:
         if not cleared:
             await ctx.reply(f"no guild override on {user.mention} to clear.")
             return
-        await apply_now(ctx, user)
+        applied = await apply_now(ctx, user)
         await ctx.reply(
             f"cleared the guild override on {user.mention} — back to the guild "
-            "they verified with, and to whatever the watch sees."
+            f"they verified with. {applied.line()}"
         )

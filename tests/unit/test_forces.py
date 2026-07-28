@@ -221,11 +221,69 @@ async def test_apply_now_settles_the_guild_they_moved_to(db, monkeypatch):
     ctx = MagicMock()
     ctx.guild = guild
     ctx.author = "janitor"
-    await force_guild.apply_now(ctx, member)
+    applied = await force_guild.apply_now(ctx, member)
 
     assert guild.create_role.await_args.kwargs["name"] == "ANO", "minted on demand"
+    # The reply says what happened, so a no-op can't read as success.
+    assert applied.changed is True
+    assert "Now standing `delegate`, wearing `ANO`" in applied.line()
     added = {r.id for call in member.add_roles.await_args_list for r in call.args}
     removed = {r.id for call in member.remove_roles.await_args_list for r in call.args}
     assert any(guild.get_role(rid).name == "ANO" for rid in added)
     assert vets.id in removed, "the colour moves rather than doubling up"
     assert await guild_roles.resolve_role(guild, "ANO") is not None
+
+
+async def test_apply_now_says_when_it_changed_nothing(db, monkeypatch):
+    """The failure that took three bugs to spot: a command replying with
+    confident success while doing nothing at all."""
+    from hall_monitor.discord_bot.cogs.force import guild as force_guild
+    from hall_monitor.services import athena_colour, notability
+
+    monkeypatch.setattr(
+        "hall_monitor.services.guild_roles.settings.delegate_role_id", 100
+    )
+    athena_colour.reset_cache()
+
+    async def unknown(guild_tag, *, urgent=False):
+        return None
+
+    async def notable(tag):
+        return True
+
+    monkeypatch.setattr(athena_colour, "lookup", unknown)
+    monkeypatch.setattr(notability, "is_notable", notable)
+
+    vets = _role(1, "VETS")
+    delegate_role = _role(100, "Guild Hall Delegate")
+    guild = _Guild([vets, delegate_role])
+    await GuildRole.create(guild_tag="VETS", discord_role_id=1)
+    await _delegate(1, tag="VETS", currently="VETS")
+    # Already exactly where they should be.
+    member = _member(guild, 1, holding=[vets, delegate_role])
+    member.nick = "Tester [VETS]"
+
+    ctx = MagicMock()
+    ctx.guild = guild
+    ctx.author = "janitor"
+    applied = await force_guild.apply_now(ctx, member)
+
+    assert applied.changed is False
+    assert applied.line().startswith("Already standing `delegate`, wearing `VETS`")
+    assert "nothing needed changing" in applied.line()
+
+
+async def test_apply_now_reports_a_member_who_left(db):
+    from hall_monitor.discord_bot.cogs.force import guild as force_guild
+
+    guild = _Guild([])
+    await _delegate(1, tag="VETS", currently="VETS")
+    member = MagicMock()
+    member.id = 1  # never added to the guild's member table
+
+    ctx = MagicMock()
+    ctx.guild = guild
+    ctx.author = "janitor"
+    applied = await force_guild.apply_now(ctx, member)
+
+    assert "aren't in the server" in applied.line()

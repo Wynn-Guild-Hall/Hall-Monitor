@@ -52,6 +52,19 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
+class Settlement:
+    """What settling one member left them with, and whether it took work."""
+
+    standing: str
+    guild_role: str | None
+    changes: int
+
+    def line(self) -> str:
+        wearing = f"wearing `{self.guild_role}`" if self.guild_role else "no guild role"
+        return f"standing `{self.standing}`, {wearing}"
+
+
+@dataclass(frozen=True)
 class ReconcileSummary:
     guilds: int = 0
     notable: int = 0
@@ -140,25 +153,70 @@ async def settle_members(
     if not mine:
         return 0
 
-    # Created here as well as at join: a member repointed by `~force guild`
-    # needs their new guild's role to exist, and nobody verified for it.
-    # Non-notable guilds get the flat colour rather than Athena's, so this
-    # can't undo the greying the reconcile just did.
-    role = await guild_roles.ensure_guild_role(
-        discord_guild, guild_tag, colour_hex=None if notable else "#000000"
-    )
-
+    role = await _guild_role(discord_guild, guild_tag, notable=notable)
     changed = 0
     for delegate in mine:
         member = discord_guild.get_member(delegate.discord_user_id)
         if member is None:
             continue  # left the server; the leave path owns that, not this
-        standing = await delegate_registry.standing(delegate, notable=notable)
-        changed += await guild_roles.sync_standing(member, standing)
-        changed += await guild_roles.sync_guild_role_membership(
-            member, role, wanted=standing != delegate_registry.EXTERNAL
-        )
+        changed += (await _settle(member, delegate, role, notable=notable)).changes
     return changed
+
+
+async def settle_representative(
+    discord_guild: discord.Guild, delegate: Delegate
+) -> Settlement | None:
+    """Settle one member against the guild they represent, and say what moved.
+
+    The single-member counterpart to :func:`settle_members`, for commands
+    that change one person's situation and have to report on it. A command
+    whose effect only shows up at the next reconcile is indistinguishable
+    from one that silently did nothing — which is how three bugs in a row
+    got as far as production.
+    """
+    member = discord_guild.get_member(delegate.discord_user_id)
+    if member is None:
+        return None
+    guild_tag = await delegate_registry.represented_guild(delegate)
+    notable = await notability.is_notable(guild_tag)
+    role = await _guild_role(discord_guild, guild_tag, notable=notable)
+    return await _settle(member, delegate, role, notable=notable)
+
+
+async def _guild_role(
+    discord_guild: discord.Guild, guild_tag: str, *, notable: bool
+) -> discord.Role | None:
+    """The guild's aesthetic role, created if this is its first member.
+
+    Minted here as well as at join, because a member repointed by
+    ``~force guild`` needs their new guild's role to exist and nobody
+    verified for it. Non-notable guilds get the flat colour rather than
+    Athena's, so this can't undo the greying the reconcile just did.
+    """
+    return await guild_roles.ensure_guild_role(
+        discord_guild, guild_tag, colour_hex=None if notable else "#000000"
+    )
+
+
+async def _settle(
+    member: discord.Member,
+    delegate: Delegate,
+    role: discord.Role | None,
+    *,
+    notable: bool,
+) -> Settlement:
+    standing = await delegate_registry.standing(delegate, notable=notable)
+    wears_it = standing != delegate_registry.EXTERNAL
+    changes = 0
+    changes += await guild_roles.sync_standing(member, standing)
+    changes += await guild_roles.sync_guild_role_membership(
+        member, role, wanted=wears_it
+    )
+    return Settlement(
+        standing=standing,
+        guild_role=role.name if role is not None and wears_it else None,
+        changes=changes,
+    )
 
 
 async def guilds_present() -> list[str]:
