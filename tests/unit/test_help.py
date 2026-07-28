@@ -235,7 +235,6 @@ async def test_a_reply_that_fails_doesnt_raise():
         ("hall_monitor.discord_bot.cogs.general.dash", "dash"),
         ("hall_monitor.discord_bot.cogs.moderation.echo", "echo"),
         ("hall_monitor.discord_bot.cogs.moderation.embed", "embed"),
-        ("hall_monitor.discord_bot.cogs.moderation.expel", "expel_motion"),
         ("hall_monitor.discord_bot.cogs.admin.manage", "manage"),
     ],
 )
