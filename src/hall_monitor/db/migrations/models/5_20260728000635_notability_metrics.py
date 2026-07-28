@@ -4,8 +4,13 @@ RUN_IN_TRANSACTION = True
 
 
 async def upgrade(db: BaseDBAsyncClient) -> str:
+    # The DEFAULT is not decoration. SQLite refuses to add a NOT NULL
+    # column to a table that already has rows unless there's a value to
+    # give them — and every existing row here needs one. Aerich generated
+    # this without it, which passed against an empty test database and
+    # took the bot down on a production one.
     return """
-        ALTER TABLE "notability_cache" ADD "metrics_json" TEXT NOT NULL;"""
+        ALTER TABLE "notability_cache" ADD "metrics_json" TEXT NOT NULL DEFAULT '{}';"""
 
 
 async def downgrade(db: BaseDBAsyncClient) -> str:

@@ -6,12 +6,14 @@ its own connection from `TORTOISE_ORM`, and two connections to `:memory:`
 are two different databases.
 """
 
+import re
+
 import pytest
 from aerich.models import Aerich
 from tortoise import Tortoise
 
 from hall_monitor import db as db_module
-from hall_monitor.db.models import Delegate
+from hall_monitor.db.models import Delegate, NotabilityCache
 
 
 @pytest.fixture
@@ -186,3 +188,60 @@ def test_the_initial_migration_is_committed():
     )
     assert versions, "no migration files found next to the package"
     assert versions[0].startswith("0_")
+
+
+# --------------------------------------------------------------------------
+# Upgrading a database that has data in it
+# --------------------------------------------------------------------------
+
+
+_ADD_COLUMN = re.compile(
+    r'ADD\s+"(?P<column>[^"]+)"\s+(?P<rest>[^;]*)', re.IGNORECASE
+)
+
+
+def test_no_migration_adds_a_not_null_column_without_a_default():
+    """SQLite refuses `ADD ... NOT NULL` on a table that already has rows
+    unless there's a value to give them. An empty test database accepts
+    it happily, so this is invisible until a deploy — which is exactly
+    how `metrics_json` took the bot down. Aerich generates the offending
+    form on its own, so the check has to live here rather than in review.
+    """
+    offenders = []
+    for path in sorted((db_module.MIGRATIONS_DIR / "models").glob("[0-9]*.py")):
+        source = path.read_text(encoding="utf-8")
+        # Only the ALTER path matters; a NOT NULL column inside a CREATE
+        # TABLE is fine, since the table starts empty by definition.
+        for line in source.splitlines():
+            if "ALTER TABLE" not in line.upper():
+                continue
+            match = _ADD_COLUMN.search(line)
+            if match is None:
+                continue
+            rest = match.group("rest").upper()
+            if "NOT NULL" in rest and "DEFAULT" not in rest:
+                offenders.append(f"{path.name}: {match.group('column')}")
+    assert not offenders, (
+        "these would fail on any database with rows in the table: "
+        + ", ".join(offenders)
+    )
+
+
+async def test_migrations_apply_to_a_database_with_rows(connected):
+    """The production condition, and the one a fresh-schema test can't
+    model. Every column added after the initial migration lands on a
+    table that already has data."""
+    await db_module.migrate()
+
+    await Delegate.create(mc_uuid="u", discord_user_id=1, guild_tag="VETS")
+    await NotabilityCache.create(
+        guild_tag="VETS", is_notable=True, signals_json="{}"
+    )
+
+    # Re-running is a no-op, but the rows above are what make a second
+    # pass over the same schema meaningful: they'd block any ALTER that
+    # needs a default and hasn't got one.
+    await db_module.migrate()
+
+    cached = await NotabilityCache.get(guild_tag="VETS")
+    assert cached.metrics_json == "{}", "existing rows got the default"
