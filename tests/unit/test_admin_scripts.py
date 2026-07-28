@@ -433,3 +433,75 @@ async def test_guild_role_script_wants_a_tag(db):
     ctx, _ = _ctx_with_guild()
     await guild_role.main(ctx)
     assert "usage" in ctx.reply.await_args.args[0]
+
+
+# --------------------------------------------------------------------------
+# standing
+# --------------------------------------------------------------------------
+
+
+def _guild_with(member=None, *, roles=(), my_top_position=10):
+    guild = MagicMock()
+    guild.roles = list(roles)
+    guild.get_role = lambda rid: next((r for r in guild.roles if r.id == rid), None)
+    guild.get_member = lambda uid: member if member and uid == member.id else None
+    guild.me = MagicMock()
+    guild.me.top_role = MagicMock()
+    guild.me.top_role.position = my_top_position
+    return guild
+
+
+def _guild_role(role_id=1, name="VETS", position=5):
+    role = MagicMock()
+    role.id = role_id
+    role.name = name
+    role.position = position
+    role.mention = f"<@&{role_id}>"
+    return role
+
+
+def _standing_member(user_id=1, *, holding=()):
+    member = MagicMock()
+    member.id = user_id
+    member.nick = "Bob [VETS]"
+    member.roles = list(holding)
+    member.mention = f"<@{user_id}>"
+    return member
+
+
+async def test_standing_script_flags_a_role_it_cannot_manage(db, monkeypatch):
+    """The question logs alone couldn't answer: is the guild role above the
+    bot, which makes every removal a silent 403."""
+    from hall_monitor.db.models import Delegate, GuildRole
+    from hall_monitor.discord_bot.cogs.admin.scripts import standing
+    from hall_monitor.services import notability as notability_service
+
+    await Delegate.create(
+        mc_uuid="u", discord_user_id=1, guild_tag="VETS", current_guild_tag="ANO"
+    )
+    role = _guild_role(position=99)  # dragged above the bot
+    await GuildRole.create(guild_tag="VETS", discord_role_id=role.id)
+
+    async def notable(tag):
+        return True
+
+    monkeypatch.setattr(notability_service, "is_notable", notable)
+    member = _standing_member(1, holding=[role])
+    ctx, _ = _fake_ctx()
+    ctx.guild = _guild_with(member, roles=[role], my_top_position=10)
+
+    await standing.main(ctx, "<@1>")
+    body = ctx.reply.await_args.args[0]
+
+    assert "above me, so I cannot touch it" in body
+    assert "standing:** `external`" in body  # represents VETS, seen in ANO
+    assert "watch last saw:** `ANO`" in body
+
+
+async def test_standing_script_needs_a_member(db):
+    from hall_monitor.discord_bot.cogs.admin.scripts import standing
+
+    ctx, _ = _fake_ctx()
+    ctx.guild = _guild_with(None)
+    await standing.main(ctx, "<@404>")
+    assert "isn't a member" in ctx.reply.await_args.args[0]
