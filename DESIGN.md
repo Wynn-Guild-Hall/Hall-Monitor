@@ -210,7 +210,9 @@ The poll only gathers facts; the reconcile that follows in the same job acts on 
 
 A brand-new delegate gets `current_guild_tag` seeded at registration — verification proves they're a chief of that guild right then, so starting them as unknown would only invite a wrong answer until the first poll.
 
-**Known gap:** an external representative who becomes a chief of their *new* guild can't verify for it — `mint_invite` refuses while their `Delegate` row is live (§3). Re-representing a different guild needs a deliberate path; nothing today provides one.
+**Known gap — re-representation.** An external representative who becomes a chief of their *new* guild can't verify for it. `mint_invite` refuses while their `Delegate` row is live (§3), and releasing the row wouldn't help: clicking an invite as an **existing member fires no `GUILD_MEMBER_ADD`**, so nothing consumes the `PendingInvite`. Short of leaving the server, only a direct edit of the `Delegate` row fixes it.
+
+This is accepted rather than solved. These are major guilds, so someone becoming a *new* guild's representative within a day or two of switching is rare, and the hourly watch means the switch itself is always noticed. The fix is a monitor command (`~force rep`, Stage 15) that re-points the row, vacates the old guild's contact slots without a kick, and verifies chief-hood of the new guild itself rather than trusting the operator.
 
 ### 12.3 The aesthetic role
 
