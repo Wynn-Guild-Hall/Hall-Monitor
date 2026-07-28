@@ -498,6 +498,33 @@ async def test_standing_script_flags_a_role_it_cannot_manage(db, monkeypatch):
     assert "watch last saw:** `ANO`" in body
 
 
+async def test_standing_script_names_the_guild_each_slot_belongs_to(db, monkeypatch):
+    """Slots survive a `~force guild` — the rows never move — so somebody
+    repointed back to VETS still holds ANO's ownership row. Printed as a
+    bare `ownership` it reads exactly like the roster being wrong."""
+    from hall_monitor.db.models import Delegate, GuildContact
+    from hall_monitor.discord_bot.cogs.admin.scripts import standing
+    from hall_monitor.services import notability as notability_service
+
+    delegate = await Delegate.create(
+        mc_uuid="u", discord_user_id=1, guild_tag="VETS", current_guild_tag="VETS"
+    )
+    await GuildContact.create(guild_tag="ANO", role="ownership", delegate=delegate)
+
+    async def notable(tag):
+        return True
+
+    monkeypatch.setattr(notability_service, "is_notable", notable)
+    ctx, _ = _fake_ctx()
+    ctx.guild = _guild_with(_standing_member(1))
+
+    await standing.main(ctx, "<@1>")
+    body = ctx.reply.await_args.args[0]
+
+    assert "`ANO` ownership" in body
+    assert "withheld" in body, "and says why the roster shows it unclaimed"
+
+
 async def test_standing_script_needs_a_member(db):
     from hall_monitor.discord_bot.cogs.admin.scripts import standing
 

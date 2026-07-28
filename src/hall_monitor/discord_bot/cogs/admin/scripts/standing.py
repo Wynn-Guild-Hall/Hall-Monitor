@@ -11,7 +11,7 @@ outside — Administrator doesn't waive it.
 import re
 
 from hall_monitor.db.models import GuildContact
-from hall_monitor.services import delegate_registry, guild_roles, notability
+from hall_monitor.services import contacts, delegate_registry, guild_roles, notability
 
 _MENTION = re.compile(r"[<@!&>]")
 
@@ -23,6 +23,27 @@ def _user_id(argument: str) -> int | None:
 
 def _holds(member, role) -> bool:
     return role is not None and any(r.id == role.id for r in member.roles)
+
+
+async def _slot_lines(delegate) -> list[str]:
+    """Their contact slots, each named with the guild it belongs to.
+
+    Naming the guild matters more than it looks. A slot survives a
+    `~force guild` — the rows never move — so somebody repointed from ANO
+    back to VETS still holds ANO's ownership row while representing VETS,
+    and both the roster and the Discord role correctly withhold it. Read
+    as a bare `ownership` that looks exactly like a roster bug.
+    """
+    lines = []
+    rows = await GuildContact.filter(delegate_id=delegate.id).values(
+        "guild_tag", "role"
+    )
+    for row in sorted(rows, key=lambda r: (r["guild_tag"].upper(), r["role"])):
+        line = f"`{row['guild_tag']}` {row['role']}"
+        if not await contacts.represents(delegate, row["guild_tag"]):
+            line += " — **withheld**, they don't speak for that guild"
+        lines.append(line)
+    return lines
 
 
 async def main(ctx, *args: str) -> None:
@@ -45,9 +66,7 @@ async def main(ctx, *args: str) -> None:
     notable = await notability.is_notable(represents)
     standing = await delegate_registry.standing(delegate, notable=notable)
     role = await guild_roles.resolve_role(ctx.guild, represents)
-    slots = await GuildContact.filter(delegate_id=delegate.id).values_list(
-        "role", flat=True
-    )
+    slots = await _slot_lines(delegate)
 
     me = ctx.guild.me
     if role is None:
@@ -74,7 +93,7 @@ async def main(ctx, *args: str) -> None:
                 f"**watch last saw:** `{delegate.current_guild_tag or 'no guild'}`",
                 f"**standing:** `{standing}`",
                 role_line,
-                f"**contact slots:** {', '.join(sorted(slots)) or 'none'}",
+                f"**contact slots:** {'; '.join(slots) or 'none'}",
                 f"**nickname:** `{member.nick or '(unset)'}`",
             ]
         )
