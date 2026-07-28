@@ -15,6 +15,18 @@ class PendingInvite(Model):
     guild_tag = fields.CharField(max_length=8)
     roles_bits = fields.IntField()
     discord_invite_code = fields.CharField(max_length=32, unique=True)
+    # An explicit override of the default sweep TTL, for invites that have
+    # to outlive it. NULL — every MC-minted row — means the default, so
+    # the `HALL<NN>` flow is exactly as it was.
+    #
+    # It exists because `~force observer` mints an invite a janitor then
+    # has to *hand to a person*: ten minutes is right for a code typed
+    # in-game by someone already at the keyboard, and useless for someone
+    # who might be asleep. Both the sweep and the used-invite matcher read
+    # it, because they have to agree — a row swept early is a join that
+    # can't resolve, and a matcher that ignores it reads a live invite as
+    # an expired one.
+    expires_at = fields.DatetimeField(null=True)
     created_at = fields.DatetimeField(auto_now_add=True)
 
     class Meta:

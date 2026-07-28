@@ -501,3 +501,36 @@ Everything under `~force` changes what the Hall *is*. `~manage` changes what the
 - **It sends itself `SIGTERM` rather than calling `sys.exit`.** Uvicorn is serving on another task in the same event loop and `bot.close()` doesn't stop it. `SIGTERM` is what `docker stop` sends, so the process takes its ordinary shutdown path rather than a novel one only this command exercises.
 
 The reply says what's *expected* to happen rather than promising the bot will be back, since nothing in the process re-launches it if that restart policy is ever removed.
+
+## 18. Observers, and the janitor's own voice
+
+**Status:** implemented (Stage 14)
+
+### 18.1 Observers
+
+The Hall is a room of guild representatives. An observer is the exception a janitor makes by hand — a Wynncraft admin, a partner community's organiser, somebody helping run an event. They get in and they get to read, and that is the whole of it: no delegate standing, no contact slots, no guild colour, no tag on their nickname.
+
+**The mechanism is an absent `Delegate` row**, and that's the design rather than an omission. The guild watch iterates delegates; the reconcile settles delegates; the roster names contacts; `nicknames.enforce` returns early for anyone the Hall has no row for. So an observer is invisible to every hourly pass *by construction*, instead of every pass carrying an "unless they're an observer" branch that somebody eventually forgets. `nicknames` also checks the observer role explicitly, which covers the one case the missing row doesn't: a former representative handed the observer role by hand still keeps their own name.
+
+`~force observer <username>` mints the invite. Two things about its shape:
+
+- **`roles_bits` carries a sentinel, `role_bits.OBSERVER` = `-1`.** An empty role set would decode indistinguishably from `HALL00` — a delegate who asked for no contact roles — and the two need telling apart. `-1` is unreachable from the MC side by construction, since a `HALL<NN>` code parses to 0–99, so a negative value can only ever have been written by this command. `decode` **raises** on it rather than returning an empty set, so anything that treats an observer invite as a role set fails loudly instead of quietly applying nothing; callers ask `is_observer` first.
+- **`guild_tag` is the reserved `NONE`**, borrowed from the blank banner (§15.4) for the same reason: the column isn't nullable, an observer has no guild, and Wynncraft reserves that tag so no real guild can collide with it. The join listener checks for an observer **before** it checks the expel ban, because "is `NONE` expelled?" is a question about nothing — and in the other order a stray `~force expel NONE` would silently turn away every observer, for a reason nobody would find.
+
+The invite is still keyed to a Minecraft account, because that's what `PendingInvite` is keyed on and what makes "who was this?" answerable a year later. It proves nothing — no chief check, no guild — the janitor's word is the whole authority, hence janitor-gated and logged at warning level.
+
+**It lives a week, not ten minutes**, and that needed a schema change. The MC flow's ten-minute `max_age` is right for a code typed in-game by somebody already at the keyboard and useless for one a janitor has to paste into a DM and then wait on. So `PendingInvite.expires_at` records a per-row lifetime, NULL meaning the default — which leaves every MC-minted row behaving exactly as before. **Both** the sweep and the used-invite matcher read it, because they have to agree: a row swept early is a join that can't resolve, and a matcher judging a week-long invite by the ten-minute window reads a perfectly live one as long expired and refuses the join. That second half is the easy one to miss, since nothing fails until somebody actually redeems an old invite.
+
+`~unforce observer` cancels an unused one. It **refuses** to touch a representative's invite: that's somebody's verification in flight, and letting a typo here cost them a re-verification — for a reason they'd have no way to see — is exactly the failure shape §12.3 is a list of.
+
+### 18.2 `~echo` and `~embed`
+
+Both let a janitor say something as the bot and delete the invoking message. The reason is the room: an announcement in a person's name carries their guild's weight with it, and in a hall of rival guilds that's often not what's wanted.
+
+**Neither can ping the server.** `~echo` mentions users and roles normally — `@Guild Hall Delegate` works and reads as intended — but `@everyone` and `@here` are inert. This bot has exactly one deliberate ping (§16.4), gated on three guilds agreeing, and a command that quietly launders one past that gate would make the gate meaningless. A janitor who genuinely wants to notify the server can post it under their own name, where at least it's attributable.
+
+**The invoking message is deleted last**, only once the echo is actually out. The other order loses what somebody has just written whenever the send fails. A delete that fails is logged and the echo stands — it needs **Manage Messages** in that channel, which §16.4 already wanted for scrubbing a public `~expel_motion`.
+
+`~echo` carries attachments across by re-downloading and re-uploading them, which is the only way — Discord offers no means of moving an attachment between messages. One that fails is skipped rather than costing the whole echo: a missing image is visible and fixable, a swallowed announcement isn't.
+
+`~embed` takes **one-shot `key=value` syntax rather than an interactive prompt**, which the plan left open. A prompt means conversational state per user across messages, and every way out of it — they wander off, they answer with a different command, the bot restarts halfway — is a state somebody has to handle. The command is one line either way, and a line can be edited and re-run when it comes out wrong, which a half-finished prompt can't. Anything left after the recognised keys becomes the description, so `~embed Just a sentence` does the obvious thing; somebody's first use will not have the syntax in front of them. When Discord refuses an embed its own complaint is relayed verbatim — it validates server-side, and "Not a well formed URL" is far more use to the author than "that broke on my end".

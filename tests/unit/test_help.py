@@ -232,9 +232,9 @@ async def test_a_reply_that_fails_doesnt_raise():
 @pytest.mark.parametrize(
     "module,name",
     [
+        # `~dash` is the last of these — Stage 16. When it lands, this
+        # parametrize goes empty and the test with it.
         ("hall_monitor.discord_bot.cogs.general.dash", "dash"),
-        ("hall_monitor.discord_bot.cogs.moderation.echo", "echo"),
-        ("hall_monitor.discord_bot.cogs.moderation.embed", "embed"),
     ],
 )
 def test_unbuilt_commands_are_marked_hidden(module, name):

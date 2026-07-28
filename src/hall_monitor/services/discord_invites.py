@@ -35,6 +35,13 @@ logger = logging.getLogger(__name__)
 
 INVITE_MAX_AGE_SECONDS = 600
 
+# An observer invite is minted by a janitor and then *handed to a person*
+# — pasted into a DM, waited on. Ten minutes is right for a code typed
+# in-game by somebody already at the keyboard and useless for somebody
+# who might be asleep, so these get a week. The row carries its own
+# ``expires_at`` to match (see :class:`PendingInvite`).
+OBSERVER_INVITE_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
+
 # A join can only have consumed an invite that was still alive, so a
 # PendingInvite older than the invite's own max_age can't be the match.
 # The grace absorbs clock skew between our DB and Discord's expiry.
@@ -116,12 +123,17 @@ async def mint_invite(
     bot: discord.Client | None = None,
     discord_guild: discord.Guild | None = None,
     mc_username: str | None = None,
+    max_age: int = INVITE_MAX_AGE_SECONDS,
 ) -> PendingInvite:
     """Mint a single-use Discord invite bound to a UUID and return the row.
 
     ``bot`` is optional; without it we can still create the new invite
     but can't ask Discord to delete a prior one — the sweep will collect
     it after TTL. Tests exercise both paths.
+
+    A non-default ``max_age`` also writes ``expires_at``, so the sweep and
+    the used-invite matcher agree with Discord about how long this one
+    lives. The default leaves it NULL and everything behaves as before.
     """
     if await delegate_registry.is_current_member(mc_uuid, discord_guild=discord_guild):
         raise AlreadyLiveDelegate(mc_uuid)
@@ -134,7 +146,7 @@ async def mint_invite(
 
     invite = await channel.create_invite(
         max_uses=1,
-        max_age=INVITE_MAX_AGE_SECONDS,
+        max_age=max_age,
         reason=f"hall-monitor: {guild_tag} verification for {mc_uuid}",
     )
     note_minted(invite.code)
@@ -144,6 +156,11 @@ async def mint_invite(
         guild_tag=guild_tag,
         roles_bits=roles_bits,
         discord_invite_code=invite.code,
+        expires_at=(
+            None
+            if max_age == INVITE_MAX_AGE_SECONDS
+            else datetime.now(timezone.utc) + timedelta(seconds=max_age)
+        ),
     )
 
 
@@ -165,10 +182,18 @@ async def sweep_expired(*, bot: discord.Client | None = None) -> int:
     ``bot`` is optional so scheduler binding stays flexible; without it
     the DB rows still get cleaned but the Discord-side invites will just
     expire naturally (10-minute ``max_age`` we set on mint)."""
-    threshold = datetime.now(timezone.utc) - timedelta(
-        minutes=settings.pending_invite_ttl_minutes
-    )
-    stale = await PendingInvite.filter(created_at__lt=threshold).all()
+    now = datetime.now(timezone.utc)
+    threshold = now - timedelta(minutes=settings.pending_invite_ttl_minutes)
+    # A row carrying its own `expires_at` is swept on that instead: an
+    # observer invite lives a week, and sweeping it at the default 45
+    # minutes would revoke a live Discord invite somebody is still
+    # holding, with nothing to say why it stopped working.
+    stale = [
+        row
+        for row in await PendingInvite.all()
+        if (row.expires_at is not None and row.expires_at < now)
+        or (row.expires_at is None and row.created_at < threshold)
+    ]
     for row in stale:
         if bot is not None:
             try:
@@ -226,15 +251,25 @@ async def _match_pending(codes: list[str]) -> PendingInvite | None:
     Rows past the Discord invite's own ``max_age`` are dropped: their
     invite expired rather than being consumed, and leaving them in would
     make a quiet period's worth of expiries look ambiguous.
+
+    "Its own" is literal — the window is **per row**, not global. An
+    observer invite lives a week, and judging it by the MC flow's ten
+    minutes would read a perfectly live invite as long expired and refuse
+    to resolve the join.
     """
     if not codes:
         return None
-    cutoff = datetime.now(timezone.utc) - timedelta(
+    now = datetime.now(timezone.utc)
+    grace = timedelta(seconds=INVITE_USE_GRACE_SECONDS)
+    default_cutoff = now - timedelta(
         seconds=INVITE_MAX_AGE_SECONDS + INVITE_USE_GRACE_SECONDS
     )
-    rows = await PendingInvite.filter(
-        discord_invite_code__in=codes, created_at__gte=cutoff
-    ).all()
+    rows = [
+        row
+        for row in await PendingInvite.filter(discord_invite_code__in=codes).all()
+        if (row.expires_at is not None and row.expires_at + grace >= now)
+        or (row.expires_at is None and row.created_at >= default_cutoff)
+    ]
     if len(rows) == 1:
         return rows[0]
     if len(rows) > 1:

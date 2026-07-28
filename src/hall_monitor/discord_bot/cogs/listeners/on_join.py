@@ -39,6 +39,47 @@ class RoleResolutionError(RuntimeError):
     """A role we need is unconfigured, or configured but absent from the guild."""
 
 
+async def _welcome_observer(member: discord.Member, pending) -> None:
+    """Give an observer their one role and write no ``Delegate`` row.
+
+    The absent row is load-bearing rather than an omission: it's what
+    keeps them out of the guild watch, the reconcile, the roster and the
+    nickname enforcer without any of those learning what an observer is
+    (DESIGN.md §18).
+
+    A failed role application leaves the ``PendingInvite`` for the sweep,
+    exactly as the representative path does — except that here they're
+    already *in* the server, so the janitor is told rather than left to
+    notice. There's no second invite to redeem.
+    """
+    role = (
+        member.guild.get_role(settings.observer_role_id)
+        if settings.observer_role_id
+        else None
+    )
+    if role is None:
+        logger.error(
+            "join: %s arrived on an observer invite but the observer role "
+            "(%s) is unset or missing; they're in the server with nothing",
+            member.id,
+            settings.observer_role_id,
+        )
+        return
+
+    try:
+        await member.add_roles(role, reason="hall-monitor: observer invite")
+    except discord.HTTPException:
+        logger.exception(
+            "join: couldn't give %s the observer role; leaving the pending "
+            "invite for the sweep",
+            member.id,
+        )
+        return
+
+    await pending.delete()
+    logger.info("join: %s is now an observer (%s)", member.id, pending.mc_username)
+
+
 async def _turn_away(member: discord.Member, pending) -> None:
     """Remove someone who arrived on an invite their guild has since lost.
 
@@ -130,6 +171,22 @@ class OnJoin(commands.Cog):
                 member,
                 member.id,
             )
+            return
+
+        # Observers first, and before the ban check deliberately: they
+        # represent nobody, so their `guild_tag` is the reserved `NONE`
+        # and asking whether it's expelled is a question about nothing.
+        # Left in the other order, a stray `~force expel NONE` would
+        # silently turn away every observer for a reason nobody could
+        # find.
+        #
+        # Almost none of what follows applies to them either: no roles to
+        # decode, no guild role, no contact slots, no `Delegate` row and
+        # therefore no nickname tag. Branching here rather than threading
+        # a flag through each step is what keeps every later pass free of
+        # "unless they're an observer".
+        if role_bits.is_observer(pending.roles_bits):
+            await _welcome_observer(member, pending)
             return
 
         # An invite lives ten minutes, so one minted just before the Hall

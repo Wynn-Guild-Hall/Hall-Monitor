@@ -14,8 +14,27 @@ ROLE_BITS: dict[int, RoleName] = {
 }
 
 
+# An observer holds no contact roles at all, so "which roles" is the
+# wrong question rather than a question with an empty answer — an empty
+# set would decode indistinguishably from `HALL00`, a delegate who asked
+# for nothing. `-1` is unreachable from the MC side by construction: a
+# `HALL<NN>` code parses to 0–99, so a negative value can only ever have
+# been written here, by `~force observer`.
+OBSERVER = -1
+
+
 class UnknownRoleBit(ValueError):
     """Raised when an integer sets a bit that isn't in ``ROLE_BITS``."""
+
+
+def is_observer(value: int) -> bool:
+    """Whether this ``roles_bits`` marks an observer invite rather than roles.
+
+    Callers must ask *before* :func:`decode`, which raises on the
+    sentinel — deliberately, so anything that treats an observer invite
+    as a role set fails loudly instead of quietly applying nothing.
+    """
+    return value == OBSERVER
 
 
 def decode(value: int) -> set[RoleName]:
