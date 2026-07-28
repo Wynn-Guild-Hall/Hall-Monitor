@@ -229,22 +229,30 @@ async def test_a_reply_that_fails_doesnt_raise():
 # --------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    "module,name",
-    [
-        # `~dash` is the last of these — Stage 16. When it lands, this
-        # parametrize goes empty and the test with it.
-        ("hall_monitor.discord_bot.cogs.general.dash", "dash"),
-    ],
-)
-def test_unbuilt_commands_are_marked_hidden(module, name):
-    """Whatever still raises NotImplementedError stays out of `~help`."""
+def test_nothing_in_the_tree_is_hidden_any_more():
+    """`hidden=True` was the marker for "not built yet" (DESIGN.md §7), and
+    for sixteen stages this file carried a list of the commands still
+    wearing it. Stage 16 emptied that list, so the assertion inverts: a
+    hidden command now means somebody has stubbed something new, and it
+    should either be here on purpose or not be hidden.
+    """
+    import asyncio
     import importlib
 
-    cog_class = next(
-        obj
-        for obj in vars(importlib.import_module(module)).values()
-        if isinstance(obj, type) and issubclass(obj, commands.Cog) and obj is not commands.Cog
-    )
-    command = next(c for c in cog_class.__cog_commands__ if c.name == name)
-    assert command.hidden is True
+    from hall_monitor.discord_bot import _discover_cog_modules, build_bot
+
+    async def hidden():
+        bot = build_bot()
+        for name in _discover_cog_modules("hall_monitor.discord_bot.cogs"):
+            # Checked before loading rather than catching NoEntryPointError:
+            # discord.py cleans a failed load out of `sys.modules`, which
+            # detaches the module from its package and breaks every later
+            # `monkeypatch.setattr("...cogs.listeners.on_join...")` in the
+            # suite. The `scripts/` modules have no `setup()`, so this
+            # would fire dozens of times.
+            if not hasattr(importlib.import_module(name), "setup"):
+                continue
+            await bot.load_extension(name)
+        return [c.qualified_name for c in bot.walk_commands() if c.hidden]
+
+    assert asyncio.run(hidden()) == []

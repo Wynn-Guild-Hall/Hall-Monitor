@@ -548,3 +548,40 @@ Four commands, in two pairs. All of them say something as the bot and delete the
 `~echo` carries attachments across by re-downloading and re-uploading them, the only way — Discord offers no means of moving an attachment between messages. One that fails is skipped rather than costing the whole echo: a missing image is visible and fixable, a swallowed announcement isn't.
 
 The embed commands take **one-shot `key=value` syntax rather than an interactive prompt**, which the plan left open. A prompt means conversational state per user across messages, and every way out of it — they wander off, they answer with a different command, the bot restarts halfway — is a state somebody has to handle. The command is one line either way, and a line can be edited and re-run when it comes out wrong, which a half-finished prompt can't. Anything left after the recognised keys becomes the description, so `~embed Just a sentence` does the obvious thing; somebody's first use will not have the syntax in front of them. When Discord refuses an embed its own complaint is relayed verbatim — it validates server-side, and "Not a well formed URL" is far more use to the author than "that broke on my end".
+
+## 19. The guild dashboard — `~dash`
+
+**Status:** implemented (Stage 16)
+
+Each guild answers a short set of questions about itself — are you recruiting, how do you apply, when do you war — and a Hallway page renders the answers. `~dash` is how a contact fills them in, `services/dash_schema.py` declares what can be asked, and `services/dash.py` stores it.
+
+### 19.1 Keys are declared, not invented
+
+A contact sets the **value** of a key; they cannot bring a new key into existence. Keys live in `dash_schema.KEYS`, and if a runtime path to add one is ever wanted it is monitor-only — never a delegate.
+
+That isn't tidiness. **The consumer is a template, not a dump.** The page renders these into a layout with headings and labels, so a guild that invented `recruitment_status_2` would produce a value nothing knows how to show, and one that wrote `recruitmentStatus` would silently drop off a comparison the page was trying to draw. Free-form keys make a page that can only ever print whatever it's given, which is a worse page.
+
+It also makes **unset a real answer**. With a fixed set, a guild that hasn't filled something in renders as "unset" — information — where under free-form keys an absent key was indistinguishable from one nobody had thought of. And it retires the original per-guild key cap, which existed to bound something that can no longer grow.
+
+**No lists.** A multi-value answer is a scalar with a convention — comma-separated, one per line — chosen by whoever first has a key that wants one, because that's a decision with a real consumer attached and making it in the abstract fixes a shape before anything has to live in it. Dropping it also removed everything it dragged along: an `add`/`remove` pair, duplicate handling, case-folded entry matching, a length cap on the array, and the "which of the two did you mean" question. `Key.kind` is where `list` slots in if it's ever wanted, and the verbs don't change shape when it does.
+
+Adding a key is one line and no migration. Removing one leaves stored rows **orphaned rather than deleted** — they're skipped on read, so a key can be retired and restored without losing what guilds had written.
+
+### 19.2 The commands, and why the listing is mandatory
+
+`~dash toggle <key> yes|no` for a `bool`, `~dash set <key> <value>` for a `scalar`, `~dash unset <key>` for either.
+
+**A bare `~dash` lists every key, its kind, its description and this guild's current value**, and that is not decoration. With keys declared, the listing is the *only* way to discover what can be set — a command that refuses unknown keys without showing the known ones is unusable. So the unknown-key refusal carries the same list, and a kind mismatch names the command the key *does* take rather than saying "invalid".
+
+Two refusals worth stating:
+
+- **An over-long value is refused, not truncated.** Something silently cut at 512 characters is worse than something that didn't save, because nothing tells the author the end of their sentence has gone. The reply gives both numbers.
+- **`unset` on something already unset says so.** A no-op that announces itself is a bug report; one that doesn't is a support ticket a week later (§12.3).
+
+Values land against the guild the invoker **represents**, not the tag on their row — `~force guild` can repoint that, and using the row would let somebody repointed to ANO carry on editing VETS's page. Staff pass the contact gate by nesting, so a janitor with no `Delegate` row reaches the command and is told there's no dashboard for them to edit, rather than having one guessed at.
+
+Storage is one `DashKV` row per `(guild_tag, key)`, holding JSON. **Unset is the absence of a row**, not a stored null, so a guild that never answered and one that answered and then cleared it read identically — which is what the page wants and what `~dash unset` promises. A row whose JSON is unreadable is logged and treated as unset: a page should render a guild with one bad row rather than fail on it.
+
+### 19.3 Nothing is hidden any more
+
+`~dash` was the last command carrying `hidden=True`, the marker for "not built yet" (§7). `tests/unit/test_help.py` carried a list of the remaining ones for sixteen stages; that list is now empty and the assertion has inverted — **no command in the tree may be hidden**. A stub added later has to be deliberate enough to change that test.
