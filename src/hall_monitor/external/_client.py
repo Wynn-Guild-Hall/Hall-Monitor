@@ -29,6 +29,10 @@ Retry and timeout policy
   ``RateLimit-Reset`` seconds (default 1 s if the header is absent /
   malformed), then the 429 is raised as :class:`httpx.HTTPStatusError` so
   the caller can decide whether to fall back to another provider or bubble.
+  Callers with **no fallback to fall back to** pass ``retry_429=True``,
+  which waits out the bucket pause and tries once more instead — for
+  those, a slow answer beats no answer, and raising just moves the
+  problem up to a caller that can only give up.
 - Any other non-2xx: raised as :class:`httpx.HTTPStatusError` for the
   caller to translate.
 """
@@ -158,14 +162,21 @@ class Requester:
         urgent: bool = False,
         params: dict | None = None,
         headers: dict[str, str] | None = None,
+        retry_429: bool = False,
     ) -> httpx.Response:
         """Serialised GET against ``bucket``. Retries 5xx once, waits on 429.
+
+        With ``retry_429`` the request is re-queued behind the pause the
+        429 just set, and tried once more. The bucket worker sleeps out
+        that pause before granting the next turn, so this costs a wait
+        rather than a spin.
 
         Non-2xx (other than 429 during the wait) raises
         :class:`httpx.HTTPStatusError`. Network errors propagate.
         """
         b = self._bucket(bucket)
         attempts_5xx = 0
+        attempts_429 = 0
         while True:
             release = await b.acquire(urgent)
             try:
@@ -175,6 +186,9 @@ class Requester:
 
             if response.status_code == 429:
                 b.pause(_retry_after_seconds(response))
+                if retry_429 and attempts_429 == 0:
+                    attempts_429 += 1
+                    continue  # the bucket worker waits out the pause for us
                 response.raise_for_status()
 
             if 500 <= response.status_code < 600 and attempts_5xx == 0:

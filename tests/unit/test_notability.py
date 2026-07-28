@@ -30,14 +30,16 @@ def fresh_refresh_lock():
     or bound to a loop that has since closed — makes the next test's
     ``acquire`` wait on a future nothing will ever resolve.
 
-    The memoised bulk context is module state too: left in place, one
-    test's leaderboards would answer another's lookup and its registered
-    mocks would go unrequested.
+    The memoised bulk context is module state too, and so is the season
+    board cache: left in place, one test's leaderboards would answer
+    another's lookup and its registered mocks would go unrequested.
     """
     notability._refresh_lock = asyncio.Lock()
     notability.reset_context_memo()
+    notability.reset_season_cache()
     yield
     notability.reset_context_memo()
+    notability.reset_season_cache()
 
 
 def _lb(rank: int, tag: str, name: str = "n", value: float | None = None):
@@ -712,3 +714,51 @@ async def test_the_sweep_records_the_numbers_behind_the_signals(db, httpx_mock, 
 
     metrics = json.loads((await NotabilityCache.get(guild_tag="VETS")).metrics_json)
     assert metrics["guild_level"] == 130
+
+
+# --------------------------------------------------------------------------
+# Staying inside Wynnpool's per-IP rate limit
+# --------------------------------------------------------------------------
+
+
+async def test_a_rate_limited_season_board_costs_that_board_not_the_sweep(
+    db, httpx_mock, monkeypatch
+):
+    """A 429 on one season board used to abort the whole refresh — the
+    gather had no `return_exceptions` — and `~script refresh_notability`
+    came back with "that broke on my end"."""
+    monkeypatch.setattr(
+        "hall_monitor.external.wynncraft.settings.wynncraft_api_token", ""
+    )
+    _boards(
+        httpx_mock,
+        boards={"guildLevel": {"1": {"name": "Returners", "prefix": "VETS", "level": 130}}},
+        seasons={"32": {"startDate": "2020-01-01T00:00:00Z", "endDate": "2020-02-01T00:00:00Z"}},
+    )
+    # Both attempts 429 — `retry_429` waits out the pause and tries once.
+    for _ in range(2):
+        httpx_mock.add_response(
+            url="https://api.wynnpool.com/leaderboard/season-rating/32", status_code=429
+        )
+
+    summary = await refresh_all()
+
+    assert summary is not None and summary.failed == 0
+    assert (await NotabilityCache.get(guild_tag="VETS")).is_notable is True
+
+
+async def test_a_finished_season_board_is_fetched_once(db, httpx_mock, monkeypatch):
+    """Season 32's ratings will never change again. Re-reading them every
+    hour is most of the sweep's request budget for nothing."""
+    monkeypatch.setattr(
+        "hall_monitor.external.wynncraft.settings.wynncraft_api_token", ""
+    )
+    finished = {"32": {"startDate": "2020-01-01T00:00:00Z", "endDate": "2020-02-01T00:00:00Z"}}
+    _boards(httpx_mock, seasons=finished, season_boards={32: {"ranking": []}})
+
+    await refresh_all()
+    # Every board registered above has now been requested once. A second
+    # sweep re-reads the live ones; season 32 is over, so it must not be
+    # asked for again — there is no second response registered for it.
+    _boards(httpx_mock, seasons=finished)
+    await refresh_all()

@@ -241,11 +241,7 @@ async def _load_context() -> _BulkContext:
             continue
         extra_boards.append(board)
     last_10 = seasons[-_SIGNAL_3_LAST_10:] if seasons else ()
-    season_boards: tuple[tuple[wynnpool.LeaderboardEntry, ...], ...] = tuple(
-        await asyncio.gather(
-            *(wynnpool.season_rating(s.number) for s in reversed(last_10))
-        )
-    )
+    season_boards = await _season_boards(last_10)
     tag_to_name: dict[str, str] = {}
     for board in (avg_online, guild_level, wars, territories, *extra_boards, *season_boards):
         for entry in board:
@@ -269,6 +265,62 @@ async def _load_context() -> _BulkContext:
             territories, _SIGNAL_4_MIN_TERRITORIES, "guildTerritories"
         ),
     )
+
+
+# A finished season's ratings never change again, so its board is
+# fetched once per process and kept. That's most of the sweep's request
+# budget: ten season boards an hour, of which at most one is live.
+_season_board_cache: dict[int, tuple[wynnpool.LeaderboardEntry, ...]] = {}
+
+
+def reset_season_cache() -> None:
+    """Drop the cached season boards. For tests."""
+    _season_board_cache.clear()
+
+
+async def _season_boards(
+    last_10: tuple[wynncraft.Season, ...],
+) -> tuple[tuple[wynnpool.LeaderboardEntry, ...], ...]:
+    """The recent season boards, newest first, fetched as little as possible.
+
+    Two economies, both of which matter because Wynnpool rate-limits per
+    IP and this is the biggest single burst we make:
+
+    - **A finished season is immutable.** Its board is fetched once and
+      kept for the life of the process; only a season still running is
+      re-read. That takes the steady-state cost from ten requests an hour
+      to one.
+    - **A board that fails is an empty board, not a failed sweep.** One
+      429 here used to abort the whole refresh — the `gather` had no
+      `return_exceptions` — which is how `~script refresh_notability`
+      came back with "that broke on my end". An empty board keeps the
+      list positionally aligned, so "the last five seasons" still means
+      the last five; the guild simply doesn't place in the one we
+      couldn't read, which can only make signal 3 read false. A missing
+      season is worth less than a missing sweep.
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    ordered = list(reversed(last_10))  # newest first
+    needed = [
+        season
+        for season in ordered
+        if season.number not in _season_board_cache or season.end > now
+    ]
+    fetched = await asyncio.gather(
+        *(wynnpool.season_rating(season.number) for season in needed),
+        return_exceptions=True,
+    )
+    for season, board in zip(needed, fetched):
+        if isinstance(board, BaseException):
+            logger.warning(
+                "season board %s unavailable: %s; treating it as empty this sweep",
+                season.number,
+                board,
+            )
+            _season_board_cache.setdefault(season.number, ())
+            continue
+        _season_board_cache[season.number] = board
+    return tuple(_season_board_cache.get(season.number, ()) for season in ordered)
 
 
 async def _learn_missing_names(context: _BulkContext, candidates: list[str]) -> None:

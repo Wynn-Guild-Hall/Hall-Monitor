@@ -92,9 +92,14 @@ _FORMER_PLACEHOLDER_NAMES = ("Empty_Banner",)
 # re-fetched at all.
 FETCHES_PER_PASS = 10
 
-# How long a banner is trusted before it's fetched again. Guilds change
-# them very rarely, and the cost of being a week late to notice is a
-# slightly stale emote.
+# How long a banner is trusted before it's fetched again.
+#
+# Guilds redesign roughly twice a year, so *any* polling window is mostly
+# waste: at a week it's ~2 500 requests a year to catch ~100 real
+# changes, and shortening it to two days triples that without helping the
+# person who noticed today. So the window stays polite and
+# `refresh_guild` covers the case somebody actually spots — which, for an
+# event this rare, is the path that matters.
 RECHECK_AFTER = timedelta(days=7)
 from hall_monitor.services import (
     banner_render,
@@ -279,19 +284,31 @@ async def _rename_former_placeholder(discord_guild: discord.Guild) -> bool:
     return False
 
 
-async def ensure_emote_for_guild(
+async def refresh_guild(
     discord_guild: discord.Guild, guild_tag: str
-) -> discord.Emoji | None:
-    """Mint or refresh one guild's banner emote. ``None`` if it couldn't be.
+) -> Reconciled:
+    """Re-fetch one guild's banner now, whatever the re-check window says.
 
-    Public because `~script render_banner` and a future manual override
-    want the same path the reconcile takes, rather than a second one that
-    can drift from it.
+    The answer to "they changed their banner this morning". Redesigns are
+    rare enough — about twice a year per guild — that polling for them
+    frequently would be thousands of requests a year to catch a hundred
+    events, so the automatic window stays slow and this covers the case
+    where a human has already noticed and wants it fixed.
+
+    Goes through the same `_ensure` the sweep uses rather than a second
+    path that could drift from it.
     """
     summary = Reconciled()
-    await _ensure(discord_guild, guild_tag, summary)
+    summary.budget = await budget(discord_guild)
+    summary.wanted = 1
+    await _ensure(discord_guild, guild_tag, summary, force=True)
+    return summary
+
+
+async def holds_emote(discord_guild: discord.Guild, guild_tag: str) -> bool:
+    """Whether this guild currently has a banner of ours in the server."""
     row = await GuildEmote.filter(guild_tag__iexact=guild_tag).first()
-    return _find(discord_guild, row)
+    return _find(discord_guild, row) is not None
 
 
 async def rendered_banner(guild_tag: str, guild_name: str | None) -> bytes | None:
@@ -393,6 +410,7 @@ async def _ensure(
     summary: Reconciled,
     *,
     may_fetch: bool = True,
+    force: bool = False,
 ) -> int:
     """Settle one guild's banner. Returns how many upstream fetches it cost.
 
@@ -409,7 +427,8 @@ async def _ensure(
         existing = None
 
     if (
-        existing is not None
+        not force
+        and existing is not None
         and emoji is not None
         and not _is_stale(existing)
         and not await _icon_out_of_sync(discord_guild, guild_tag, existing)

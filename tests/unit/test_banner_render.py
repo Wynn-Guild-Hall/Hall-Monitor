@@ -914,3 +914,49 @@ async def test_a_rate_limit_stops_the_pass_rather_than_grinding(db, monkeypatch)
 
     assert attempted == ["AAA"], "stopped at the first 429"
     assert summary.pending == 3
+
+
+async def test_a_redesigned_banner_can_be_forced_before_the_window(db, monkeypatch):
+    """Guilds redesign about twice a year. Polling for that often would
+    be thousands of requests to catch a hundred events, so the window
+    stays slow and this is the path for a redesign somebody spotted."""
+    version = ["first"]
+
+    async def fake(guild_tag, guild_name):
+        return version[0].encode()
+
+    monkeypatch.setattr(emote_slots, "rendered_banner", fake)
+    await _notable("VETS", "Returners", 1)
+    guild = FakeDiscordGuild(emoji_limit=2)
+    await emote_slots.reconcile(guild)
+    original = guild.emojis[-1]
+
+    version[0] = "redesigned"
+    summary = await emote_slots.refresh_guild(guild, "VETS")
+
+    assert summary.refreshed == 1 and original.deleted
+    assert await emote_slots.holds_emote(guild, "VETS")
+
+
+async def test_forcing_an_unchanged_banner_leaves_it_alone(db, banners):
+    """The reply has to be able to say "nothing to do" — an operator who
+    forced a refresh wants to know whether it actually moved."""
+    await _notable("VETS", "Returners", 1)
+    guild = FakeDiscordGuild(emoji_limit=2)
+    await emote_slots.reconcile(guild)
+    minted = guild.emojis[-1]
+
+    summary = await emote_slots.refresh_guild(guild, "VETS")
+
+    assert summary.refreshed == 0 and summary.minted == 0
+    assert not minted.deleted
+
+
+async def test_holds_emote_is_false_for_a_guild_on_the_blank_banner(db, banners):
+    await _notable("AAA", "Alpha", 1)
+    await _notable("BBB", "Beta", 2)
+    guild = FakeDiscordGuild(emoji_limit=2)  # room for one guild
+    await emote_slots.reconcile(guild)
+
+    assert await emote_slots.holds_emote(guild, "AAA")
+    assert not await emote_slots.holds_emote(guild, "BBB")

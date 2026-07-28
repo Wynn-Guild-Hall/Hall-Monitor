@@ -141,7 +141,12 @@ async def leaderboard(
     what makes them usable for threshold signals: if the board's floor
     sits below the threshold, absence from it proves the guild is under.
     """
-    response = await _requester.get(f"/leaderboard/{name}", urgent=urgent)
+    # Nothing else publishes these, so there is no provider to fall back
+    # to — a 429 has to be waited out rather than raised at a caller whose
+    # only option is to give up on the sweep.
+    response = await _requester.get(
+        f"/leaderboard/{name}", urgent=urgent, retry_429=True
+    )
     return _parse_leaderboard(response.json())
 
 
@@ -178,7 +183,9 @@ async def guild_details(
 ) -> GuildDetails | None:
     """Returns the guild's banner and total war count. ``None`` on 404."""
     try:
-        response = await _requester.get(f"/guild/{guild_name}", urgent=urgent)
+        response = await _requester.get(
+            f"/guild/{guild_name}", urgent=urgent, retry_429=True
+        )
     except httpx.HTTPStatusError as e:
         if e.response.status_code == 404:
             return None
@@ -220,7 +227,10 @@ async def banner_pattern(pattern: str, *, urgent: bool = False) -> str | None:
         return _pattern_cache[pattern]
     try:
         response = await _web.get(
-            f"/banners/{pattern}.svg", bucket=_BUCKET_BANNERS, urgent=urgent
+            f"/banners/{pattern}.svg",
+            bucket=_BUCKET_BANNERS,
+            urgent=urgent,
+            retry_429=True,
         )
     except httpx.HTTPStatusError as e:
         if e.response.status_code != 404:
