@@ -319,7 +319,7 @@ The composite runs at the art's own 160×320 and the result is centred on a **tr
 
 ### 15.2 How many banners, and which
 
-Members can't upload emotes here, so the list is the bot's to manage and **banners fill whatever the server isn't otherwise using**. Nothing configures the count: `emote_slots.budget` derives it from `guild.emoji_limit` minus the emotes a human uploaded minus `ROSTER_EMOTE_RESERVE`. Animated emotes don't count — Discord gives them a separate pool of the same size, and banners are static.
+Members can't upload emotes here, so the list is the bot's to manage and **banners fill whatever the server isn't otherwise using**. Nothing configures the count: `emote_slots.budget` derives it from `guild.emoji_limit` minus the emotes a human uploaded minus one for the blank banner (§15.4) minus `ROSTER_EMOTE_RESERVE`. Animated emotes don't count — Discord gives them a separate pool of the same size, and banners are static.
 
 That derivation is the whole boost-level story. `emoji_limit` *is* the boost level (50 slots at tier 0, 100 at 1, 150 at 2, 250 at 3), so a server that gains one simply has a bigger number on the next pass and mints further down the list; one that loses a level has a smaller number and evicts the tail. Discord doesn't remove the overflow itself — it just refuses every subsequent upload, which reads as the mint silently failing rather than as the list being full. The reserve exists so an admin wanting to upload something doesn't have to delete a banner the next pass would put straight back.
 
@@ -334,7 +334,15 @@ Two invariants, both the same shape as §11's rules for roles:
 - **Only emotes we created are ever deleted.** `GuildEmote` records the ones we minted and they're resolved by **ID, never by name**. An emote that happens to share a guild's tag might be somebody's own from years ago, and deleting it breaks every message that used it, irreversibly.
 - **An unchanged banner is never re-uploaded.** Discord has no replace-in-place for emotes, so a re-mint is a delete and an upload and the ID *moves* — breaking every message and role icon already pointing at the old one. `GuildEmote.image_hash` is what decides, so a re-render producing identical bytes costs nothing.
 
-The roster picks them up on its own: `roster.emote_for` tries our recorded emote by ID, falls back to a shared `:Empty_Banner:` for guilds outside the budget, and then to a plain unicode flag for a server that hasn't uploaded even that. A missing emote must never be the thing that stops the roster. Uploading needs **Manage Expressions**.
+The roster picks them up on its own: `roster.emote_for` tries our recorded emote by ID, falls back to the shared blank banner for guilds outside the budget, and then to a plain unicode flag. A missing emote must never be the thing that stops the roster. Uploading needs **Manage Expressions**.
+
+### 15.4 The blank banner
+
+Guilds outside the budget wear a shared placeholder, and **the bot mints it itself** on the first pass rather than waiting for someone to upload one. It goes through the same pipeline as the real banners, so it matches them in size and proportion instead of sitting beside them as a differently-shaped emoji — and it has no layers, so it needs no pattern art and no network. A fallback that depends on Wynnpool being up isn't much of a fallback.
+
+It's silver. White disappears on Discord's light theme and black on the dark one; silver is the one neutral that reads on both, which is the same problem §11's contrast clamp solves for role colours.
+
+Unlike the per-guild banners it's found by **name** (`Empty_Banner`), which is what lets an operator's own hand-made one be adopted rather than duplicated, and it is **never deleted** — it belongs to no guild, so nothing can evict it, and the roster's entire fallback chain rests on it. It costs a slot like anything else, and `budget` holds one back for it before it exists: otherwise the last guild in the budget would be minted into the space the placeholder is about to need, and fail. If the upload fails there's no fuss — the roster drops to a plain unicode flag, which is exactly what it did before this existed.
 
 ### 15.3 The same image on the role
 

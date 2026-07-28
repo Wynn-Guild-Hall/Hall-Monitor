@@ -216,7 +216,9 @@ class FakeEmoji:
 
 
 class FakeDiscordGuild:
-    def __init__(self, *, emoji_limit=50, features=(), premium_tier=0):
+    def __init__(
+        self, *, emoji_limit=50, features=(), premium_tier=0, placeholder=True
+    ):
         self.emojis = []
         self.emoji_limit = emoji_limit
         self.features = list(features)
@@ -224,6 +226,12 @@ class FakeDiscordGuild:
         self.roles = []
         self.id = 1
         self._next_id = 900
+        # Most cases are about guild banners, not about the blank one, so
+        # it starts present and its slot is already spent — otherwise
+        # every `emoji_limit` here would have to be read as "one more
+        # than the number of guilds I mean".
+        if placeholder:
+            self.emojis.append(FakeEmoji(1, emote_slots.PLACEHOLDER_NAME))
 
     def get_role(self, role_id):
         return next((r for r in self.roles if r.id == role_id), None)
@@ -233,6 +241,17 @@ class FakeDiscordGuild:
         emoji = FakeEmoji(self._next_id, name)
         self.emojis.append(emoji)
         return emoji
+
+
+def _banners(guild):
+    """The guild banners live in the list — the blank one excluded, since
+    it holds a slot in every case and would otherwise have to be spelled
+    out in each assertion."""
+    return [
+        emoji.name
+        for emoji in guild.emojis
+        if not emoji.deleted and emoji.name != emote_slots.PLACEHOLDER_NAME
+    ]
 
 
 @pytest.fixture(autouse=True)
@@ -281,36 +300,45 @@ async def test_the_feature_can_be_turned_off(db, banners, monkeypatch):
         "hall_monitor.services.emote_slots.settings.roster_emotes_enabled", False
     )
     await _notable("VETS", "Returners", 1)
-    guild = FakeDiscordGuild()
+    guild = FakeDiscordGuild(placeholder=False)
 
     summary = await emote_slots.reconcile(guild)
 
-    assert summary.budget == 0 and guild.emojis == []
+    assert summary.budget == 0
+    assert guild.emojis == [], "not even the blank banner"
 
 
 async def test_the_budget_is_the_servers_free_slots(db, banners):
     """Members can't add emotes, so the list is ours to fill — and its
     size is the boost level, not a number anyone configured."""
-    guild = FakeDiscordGuild(emoji_limit=4)
+    guild = FakeDiscordGuild(emoji_limit=4)  # one holds the blank banner
 
-    assert await emote_slots.budget(guild) == 4
+    assert await emote_slots.budget(guild) == 3
+
+
+async def test_a_slot_is_held_for_the_blank_banner_before_it_exists(db, banners):
+    """Otherwise the last guild in the budget is minted into the space
+    the placeholder is about to need, and fails."""
+    guild = FakeDiscordGuild(emoji_limit=4, placeholder=False)
+
+    assert await emote_slots.budget(guild) == 3
 
 
 async def test_emotes_a_human_uploaded_hold_their_slots(db, banners):
     """Minting into space that isn't there fails on the last few, which
     reads as the mint being broken rather than the list being full."""
     guild = FakeDiscordGuild(emoji_limit=4)
-    guild.emojis.append(FakeEmoji(1, "party_parrot"))
+    guild.emojis.append(FakeEmoji(2, "party_parrot"))
 
-    assert await emote_slots.budget(guild) == 3
+    assert await emote_slots.budget(guild) == 2
 
 
 async def test_animated_emotes_dont_count(db, banners):
     """Discord counts them against a separate pool of the same size."""
     guild = FakeDiscordGuild(emoji_limit=4)
-    guild.emojis.append(FakeEmoji(1, "dancing", animated=True))
+    guild.emojis.append(FakeEmoji(2, "dancing", animated=True))
 
-    assert await emote_slots.budget(guild) == 4
+    assert await emote_slots.budget(guild) == 3
 
 
 async def test_a_reserve_leaves_an_admin_room_to_upload(db, banners, reserve):
@@ -319,7 +347,72 @@ async def test_a_reserve_leaves_an_admin_room_to_upload(db, banners, reserve):
     reserve(2)
     guild = FakeDiscordGuild(emoji_limit=4)
 
-    assert await emote_slots.budget(guild) == 2
+    assert await emote_slots.budget(guild) == 1
+
+
+# --------------------------------------------------------------------------
+# The blank banner
+# --------------------------------------------------------------------------
+
+
+async def test_the_first_run_mints_its_own_blank_banner(db, banners):
+    """Nobody should have to remember to upload one for a fresh deploy."""
+    guild = FakeDiscordGuild(emoji_limit=4, placeholder=False)
+
+    summary = await emote_slots.reconcile(guild)
+
+    assert summary.placeholder is True
+    assert [e.name for e in guild.emojis] == [emote_slots.PLACEHOLDER_NAME]
+
+
+async def test_a_blank_banner_someone_made_by_hand_is_adopted(db, banners):
+    """Found by name, so an operator's own is kept rather than doubled."""
+    guild = FakeDiscordGuild(emoji_limit=4)
+    theirs = guild.emojis[0]
+
+    summary = await emote_slots.reconcile(guild)
+
+    assert summary.placeholder is False
+    assert guild.emojis[0] is theirs and not theirs.deleted
+
+
+async def test_the_blank_banner_is_never_evicted(db, banners):
+    """It belongs to no guild, so nothing can push it out of the budget —
+    and the roster's whole fallback rests on it."""
+    await _notable("AAA", "Alpha", 1)
+    guild = FakeDiscordGuild(emoji_limit=2, placeholder=False)
+    await emote_slots.reconcile(guild)
+
+    await NotabilityCache.filter(guild_tag="AAA").update(is_notable=False)
+    await emote_slots.reconcile(guild)
+
+    assert [e.name for e in guild.emojis if not e.deleted] == [
+        emote_slots.PLACEHOLDER_NAME
+    ]
+
+
+async def test_a_blank_banner_that_wont_upload_is_not_fatal(db, banners, caplog):
+    """The roster falls back to a plain flag, which is what it did before
+    the placeholder existed."""
+    guild = FakeDiscordGuild(emoji_limit=4, placeholder=False)
+    guild.create_custom_emoji = AsyncMock(
+        side_effect=discord.HTTPException(MagicMock(), "no slots")
+    )
+
+    summary = await emote_slots.reconcile(guild)
+
+    assert summary.placeholder is False
+    assert "plain flag" in caplog.text
+
+
+async def test_the_blank_banner_reads_on_both_themes(db):
+    """White vanishes on the light theme and black on the dark one, the
+    same problem the guild-role contrast clamp solves."""
+    png = await banner_render.render_placeholder()
+    red, green, blue, alpha = _centre(png)
+
+    assert (red, green, blue) == banner_render.dye("SILVER")
+    assert alpha == 255
 
 
 async def test_slots_go_to_the_most_strongly_notable_guilds(db, banners):
@@ -337,12 +430,12 @@ async def test_slots_go_to_the_most_strongly_notable_guilds(db, banners):
         },
         metrics={"guild_level": 101, "wars": 90_000, "territories": 40},
     )
-    guild = FakeDiscordGuild(emoji_limit=1)
+    guild = FakeDiscordGuild(emoji_limit=2)  # one slot after the blank banner
 
     summary = await emote_slots.reconcile(guild)
 
     assert summary.minted == 1
-    assert [e.name for e in guild.emojis] == ["STRG"]
+    assert _banners(guild) == ["STRG"]
 
 
 async def test_ties_on_count_are_broken_by_the_numbers(db, banners):
@@ -354,11 +447,11 @@ async def test_ties_on_count_are_broken_by_the_numbers(db, banners):
         "HIGH", "Higher", 6,
         signals={"level_100_plus": True}, metrics={"guild_level": 140},
     )
-    guild = FakeDiscordGuild(emoji_limit=1)
+    guild = FakeDiscordGuild(emoji_limit=2)
 
     await emote_slots.reconcile(guild)
 
-    assert [e.name for e in guild.emojis] == ["HIGH"]
+    assert _banners(guild) == ["HIGH"]
 
 
 async def test_a_guild_we_have_never_measured_sorts_last(db, banners):
@@ -366,25 +459,25 @@ async def test_a_guild_we_have_never_measured_sorts_last(db, banners):
     that would justify putting it ahead of a guild we've measured."""
     await _notable("MEAS", "Measured", 50)
     await ForceOverride.create(kind="notable", subject="NEWG", expires_at=None)
-    guild = FakeDiscordGuild(emoji_limit=1)
+    guild = FakeDiscordGuild(emoji_limit=2)
 
     await emote_slots.reconcile(guild)
 
-    assert [e.name for e in guild.emojis] == ["MEAS"]
+    assert _banners(guild) == ["MEAS"]
 
 
 async def test_gaining_a_boost_level_mints_more(db, banners):
     """The boost is a thing somebody paid for and then watches for."""
     for i, tag in enumerate(("AAA", "BBB", "CCC"), start=1):
         await _notable(tag, f"Guild {tag}", i)
-    guild = FakeDiscordGuild(emoji_limit=1)
+    guild = FakeDiscordGuild(emoji_limit=2)
     await emote_slots.reconcile(guild)
-    assert len(guild.emojis) == 1
+    assert _banners(guild) == ["AAA"]
 
-    guild.emoji_limit = 3  # boosted
+    guild.emoji_limit = 4  # boosted
     summary = await emote_slots.reconcile(guild)
 
-    assert summary.minted == 2 and len(guild.emojis) == 3
+    assert summary.minted == 2 and _banners(guild) == ["AAA", "BBB", "CCC"]
 
 
 async def test_losing_a_boost_level_evicts_the_tail(db, banners):
@@ -392,16 +485,16 @@ async def test_losing_a_boost_level_evicts_the_tail(db, banners):
     upload, which looks like the mint silently failing."""
     for i, tag in enumerate(("AAA", "BBB", "CCC"), start=1):
         await _notable(tag, f"Guild {tag}", i)
-    guild = FakeDiscordGuild(emoji_limit=3)
+    guild = FakeDiscordGuild(emoji_limit=4)
     await emote_slots.reconcile(guild)
-    assert len(guild.emojis) == 3
+    assert _banners(guild) == ["AAA", "BBB", "CCC"]
 
-    guild.emoji_limit = 1  # boost lapsed
+    guild.emoji_limit = 2  # boost lapsed
     summary = await emote_slots.reconcile(guild)
 
     assert summary.evicted == 2
     assert await GuildEmote.all().count() == 1
-    assert [e.name for e in guild.emojis if not e.deleted] == ["AAA"]
+    assert _banners(guild) == ["AAA"]
 
 
 async def test_an_unchanged_banner_is_not_re_uploaded(db, banners):
@@ -410,12 +503,12 @@ async def test_an_unchanged_banner_is_not_re_uploaded(db, banners):
     await _notable("VETS", "Returners", 1)
     guild = FakeDiscordGuild()
     await emote_slots.reconcile(guild)
-    first = guild.emojis[0]
+    first = guild.emojis[-1]
 
     summary = await emote_slots.reconcile(guild)
 
     assert summary.minted == 0 and summary.refreshed == 0
-    assert guild.emojis == [first] and not first.deleted
+    assert _banners(guild) == [first.name] and not first.deleted
 
 
 async def test_a_changed_banner_is_replaced(db, monkeypatch):
@@ -428,7 +521,7 @@ async def test_a_changed_banner_is_replaced(db, monkeypatch):
 
     monkeypatch.setattr(emote_slots, "rendered_banner", fake)
     await emote_slots.reconcile(guild)
-    original = guild.emojis[0]
+    original = guild.emojis[-1]
 
     version[0] = "second"
     summary = await emote_slots.reconcile(guild)
@@ -442,9 +535,9 @@ async def test_a_guild_overtaken_on_notability_is_evicted(db, banners):
     """Nothing recycled emotes, and the boundary moves whenever the
     signals do — a full list makes every later mint fail."""
     await _notable("AAA", "Alpha", 1)
-    guild = FakeDiscordGuild(emoji_limit=1)
+    guild = FakeDiscordGuild(emoji_limit=2)
     await emote_slots.reconcile(guild)
-    old = guild.emojis[0]
+    old = guild.emojis[-1]
 
     # BBB now qualifies on two signals to AAA's one.
     await _notable(
@@ -464,7 +557,7 @@ async def test_only_emotes_we_made_are_ever_deleted(db, banners):
     ago, and deleting it breaks every message that used it."""
     await _notable("VETS", "Returners", 1)
     guild = FakeDiscordGuild()
-    theirs = FakeEmoji(1, "VETS")
+    theirs = FakeEmoji(99, "VETS")
     guild.emojis.append(theirs)
 
     await emote_slots.reconcile(guild)
@@ -483,7 +576,7 @@ async def test_a_guild_with_no_resolved_name_is_skipped(db, banners):
 
     summary = await emote_slots.reconcile(guild)
 
-    assert summary.minted == 0 and guild.emojis == []
+    assert summary.minted == 0 and _banners(guild) == []
 
 
 async def test_a_full_slot_list_fails_loudly_rather_than_silently(
@@ -658,12 +751,12 @@ async def test_a_boost_change_reconciles_immediately(db, banners, monkeypatch):
     )
     await _notable("AAA", "Alpha", 1)
     await _notable("BBB", "Beta", 2)
-    before = FakeDiscordGuild(emoji_limit=1)
-    after = FakeDiscordGuild(emoji_limit=2, premium_tier=1)
+    before = FakeDiscordGuild(emoji_limit=2)
+    after = FakeDiscordGuild(emoji_limit=3, premium_tier=1)
 
     await on_boost.OnBoost(MagicMock()).on_guild_update(before, after)
 
-    assert len(after.emojis) == 2
+    assert _banners(after) == ["AAA", "BBB"]
 
 
 async def test_an_unrelated_guild_edit_does_nothing(db, banners, monkeypatch):
@@ -679,7 +772,7 @@ async def test_an_unrelated_guild_edit_does_nothing(db, banners, monkeypatch):
 
     await on_boost.OnBoost(MagicMock()).on_guild_update(before, after)
 
-    assert after.emojis == []
+    assert _banners(after) == []
 
 
 async def test_losing_the_role_icon_feature_alone_is_a_relevant_change(db, banners, monkeypatch):

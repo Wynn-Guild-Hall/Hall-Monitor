@@ -39,9 +39,15 @@ one render: the custom emote, and the guild role's `display_icon`
 mechanism). Rendering separately for each would double the work per
 guild per hour for no gain.
 
-The roster picks emotes up on its own: `roster.emote_for` looks for an
-emote named after the guild tag and falls back to the shared placeholder,
-so this module never has to tell it anything.
+Guilds that miss out wear a shared blank banner, and the bot **mints
+that itself** on the first pass — rendered through the same pipeline, so
+it matches the real ones in size and proportion, and from no layers at
+all, so the fallback needs nothing from Wynnpool to exist. It is found by
+*name*: an operator who already made one keeps theirs, and it is never
+deleted, having no guild to fall out of the budget with.
+
+The roster picks all of this up on its own: `roster.emote_for` tries our
+banner for the guild, then the placeholder, then a plain unicode flag.
 """
 
 import logging
@@ -50,6 +56,11 @@ import discord
 
 from hall_monitor.config import settings
 from hall_monitor.db.models import GuildEmote
+
+# The shared blank banner every guild outside the budget wears. Held by
+# name rather than by a recorded ID, which is what lets the bot adopt one
+# an operator made by hand instead of uploading a second.
+PLACEHOLDER_NAME = "Empty_Banner"
 from hall_monitor.services import (
     banner_render,
     guild_roles,
@@ -66,12 +77,14 @@ class Reconciled:
     """What one pass over the emote list did."""
 
     __slots__ = (
-        "minted", "refreshed", "evicted", "failed", "icons", "budget", "wanted"
+        "minted", "refreshed", "evicted", "failed", "icons", "placeholder",
+        "budget", "wanted",
     )
 
     def __init__(self) -> None:
         self.minted = self.refreshed = self.evicted = self.failed = 0
         self.icons = 0
+        self.placeholder = False
         self.budget = 0
         self.wanted = 0
 
@@ -83,6 +96,7 @@ class Reconciled:
                 ("refreshed", self.refreshed),
                 ("evicted", self.evicted),
                 ("role icons set", self.icons),
+                ("blank banner minted", int(self.placeholder)),
                 ("failed", self.failed),
             )
             if count
@@ -108,10 +122,53 @@ async def reconcile(discord_guild: discord.Guild) -> Reconciled:
     wanted = [one.tag for one in await by_strength()][: summary.budget]
     summary.wanted = len(wanted)
 
+    # Eviction first, so the slots it frees are available to whatever
+    # displaced them — and so the placeholder has somewhere to go on a
+    # server whose list is already full of last hour's banners.
     await _evict_all_but(discord_guild, wanted, summary)
+    summary.placeholder = await ensure_placeholder(discord_guild)
     for tag in wanted:
         await _ensure(discord_guild, tag, summary)
     return summary
+
+
+async def ensure_placeholder(discord_guild: discord.Guild) -> bool:
+    """Make sure the shared blank banner exists. Returns whether we made it.
+
+    Found by name, so an `Empty_Banner` somebody uploaded by hand is
+    adopted rather than duplicated — and, unlike the per-guild banners,
+    never deleted: it belongs to no guild, so nothing can evict it, and
+    the roster's whole fallback chain rests on it.
+
+    A failure here is not worth a fuss. The roster falls back to a plain
+    unicode flag, which is exactly what it did before this existed.
+    """
+    if not settings.roster_emotes_enabled or _placeholder(discord_guild) is not None:
+        return False
+    try:
+        png = await banner_render.render_placeholder()
+        emoji = await discord_guild.create_custom_emoji(
+            name=PLACEHOLDER_NAME,
+            image=png,
+            reason="hall-monitor: blank banner for guilds outside the emote budget",
+        )
+    except discord.HTTPException:
+        logger.warning(
+            "emotes: couldn't upload the %s placeholder; the roster will use a "
+            "plain flag instead",
+            PLACEHOLDER_NAME,
+            exc_info=True,
+        )
+        return False
+    logger.info("emotes: uploaded the blank banner as :%s:", emoji.name)
+    return True
+
+
+def _placeholder(discord_guild: discord.Guild) -> discord.Emoji | None:
+    for emoji in discord_guild.emojis:
+        if emoji.name.casefold() == PLACEHOLDER_NAME.casefold():
+            return emoji
+    return None
 
 
 async def ensure_emote_for_guild(
@@ -191,6 +248,11 @@ async def budget(discord_guild: discord.Guild) -> int:
 
     Animated emotes are ignored: Discord counts them against a separate
     pool of the same size, and our banners are static.
+
+    The blank-banner placeholder costs a slot too. Once it exists it's
+    counted with the emotes we didn't upload, and before it exists a slot
+    is held for it — otherwise the last guild in the budget would be
+    minted into the space the placeholder is about to need, and fail.
     """
     if not settings.roster_emotes_enabled:
         return 0
@@ -204,7 +266,10 @@ async def budget(discord_guild: discord.Guild) -> int:
         for emoji in discord_guild.emojis
         if not getattr(emoji, "animated", False) and emoji.id not in ours
     )
-    return max(0, limit - foreign - max(0, settings.roster_emote_reserve))
+    held_back = max(0, settings.roster_emote_reserve)
+    if _placeholder(discord_guild) is None:
+        held_back += 1
+    return max(0, limit - foreign - held_back)
 
 
 # --------------------------------------------------------------------------

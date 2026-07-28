@@ -78,6 +78,12 @@ BANNER_SIZE = (160, 320)
 # the entire point.
 EMOTE_SIZE = 128
 
+# The blank banner guilds wear until one of the emote slots is theirs.
+# Silver rather than white or black: it's the one neutral that reads on
+# both Discord themes, the same problem §11's contrast clamp solves for
+# role colours. White vanishes on the light theme, black on the dark one.
+PLACEHOLDER_BASE = "SILVER"
+
 
 def dye(name: str) -> tuple[int, int, int]:
     """RGB for a Minecraft dye name, case-insensitively."""
@@ -101,6 +107,21 @@ async def render_banner(banner: wynnpool.Banner) -> bytes:
         for layer in banner.layers
     ]
     return await asyncio.to_thread(_compose, banner.base, art)
+
+
+async def render_placeholder() -> bytes:
+    """A blank banner, for guilds that don't have a slot of their own.
+
+    Rendered rather than uploaded by hand so a fresh deploy has one
+    without anybody remembering to make it, and rendered through the same
+    pipeline so it sits at the same size and proportions as the real
+    banners beside it.
+
+    No layers, which means no pattern art, which means **no network** —
+    this is the fallback, and a fallback that needs Wynnpool to be up
+    isn't much of one.
+    """
+    return await render_banner(wynnpool.Banner(base=PLACEHOLDER_BASE, tier=0))
 
 
 def image_hash(png: bytes) -> str:

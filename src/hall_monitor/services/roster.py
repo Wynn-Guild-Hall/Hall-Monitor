@@ -66,9 +66,10 @@ MESSAGE_LIMIT = 2000
 # has a problem the sync can't fix by scrolling further.
 HISTORY_LIMIT = 200
 
-# The emote a guild wears until Stage 12 renders its banner. Uploaded to
-# the server by hand under this name; a server without it falls through
-# to a unicode flag, because a missing emote must not stop the roster.
+# The blank banner a guild wears when it hasn't earned one of the emote
+# slots. `services/emote_slots.py` mints it; a server where that failed
+# falls through to a unicode flag, because a missing emote must never be
+# the thing that stops the roster.
 PLACEHOLDER_EMOTE_NAME = "Empty_Banner"
 FALLBACK_EMOTE = "\N{WAVING WHITE FLAG}"
 
@@ -272,9 +273,9 @@ def emote_for(
     """The guild's banner emote, the shared placeholder, or a plain flag.
 
     Three steps down, and each rung is a real situation: the banner we
-    minted for this guild (`services/emote_slots.py`), the shared
-    placeholder for guilds outside the emote budget, and a unicode flag
-    for a server that hasn't uploaded even that. A missing emote must
+    minted for this guild (`services/emote_slots.py`), the shared blank
+    banner for guilds outside the emote budget, and a unicode flag for
+    the case where even that couldn't be uploaded. A missing emote must
     never be the thing that stops the roster.
 
     Our own banner is found by recorded **ID**; the placeholder by name,
