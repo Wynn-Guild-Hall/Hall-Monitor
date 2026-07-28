@@ -39,14 +39,16 @@ one render: the custom emote, and the guild role's `display_icon`
 mechanism). Rendering separately for each would double the work per
 guild per hour for no gain.
 
-Upstream work is bounded in two ways, because Wynnpool rate-limits its
-guild endpoint at around a dozen requests and a full roster is fifty
-guilds. **An unchanged banner is never re-fetched** — a guild whose emote
-is up and was checked inside `RECHECK_AFTER` costs nothing at all, so a
-settled server makes no requests — and a pass fetches at most
-`FETCHES_PER_PASS` of whatever is left, reporting how many are still
-outstanding. One guild's failure never costs the rest, and a 429 stops
-the pass rather than collecting forty more of them.
+Wynnpool rate-limits per IP, so upstream work is kept small two ways.
+**An unchanged banner is never re-fetched** — a guild whose emote is up
+and was checked inside `RECHECK_AFTER` costs nothing, so a settled server
+makes no requests at all — and what *does* need fetching goes at a
+deliberate trickle (`FETCH_INTERVAL_S`) rather than as fast as the loop
+can run. A pass runs to **completion** at that pace: fifty guilds takes a
+few minutes, which is fine for something nobody is waiting on, and much
+better than an operator running the same command five times. One guild's
+failure never costs the rest, and a 429 that survives the client's own
+retry stops the pass rather than collecting forty more of them.
 
 Guilds that miss out wear a shared blank banner, and the bot **mints
 that itself** on the first pass — rendered through the same pipeline, so
@@ -59,7 +61,9 @@ The roster picks all of this up on its own: `roster.emote_for` tries our
 banner for the guild, then the placeholder, then a plain unicode flag.
 """
 
+import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta, timezone
 
 import discord
@@ -84,13 +88,15 @@ PLACEHOLDER_NAME = "NONE"
 # carrying the old one would break.
 _FORMER_PLACEHOLDER_NAMES = ("Empty_Banner",)
 
-# Wynnpool's guild endpoint rate-limits at roughly a dozen requests
-# before it starts answering 429, and a full roster is fifty guilds. So a
-# pass fetches at most this many banners and leaves the rest for the next
-# one — the hourly job fills a fresh server in over a few hours, and
-# steady state is zero fetches because an unchanged banner is never
-# re-fetched at all.
-FETCHES_PER_PASS = 10
+# Wynnpool rate-limits per IP, so banners are fetched at a deliberate
+# trickle rather than as fast as the loop can go. A pass runs to
+# completion at this pace — fifty guilds takes a few minutes, which is
+# fine for something nobody is waiting on, and much better than making an
+# operator run the same command five times.
+#
+# Steady state is nothing at all: an unchanged banner is never re-fetched,
+# so the trickle only happens on a fresh server or after a redesign.
+FETCH_INTERVAL_S = 6.0
 
 # How long a banner is trusted before it's fetched again.
 #
@@ -118,7 +124,7 @@ class Reconciled:
 
     __slots__ = (
         "minted", "refreshed", "evicted", "failed", "icons", "placeholder",
-        "pending", "budget", "wanted",
+        "pending", "skipped", "budget", "wanted",
     )
 
     def __init__(self) -> None:
@@ -126,6 +132,7 @@ class Reconciled:
         self.icons = 0
         self.placeholder = False
         self.pending = 0
+        self.skipped = 0
         self.budget = 0
         self.wanted = 0
 
@@ -138,15 +145,17 @@ class Reconciled:
                 ("evicted", self.evicted),
                 ("role icons set", self.icons),
                 ("blank banner minted", int(self.placeholder)),
+                ("no banner published", self.skipped),
                 ("failed", self.failed),
             )
             if count
         )
-        # Saying how many are left is the difference between "it worked"
-        # and "it worked so far" — a pass that stopped at its fetch cap
-        # looks identical to a finished one otherwise.
+        # A pass only leaves anything behind if it was cut short, and then
+        # it has to say so — "nothing to do" over an unfinished run is how
+        # an operator ends up typing the same command five times.
         tail = (
-            f"; {self.pending} still to fetch (next pass, or run it again)"
+            f"; {self.pending} left after a rate limit — the next pass "
+            "picks them up"
             if self.pending
             else ""
         )
@@ -156,7 +165,12 @@ class Reconciled:
         )
 
 
-async def reconcile(discord_guild: discord.Guild) -> Reconciled:
+ProgressCallback = Callable[[int, int], Awaitable[None]]
+
+
+async def reconcile(
+    discord_guild: discord.Guild, *, on_progress: ProgressCallback | None = None
+) -> Reconciled:
     """Mint banners for the top guilds and evict the ones that dropped off.
 
     Self-correcting against the boost level: :func:`budget` reads the
@@ -183,29 +197,39 @@ async def reconcile(discord_guild: discord.Guild) -> Reconciled:
     if not guild_roles.has_role_icons(discord_guild):
         await guild_roles.forget_role_icons()
 
-    fetches = FETCHES_PER_PASS
-    for tag in wanted:
+    limited = False
+    for index, tag in enumerate(wanted, start=1):
+        if limited:
+            summary.pending += 1
+            continue
         try:
-            fetches -= await _ensure(
-                discord_guild, tag, summary, may_fetch=fetches > 0
-            )
+            if await _ensure(discord_guild, tag, summary):
+                # Paced, not capped. The wait goes *after* a request that
+                # actually happened, so guilds needing nothing cost no
+                # time at all and a settled server finishes instantly.
+                await asyncio.sleep(FETCH_INTERVAL_S)
         except httpx.HTTPStatusError as exc:
             summary.failed += 1
             if exc.response.status_code == 429:
-                # The bucket is already paused; grinding through forty
-                # more guilds would just collect forty more 429s. Stop
-                # fetching and let the next pass carry on.
+                # The client already waited out one pause and tried again,
+                # so this is a limit the trickle can't get under. Grinding
+                # through the rest would just collect more of the same.
                 logger.warning(
-                    "emotes: Wynnpool is rate-limiting; stopping after %s and "
-                    "picking up where we left off next pass",
+                    "emotes: still rate-limited after a retry; stopping at %s "
+                    "and leaving the rest for the next pass",
                     tag,
                 )
-                fetches = 0
+                limited = True
             else:
                 logger.exception("emotes: %s failed", tag)
         except Exception:  # noqa: BLE001 — one guild must not cost the rest
             summary.failed += 1
             logger.exception("emotes: %s failed", tag)
+        if on_progress is not None:
+            try:
+                await on_progress(index, len(wanted))
+            except Exception:  # noqa: BLE001 — reporting is a nicety
+                logger.exception("emotes: progress callback failed")
     return summary
 
 
@@ -409,15 +433,16 @@ async def _ensure(
     guild_tag: str,
     summary: Reconciled,
     *,
-    may_fetch: bool = True,
     force: bool = False,
-) -> int:
-    """Settle one guild's banner. Returns how many upstream fetches it cost.
+) -> bool:
+    """Settle one guild's banner. Returns whether it asked Wynnpool anything.
 
-    Returning the cost is what lets :func:`reconcile` bound a pass: a
-    guild whose banner is already up and recently checked costs nothing,
-    so a settled server does no upstream work at all and only a genuinely
-    new or stale one spends from the budget.
+    The return value is what paces the sweep, so it has to mean *a
+    request happened* rather than *this guild was considered*. A guild
+    whose banner is current, and one whose name we never resolved, both
+    reach nobody — and making them wait their turn anyway is how three
+    passes in a row spent their whole allowance on guilds they never
+    contacted.
     """
     existing = await GuildEmote.filter(guild_tag__iexact=guild_tag).first()
     emoji = _find(discord_guild, existing)
@@ -433,41 +458,43 @@ async def _ensure(
         and not _is_stale(existing)
         and not await _icon_out_of_sync(discord_guild, guild_tag, existing)
     ):
-        return 0  # already up and recently checked — nothing to ask anyone
-
-    if not may_fetch:
-        # Out of fetches for this pass. Counted rather than dropped, so
-        # the reply says how much is left instead of implying it's done.
-        summary.pending += 1
-        return 0
+        return False  # already up and recently checked — nothing to ask anyone
 
     name = await _guild_name(guild_tag)
+    if name is None:
+        # Wynnpool's banner endpoint takes names only, and we have none
+        # for this guild — so there is nothing to ask and no point
+        # waiting before the next one.
+        summary.skipped += 1
+        return False
+
     png = await rendered_banner(guild_tag, name)
     if png is None:
-        # Nothing upstream knows this guild's banner. Keep whatever is
-        # already there — a miss isn't a reason to lose a good emote — but
-        # mark it checked so the next pass spends its budget elsewhere.
+        # Wynnpool knows the guild but publishes no banner for it. Keep
+        # whatever is already there — a miss isn't a reason to lose a good
+        # emote — and record the look so it isn't re-asked every pass.
+        summary.skipped += 1
         await _mark_checked(existing)
-        return 1
+        return True
     digest = banner_render.image_hash(png)
     await _push_role_icon(discord_guild, guild_tag, png, summary)
 
     if existing is not None and emoji is not None:
         await _mark_checked(existing)
         if existing.image_hash == digest:
-            return 1  # unchanged — an hourly pass must be quiet
+            return True  # unchanged — an hourly pass must be quiet
         # The banner really changed. Discord has no "replace an emote's
         # image", so this is a delete and a re-upload, and the ID moves.
         if not await _delete(emoji, guild_tag):
             summary.failed += 1
-            return 1
+            return True
         await existing.delete()
         summary.refreshed += 1
         await _upload(discord_guild, guild_tag, png, digest, summary, minted=False)
-        return 1
+        return True
 
     await _upload(discord_guild, guild_tag, png, digest, summary, minted=True)
-    return 1
+    return True
 
 
 async def _icon_out_of_sync(

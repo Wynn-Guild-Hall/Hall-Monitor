@@ -311,6 +311,9 @@ def emotes_on(monkeypatch):
     monkeypatch.setattr(
         "hall_monitor.services.emote_slots.settings.roster_emote_reserve", 0
     )
+    # The real pace is one fetch every few seconds, which is right against
+    # a rate-limited API and wrong in a test suite.
+    monkeypatch.setattr(emote_slots, "FETCH_INTERVAL_S", 0)
 
 
 @pytest.fixture
@@ -906,18 +909,49 @@ async def test_a_stale_banner_is_looked_at_again(db, banners):
     assert emote_slots._is_stale(await GuildEmote.get(guild_tag="VETS"))
 
 
-async def test_a_pass_stops_at_its_fetch_cap_and_says_so(db, banners, monkeypatch):
-    """Wynnpool rate-limits at around a dozen; a roster is fifty guilds.
-    A pass that stopped early must not look like a finished one."""
-    monkeypatch.setattr(emote_slots, "FETCHES_PER_PASS", 2)
+async def test_a_pass_runs_to_completion(db, banners):
+    """Fifty guilds is a few minutes at the fetch pace, and that's fine —
+    nobody is waiting on it. Making an operator run the same command five
+    times is not."""
     for i, tag in enumerate(("AAA", "BBB", "CCC", "DDD"), start=1):
         await _notable(tag, f"Guild {tag}", i)
     guild = FakeDiscordGuild(emoji_limit=10)
 
     summary = await emote_slots.reconcile(guild)
 
-    assert summary.minted == 2 and summary.pending == 2
-    assert "2 still to fetch" in summary.line()
+    assert summary.minted == 4 and summary.pending == 0
+    assert "left after a rate limit" not in summary.line()
+
+
+async def test_progress_is_reported_as_it_goes(db, banners):
+    """It's minutes of work, so it has to say where it's up to."""
+    for i, tag in enumerate(("AAA", "BBB", "CCC"), start=1):
+        await _notable(tag, f"Guild {tag}", i)
+    guild = FakeDiscordGuild(emoji_limit=10)
+    seen = []
+
+    async def on_progress(done, total):
+        seen.append((done, total))
+
+    await emote_slots.reconcile(guild, on_progress=on_progress)
+
+    assert seen == [(1, 3), (2, 3), (3, 3)]
+
+
+async def test_a_guild_with_no_name_costs_no_wait(db, banners):
+    """It reaches nobody, so it must not take a fetch's turn — three
+    passes in a row once spent their whole allowance on guilds they had
+    never contacted."""
+    await NotabilityCache.create(
+        guild_tag="ZZZZ", is_notable=True, signals_json="{}", level_rank=1
+    )
+    await _notable("AAA", "Alpha", 2)
+    guild = FakeDiscordGuild(emoji_limit=10)
+
+    summary = await emote_slots.reconcile(guild)
+
+    assert summary.skipped == 1 and summary.minted == 1
+    assert "no banner published" in summary.line()
 
 
 async def test_one_guilds_rate_limit_doesnt_cost_the_rest(db, monkeypatch):
@@ -962,6 +996,7 @@ async def test_a_rate_limit_stops_the_pass_rather_than_grinding(db, monkeypatch)
 
     assert attempted == ["AAA"], "stopped at the first 429"
     assert summary.pending == 3
+    assert "left after a rate limit" in summary.line()
 
 
 async def test_a_redesigned_banner_can_be_forced_before_the_window(db, monkeypatch):
