@@ -90,3 +90,10 @@ async def refresh_and_reconcile(bot: commands.Bot) -> None:
         logger.exception("emotes: reconcile failed")
         return
     logger.info("emotes: %s", emotes.line())
+
+    # An emote that moved took a new ID with it — Discord has no
+    # replace-in-place — so the roster messages written moments ago now
+    # point at emotes that no longer exist. Redraw. The request is
+    # debounced, so a pass that changed nothing costs nothing.
+    if emotes.minted or emotes.refreshed or emotes.evicted:
+        roster.request_sync(guild)

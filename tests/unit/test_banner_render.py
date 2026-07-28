@@ -166,17 +166,65 @@ async def test_unrasterisable_art_costs_one_layer_not_the_banner(patterns, caplo
 # --------------------------------------------------------------------------
 
 
+def _banner_box(image):
+    """Where the banner artwork sits, inside the frame."""
+    height = banner_render.EMOTE_SIZE - 2 * banner_render.FRAME_MARGIN
+    width = round(height * 160 / 320)
+    left = (banner_render.EMOTE_SIZE - width) // 2
+    return left, banner_render.FRAME_MARGIN, width, height
+
+
 async def test_the_banner_is_letterboxed_not_stretched(patterns):
     """A banner is 1:2 and an emote is square. Stretching it produces a
     different banner, and recognising it is the entire point."""
     png = await banner_render.render_banner(_banner(base="RED"))
     image = _pixels(png)
+    left, top, width, height = _banner_box(image)
 
     assert image.size == (128, 128)
-    assert image.getpixel((64, 64))[3] == 255, "banner in the middle"
-    assert image.getpixel((2, 64))[3] == 0, "transparent at the edges"
-    # 1:2 preserved: 128 tall means 64 wide, so the margins are 32 each.
-    assert image.getpixel((31, 64))[3] == 0 and image.getpixel((33, 64))[3] == 255
+    assert image.getpixel((64, 64))[:3] == banner_render.dye("RED")
+    assert image.getpixel((1, 64))[3] == 0, "transparent outside the frame"
+    assert height == 2 * width, "1:2 preserved"
+
+
+async def test_the_frame_covers_no_part_of_the_artwork(patterns):
+    """Some patterns draw right to the banner's edge — `BORDER` is a ring
+    around it — so the frame has to sit outside, not on top."""
+    patterns["SOLID"] = SOLID_SVG
+    png = await banner_render.render_banner(
+        _banner(base="BLUE", layers=[("BLUE", "SOLID")])
+    )
+    image = _pixels(png)
+    left, top, width, height = _banner_box(image)
+
+    for point in (
+        (left, top),                       # each corner of the artwork
+        (left + width - 1, top),
+        (left, top + height - 1),
+        (left + width - 1, top + height - 1),
+    ):
+        assert image.getpixel(point)[:3] == banner_render.dye("BLUE"), point
+
+
+async def test_a_plain_white_banner_is_visible_on_a_white_background(patterns):
+    """`Zamn` really does fly one, and without the frame the roster row
+    looks like it simply has no emote on Discord's light theme."""
+    png = await banner_render.render_banner(_banner(base="WHITE"))
+    image = _pixels(png)
+    left, top, _, _ = _banner_box(image)
+
+    edge = image.getpixel((left - 1, top + 20))
+    assert edge[3] == 255, "there is a frame"
+    assert edge[:3] != (255, 255, 255), "and it isn't white"
+
+
+async def test_a_blank_guild_banner_is_not_the_no_slot_placeholder(patterns):
+    """Zamn's real banner is an empty one. It still has to be tellable
+    from "this guild didn't get an emote slot"."""
+    theirs = await banner_render.render_banner(_banner(base="WHITE"))
+    placeholder = await banner_render.render_placeholder()
+
+    assert banner_render.image_hash(theirs) != banner_render.image_hash(placeholder)
 
 
 async def test_an_emote_fits_discords_size_cap(patterns):
@@ -960,3 +1008,35 @@ async def test_holds_emote_is_false_for_a_guild_on_the_blank_banner(db, banners)
 
     assert await emote_slots.holds_emote(guild, "AAA")
     assert not await emote_slots.holds_emote(guild, "BBB")
+
+
+async def test_a_changed_emote_asks_the_roster_to_redraw(db, banners, monkeypatch):
+    """A re-minted emote has a new ID, so the roster messages drawn
+    minutes earlier point at one that no longer exists."""
+    from hall_monitor import scheduler
+
+    asked = []
+    monkeypatch.setattr(roster, "request_sync", lambda guild: asked.append(guild))
+    monkeypatch.setattr(roster, "sync_channel", AsyncMock(return_value=None))
+    monkeypatch.setattr(
+        scheduler.notability, "refresh_all", AsyncMock(return_value=None)
+    )
+    monkeypatch.setattr(
+        scheduler.delegate_registry, "refresh_current_guilds",
+        AsyncMock(return_value=(0, 0)),
+    )
+    monkeypatch.setattr(
+        scheduler.transitions, "reconcile",
+        AsyncMock(return_value=MagicMock(line=lambda: "")),
+    )
+    monkeypatch.setattr(
+        "hall_monitor.scheduler.settings.discord_guild_id", 1
+    )
+    await _notable("VETS", "Returners", 1)
+    guild = FakeDiscordGuild(emoji_limit=2)
+    bot = MagicMock()
+    bot.get_guild = lambda gid: guild
+
+    await scheduler.refresh_and_reconcile(bot)
+
+    assert asked == [guild], "the roster was asked to redraw"

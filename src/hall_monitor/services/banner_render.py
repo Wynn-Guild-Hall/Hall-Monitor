@@ -36,7 +36,7 @@ import io
 import logging
 
 import resvg_py
-from PIL import Image
+from PIL import Image, ImageDraw
 
 from hall_monitor.external import wynnpool
 
@@ -78,11 +78,34 @@ BANNER_SIZE = (160, 320)
 # the entire point.
 EMOTE_SIZE = 128
 
+# A thin frame drawn around the banner, in the margin rather than on it.
+#
+# Some guilds really do fly a plain white banner (`Zamn` does), and a
+# white rectangle on Discord's light theme is *nothing at all* — the
+# roster row simply appears to have no emote. The frame gives every
+# banner an edge to be found by, and because it sits outside the artwork
+# it covers no part of any design, not even a `BORDER` pattern's outer
+# ring. Mid-grey so it reads against both themes; on the dark one it's
+# very nearly imperceptible, which is the point — it costs nothing where
+# it isn't needed.
+#
+# The width is set by what survives Discord's downscale to roughly 22px
+# inline: anything thinner aliases away to a faint tint and the white
+# banner stays invisible.
+FRAME_WIDTH = 4
+
+# Room left around the banner for the frame to sit in. The banner is
+# scaled down to suit, which costs a little size and no art at all.
+FRAME_MARGIN = 6
+
+FRAME_COLOUR = (128, 128, 128, 255)
+
 # Wynncraft's reserved `NONE` guild ("Nobody") carries an empty banner —
-# no layers, no dyeing. An undyed banner is white, but white is invisible
-# against Discord's light theme, so it renders as silver: the same
-# contrast concession §11 makes for guild role colours, and one that
-# matters here because most of the roster wears this.
+# no layers, no dyeing. An undyed banner is white, but it renders silver
+# here for a reason the frame above doesn't cover: a guild flying a real
+# blank white banner would otherwise be pixel-identical to "this guild
+# has no emote slot", and those two need telling apart. Most of the
+# roster wears this one.
 PLACEHOLDER_BASE = "SILVER"
 
 
@@ -187,14 +210,28 @@ def _tint(mask: Image.Image, colour: str) -> Image.Image:
 
 
 def _to_emote(banner: Image.Image) -> bytes:
-    """Centre the 1:2 banner on a transparent square and encode as PNG."""
-    height = EMOTE_SIZE
+    """Frame the 1:2 banner, centre it on a transparent square, encode PNG.
+
+    The frame is drawn first and the banner laid on top of it, so the
+    only part of the frame that survives is the ring outside the artwork.
+    """
+    height = EMOTE_SIZE - 2 * FRAME_MARGIN
     width = round(height * BANNER_SIZE[0] / BANNER_SIZE[1])
+    left = (EMOTE_SIZE - width) // 2
+    top = FRAME_MARGIN
+
     canvas = Image.new("RGBA", (EMOTE_SIZE, EMOTE_SIZE), (0, 0, 0, 0))
-    canvas.paste(
-        banner.resize((width, height), Image.Resampling.LANCZOS),
-        ((EMOTE_SIZE - width) // 2, 0),
+    ImageDraw.Draw(canvas).rectangle(
+        [
+            left - FRAME_WIDTH,
+            top - FRAME_WIDTH,
+            left + width + FRAME_WIDTH - 1,
+            top + height + FRAME_WIDTH - 1,
+        ],
+        fill=FRAME_COLOUR,
     )
+    canvas.paste(banner.resize((width, height), Image.Resampling.LANCZOS), (left, top))
+
     buffer = io.BytesIO()
     canvas.save(buffer, "PNG", optimize=True)
     return buffer.getvalue()
