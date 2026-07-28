@@ -83,6 +83,25 @@ def contact_role_id(role: str) -> int:
     return getattr(settings, attribute)
 
 
+async def represents(delegate: Delegate, guild_tag: str) -> bool:
+    """Whether this delegate currently speaks for ``guild_tag``.
+
+    Both halves matter: the guild has to be the one they represent (which
+    ``~force guild`` can repoint), and they can't have drifted off to
+    somewhere else on their own.
+
+    This is the condition the contact *role* is granted on, so anything
+    that shows a guild's contacts to other guilds — the roster, chiefly —
+    should ask it too rather than trusting the slot alone. A holder who
+    has wandered off keeps the slot and loses the role, and pointing the
+    room at them would be pointing it at somebody who has left.
+    """
+    represented = await delegate_registry.represented_guild(delegate)
+    if not tags.matches(represented, guild_tag):
+        return False
+    return not await delegate_registry.is_external(delegate)
+
+
 async def current_contacts_for_guild(
     guild_tag: str, discord_guild: discord.Guild | None = None
 ) -> dict[str, Delegate | None]:
@@ -256,7 +275,7 @@ async def sync_contact_roles(
         # for this guild — whether they drifted off on their own or a
         # janitor pointed them at a different one. Either way they aren't
         # who to ask about this guild any more.
-        wanted = granted and await _represents(row.delegate, guild_tag)
+        wanted = granted and await represents(row.delegate, guild_tag)
         holds = any(existing.id == discord_role.id for existing in member.roles)
         if holds == wanted:
             continue  # already correct — an hourly pass must be quiet
@@ -308,21 +327,8 @@ def _require_known(role: str) -> None:
         raise UnknownContactRole(role)
 
 
-async def _represents(delegate: Delegate, guild_tag: str) -> bool:
-    """Whether this delegate currently speaks for ``guild_tag``.
-
-    Both halves matter: the guild has to be the one they represent (which
-    ``~force guild`` can repoint), and they can't have drifted off to
-    somewhere else on their own.
-    """
-    represented = await delegate_registry.represented_guild(delegate)
-    if not tags.matches(represented, guild_tag):
-        return False
-    return not await delegate_registry.is_external(delegate)
-
-
 async def _require_represents(delegate: Delegate, guild_tag: str) -> None:
-    if await _represents(delegate, guild_tag):
+    if await represents(delegate, guild_tag):
         return
     raise NotTheirGuild(
         delegate,

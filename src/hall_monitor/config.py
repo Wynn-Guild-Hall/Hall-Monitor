@@ -12,6 +12,9 @@ class Settings(BaseSettings):
     prefix: str = "~"
     discord_guild_id: int = 0
     welcome_channel_id: int = 0
+    # The Current Guilds channel. Unset means the roster is never posted;
+    # everything else still works.
+    roster_channel_id: int = 0
 
     delegate_role_id: int = 0
     relegate_role_id: int = 0

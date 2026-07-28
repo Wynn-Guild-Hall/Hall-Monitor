@@ -48,6 +48,13 @@ class NotabilityCache(Model):
     guild_tag = fields.CharField(max_length=8, unique=True)
     is_notable = fields.BooleanField()
     signals_json = fields.TextField()
+    # Wynncraft's spelling of the guild's full name, harvested from the
+    # same leaderboards the signals come from. The roster prints it, and
+    # nothing else in the bot knows a guild by anything but its tag.
+    guild_name = fields.CharField(max_length=64, null=True)
+    # Rank on Wynnpool's `guildLevel` board, which is the roster's running
+    # order. NULL for a guild that isn't on it — those sort last.
+    level_rank = fields.IntField(null=True)
     updated_at = fields.DatetimeField(auto_now=True)
 
     class Meta:
@@ -98,6 +105,27 @@ class GuildRole(Model):
 
     class Meta:
         table = "guild_role"
+
+
+class RosterMessage(Model):
+    """One of the bot's messages in the Current Guilds channel.
+
+    The roster spans several messages, and Discord has no way to insert
+    one above another — so the on-screen order is the order they were
+    sent, and ``position`` is what lets a sync tell "edit message 3" from
+    "everything from message 3 down has to be re-sent". ``guild_tags``
+    records what went into each one, so a wrong-looking roster can be
+    read back from the database instead of from the channel.
+    """
+
+    id = fields.IntField(pk=True)
+    position = fields.IntField(unique=True)
+    discord_message_id = fields.BigIntField(unique=True)
+    guild_tags = fields.TextField(default="")
+    updated_at = fields.DatetimeField(auto_now=True)
+
+    class Meta:
+        table = "roster_message"
 
 
 class GuildContact(Model):

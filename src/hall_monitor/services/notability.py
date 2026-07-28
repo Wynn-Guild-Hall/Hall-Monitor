@@ -308,11 +308,29 @@ def _any_active(seasons: tuple[wynncraft.Season, ...]) -> bool:
 async def _evaluate_and_cache(tag: str, context: _BulkContext) -> bool:
     signals = await _evaluate(tag, context)
     result = any(signals.values())
-    await NotabilityCache.update_or_create(
-        guild_tag=tag,
-        defaults={"is_notable": result, "signals_json": json.dumps(signals)},
-    )
+    defaults: dict[str, object] = {
+        "is_notable": result,
+        "signals_json": json.dumps(signals),
+        # Where the roster sorts this guild (services/roster.py). Written
+        # every sweep including when it's `None`: falling off the level
+        # board is a real change, and a remembered rank would keep the
+        # guild sorted as though it hadn't.
+        "level_rank": _level_rank(tag, context),
+    }
+    # The name only appears on boards, so a guild the sweep can't see on
+    # one — a forced-notable tag, say — keeps whatever name we last knew
+    # rather than being blanked back to nothing.
+    if (name := context.name_for(tag)) is not None:
+        defaults["guild_name"] = name
+    await NotabilityCache.update_or_create(guild_tag=tag, defaults=defaults)
     return result
+
+
+def _level_rank(tag: str, context: _BulkContext) -> int | None:
+    for entry in context.guild_level:
+        if tags.matches(entry.tag, tag):
+            return entry.rank
+    return None
 
 
 async def _evaluate_and_cache_single(tag: str) -> bool:
@@ -485,6 +503,28 @@ def _signal_war_count(wars: float | None) -> bool:
     if wars is None:
         return False
     return wars > _SIGNAL_5_MIN_WARS
+
+
+async def active_notable_overrides() -> dict[str, str]:
+    """Every tag currently forced notable: comparison key → as recorded.
+
+    The bulk counterpart to the per-tag check below, for callers weighing
+    up a few hundred guilds at once — the roster asking :func:`is_notable`
+    per guild would be two queries each for an answer two queries can give
+    for all of them.
+
+    Keyed for lookup but carrying the janitor's own spelling, since for a
+    guild forced before its first sweep that spelling is the only name we
+    have to print.
+    """
+    now = datetime.now(timezone.utc)
+    return {
+        tags.normalise(row["subject"]): row["subject"]
+        for row in await ForceOverride.filter(kind="notable").values(
+            "subject", "expires_at"
+        )
+        if row["expires_at"] is None or row["expires_at"] > now
+    }
 
 
 async def _has_active_notable_override(tag: str) -> bool:
