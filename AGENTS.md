@@ -30,8 +30,9 @@ The verify flow mints single-use invites and hands out roles when they're redeem
 - **Manage Nicknames** — every representative's nickname carries their guild tag (see DESIGN.md §13). Note that *nobody* can rename a server owner, Administrator included.
 - **Manage Messages** (on the roster channel) — the Current Guilds roster is the bot's alone, so a sync deletes anything in that channel it doesn't own (see DESIGN.md §14).
 - **Manage Expressions** — the roster's entries lead with each guild's Minecraft banner as a custom emote (see DESIGN.md §15). Banners fill whatever slots the server isn't otherwise using, so the count follows the boost level; only emotes the bot itself created are ever deleted.
+- **Mention All Roles** (on the notifications channel) — an expel motion pings the delegate role once, which is the only ping this bot ever sends deliberately (see DESIGN.md §16.4). Without it the mention renders as plain text and nobody is notified, unless the delegate role happens to be marked mentionable.
 
-Administrator covers all seven (and overrides channel overwrites), which is how the bot is set up in production — it holds the monitor role. What Administrator does **not** waive is role position: only the guild owner can assign a role above their own highest one, and the same rule decides who the bot may kick. The bot's role has to sit above Guild Hall Delegate and the four contact roles, or `add_roles` comes back 403 and the join lands in the failed-role-application path.
+Administrator covers all eight (and overrides channel overwrites), which is how the bot is set up in production — it holds the monitor role. What Administrator does **not** waive is role position: only the guild owner can assign a role above their own highest one, and the same rule decides who the bot may kick. The bot's role has to sit above Guild Hall Delegate and the four contact roles, or `add_roles` comes back 403 and the join lands in the failed-role-application path.
 
 ## Test guilds
 

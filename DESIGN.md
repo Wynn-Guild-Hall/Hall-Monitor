@@ -389,3 +389,61 @@ The rendered PNG has a second consumer: the guild role's `display_icon`, which s
 **Losing level 2 clears the recorded hashes.** Discord strips the icons from every role and tells us nothing, so a remembered hash would say "already set" forever and the roles would stay bare straight through the next boost. Forgetting them on the way down is what makes regaining the level put them back. That's not an edit — there's nothing to write to below the threshold — just the record catching up with what Discord already did. The icon is written only when its hash differs, since an unconditional edit per hour is an audit-log entry per hour, and it's *cleared* when a guild is evicted from the budget: an icon outliving the emote it came from would drift the moment the guild changed its banner. Only roles we created are decorated, on the same reasoning as never deleting one we didn't.
 
 `~script render_banner <TAG>` renders a guild's banner and posts it as an attachment with its hash, so it can be checked against the in-game article without spending a slot to find out. `~script emotes` runs the whole reconcile on demand, and `~script emotes <TAG>` re-fetches one guild's banner immediately — the answer to a redesign somebody has already spotted.
+
+## 16. Expulsion
+
+**Status:** implemented (Stage 13)
+
+The Hall can remove a guild from itself. `~expel_motion <TAG>` puts it to the delegates, and if 51% of them vote yay the guild's representatives are removed from the server and the guild is barred from coming back. `services/expel_motion.py` owns the vote; `services/expel.py` owns the ban and the removal, so a monitor's `~force expel` (Stage 15) can reach the same end state without one.
+
+### 16.1 Who votes
+
+**Guilds vote, not people.** `ExpelVote` is unique per `(motion, guild)` and a later vote from any of a guild's representatives replaces the earlier one — a guild that sent three people is still one guild. The ballot says so out loud when it happens, because a representative finding out by accident that a colleague overrode them is worse than being told.
+
+**The electorate is the guilds *seated* in the Hall**, not every guild the notability cache marks notable. That distinction is load-bearing rather than pedantic: the cache knows around forty notable guilds and a handful have ever sent anyone, so a 51% bar against the whole set could not be cleared by unanimity of everyone present. Seated means at least one `Delegate` row that hasn't left, whose member is still in the server, and whose standing works out to `delegate` — the same line §6 draws for holding a contact slot, and for the same reason: a relegated or external representative isn't currently speaking for a guild in the Hall.
+
+**Abstention counts against.** The bar is 51% of the electorate, not of those who turn out, so a motion carried by three guilds out of twenty doesn't pass. Removing a guild should need the Hall to want it, not merely to fail to object. The live post says so in as many words, because a voter deciding whether to bother needs to know that not voting *is* a vote.
+
+**The accused guild doesn't vote, and isn't in the denominator.** Sitting on the jury for your own trial is the obvious problem; leaving them in the denominator as a guaranteed non-yay is the quiet version of it, silently raising the bar for everybody else.
+
+The threshold is integer arithmetic — `yay * 100 >= 51 * electorate` — not a float comparison against `0.51`. That constant has no exact binary representation, so a float would decide the 51-of-100 case by rounding error rather than by the rule, and 51 of 100 is precisely the case somebody will eventually want to argue about.
+
+### 16.2 The electorate moves under the motion
+
+Guilds gain and lose notability, verify, and leave while a vote is open. The tally is therefore recomputed against the *current* electorate every time it's read, and a vote from a guild that has since lost its seat stops counting — it shouldn't still be pushing a motion along behind it. Two consequences, both of which shape the code:
+
+- **A motion can pass with no new vote**, if the electorate shrinks under a standing yay count. So resolution is checked on the hourly sweep as well as after each button press; were it only the button, a motion could sit carried and unnoticed until somebody happened to vote again.
+- **There is deliberately no early failure.** "This can no longer pass" isn't a stable fact when the denominator can shrink, so a motion ends by carrying or by lapsing at its deadline (`EXPEL_MOTION_DAYS`, default 7) — never by being declared dead while it might still recover. Carrying is checked *before* the deadline, so a motion that reaches the bar on its final day carries rather than lapsing on a technicality.
+
+The split that carried a motion is recorded on the row at resolution rather than recomputed, for the same reason: re-deriving it a week later would answer with today's guilds instead of the ones who actually voted.
+
+### 16.3 Anonymity
+
+**The bot never says who voted which way.** The live post carries turnout and the bar — "9 of 20 guilds have voted · 11 yay needed" — and the split is published only once the motion is resolved. That isn't squeamishness: a running yay counter next to a member list is enough to infer individual votes, which would make the anonymity decorative. The test for it doesn't check that a number is absent, it checks that two motions with the same turnout and opposite splits render *identically*, which is the property that actually has to hold.
+
+`~script motions` shows a monitor the same turnout and no more. Anonymity a staff command quietly opts out of isn't something anyone can rely on. What it adds is the **electorate itself** — which guilds are seated, and so entitled to vote — since that's the number a motion's fate turns on, and nothing else could answer why a motion was stuck needing seven yays in a Hall that felt smaller than that.
+
+Note that anonymity is a property of what the bot *renders*, not of what it stores. The rows record who cast what: a vote nobody can audit is a different and worse problem.
+
+### 16.4 The ballot
+
+Two buttons under one message, with fixed `custom_id`s; the *message* identifies which motion they belong to. That's what lets one registered view serve every motion, including ones opened before the last restart — per-motion custom_ids would need re-registering on boot, and buttons that went dead after a deploy would be indistinguishable from a bot that had stopped working. Every press replies **ephemerally**, whatever the outcome, including every rejection: a button that does nothing visible is the same to the voter as a bot that's down.
+
+The command itself posts nothing. It DMs the mover what a motion actually does — every delegate notified, a guild removed if it carries — with a button to go ahead, and re-checks every precondition when that button is pressed, because minutes can pass and in them the guild can be banned by a monitor or another motion can open. When the mover's DMs are closed the warning goes in the invoking channel instead, restricted to them: refusing outright would make the command unusable for a large share of people for a reason that has nothing to do with them.
+
+**The motion post is the one thing in this bot that deliberately notifies.** The roster must never ping (§14.2) because it's redrawn hourly and four contacts a guild would make it unreadable within a day. A motion is the opposite case — rare, discrete, and requiring an action from every delegate — and one nobody saw is the same as none at all. So it mentions the delegate role, once.
+
+### 16.5 Where a ban bites
+
+A ban is one `ExpelBan` row. There's no suspended or partially-expelled state, and lifting it is a delete: the guild's former representatives verify again from scratch, which is what returning means for anyone else who left. Nothing invents a restore path, because a "restored" delegate is a state nothing else in the Hall can reach.
+
+It has to hold in four places, and all four, or a removed guild finds its own way back:
+
+- **The verify route** — a chief of a banned guild is answered in chat and no invite is minted. Checked *before* notability, deliberately: an expelled guild can be perfectly notable, and telling a chief their guild "isn't notable" sends them off chasing leaderboards over a decision the Hall made about them.
+- **The join listener** — an invite lives ten minutes, so one minted just before the vote carried is still redeemable. The redemption is checked too and the member removed on arrival. The `PendingInvite` goes with them rather than being left for the sweep: unlike a failed role application this isn't a state a retry improves, and leaving it would have the sweep revoke an invite already consumed.
+- **The roster** — a banned guild isn't listed whatever its notability says. Expulsion is about welcome, not significance, and the channel is a list of who's *in* the Hall.
+- **The hourly sweep** — `expel.enforce` re-removes anyone speaking for a banned guild. That's the backstop for the other three and for everything nobody thought of: a kick that came back 403, a `~force guild` pointed at a banned tag, a member who joined while the bot was down. Every one of those is a guild the Hall voted out quietly walking back in, and none of them is an event that could have been hooked. Same reconcile shape as §12 and §14.
+
+Removal goes by who *represents* the tag, not by the tag on the row — `~force guild` can repoint that, and settling by the row would miss a repointed member while catching one who has moved on. The ban is written **first**, before anybody is removed: a removal that dies partway still leaves the door shut, whereas the other order leaves a window in which the representatives are gone and the door is open. Kicks that fail are logged and counted rather than raised, and `Delegate` rows are marked left rather than deleted — the history survives, and `mint_invite` reads the same column.
+
+**Needs Kick Members**, which §6 already required, and nothing else new. It does need `NOTIFICATIONS_CHANNEL_ID` set: without it `~expel_motion` refuses rather than posting a vote somewhere only the mover can see.
