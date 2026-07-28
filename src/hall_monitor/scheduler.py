@@ -10,6 +10,7 @@ from hall_monitor.config import settings
 from hall_monitor.services import (
     delegate_registry,
     discord_invites,
+    emote_slots,
     notability,
     roster,
     transitions,
@@ -77,3 +78,15 @@ async def refresh_and_reconcile(bot: commands.Bot) -> None:
         return
     if published is not None:
         logger.info("roster: %s", published.line())
+
+    # Last: the banners the roster's top entries wear. It runs after the
+    # roster rather than before because it takes its top-N from the same
+    # ordering the roster just published — minting for a list that's
+    # about to change would spend an upload on a guild already falling
+    # out of the budget.
+    try:
+        emotes = await emote_slots.reconcile(guild)
+    except Exception:  # noqa: BLE001 — decoration must not cost the sweep
+        logger.exception("emotes: reconcile failed")
+        return
+    logger.info("emotes: %s", emotes.line())

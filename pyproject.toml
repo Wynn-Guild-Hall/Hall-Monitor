@@ -18,6 +18,11 @@ dependencies = [
     "aerich>=0.7",
     "pydantic-settings>=2.5",
     "apscheduler>=3.10",
+    # Banner rendering (DESIGN.md §15). resvg rather than cairosvg: it
+    # ships self-contained wheels, so there's no libcairo to install in
+    # the image and the render tests run on a developer's machine too.
+    "pillow>=10.4",
+    "resvg-py>=0.3",
 ]
 
 [project.optional-dependencies]

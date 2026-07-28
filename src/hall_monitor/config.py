@@ -33,6 +33,8 @@ class Settings(BaseSettings):
     wynncraft_api_base: str = "https://api.wynncraft.com"
     wynncraft_api_token: str = ""
     wynnpool_api_base: str = "https://api.wynnpool.com"
+    # Banner pattern SVGs live on the website, not the API host.
+    wynnpool_web_base: str = "https://www.wynnpool.com"
     mojang_api_base: str = "https://api.mojang.com"
     playerdb_api_base: str = "https://playerdb.co"
     athena_api_base: str = "https://athena.wynntils.com"
@@ -40,6 +42,11 @@ class Settings(BaseSettings):
     pending_invite_ttl_minutes: int = 45
     pending_invite_sweep_seconds: int = 60
     notability_refresh_seconds: int = 3600
+
+    # How many of the server's custom emote slots the bot may fill with
+    # guild banners. Zero means it mints none — the emote list belongs to
+    # the community, so taking slots is opt-in rather than assumed.
+    roster_emote_budget: int = 0
 
     @property
     def sqlite_path(self) -> Path:

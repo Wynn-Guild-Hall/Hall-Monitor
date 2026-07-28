@@ -11,6 +11,12 @@ from ._client import Requester
 
 _requester = Requester(base_url=settings.wynnpool_api_base)
 
+# Banner pattern art is served from the website, not the API host, so it
+# gets its own requester — and its own bucket, since a burst of pattern
+# fetches shouldn't queue behind (or delay) a leaderboard sweep.
+_web = Requester(base_url=settings.wynnpool_web_base)
+_BUCKET_BANNERS = "wynnpool-banners"
+
 
 @dataclass(frozen=True)
 class LeaderboardEntry:
@@ -186,3 +192,40 @@ async def guild_details(
         territories=int(payload.get("territories") or 0),
         level=payload.get("level"),
     )
+
+
+# Pattern art is static — a given pattern's SVG is the same forever — so
+# it's cached for the life of the process. Thirty-four patterns at ~9 KB
+# is nothing to hold, and re-fetching them per guild would turn one
+# banner render into five requests.
+_pattern_cache: dict[str, str | None] = {}
+
+
+def reset_pattern_cache() -> None:
+    """Drop the cached pattern art. For tests."""
+    _pattern_cache.clear()
+
+
+async def banner_pattern(pattern: str, *, urgent: bool = False) -> str | None:
+    """The SVG source for one banner pattern, or ``None`` if there isn't one.
+
+    ``None`` is a real answer, not an error: Wynnpool doesn't publish art
+    for every pattern Minecraft has (``GLOBE`` and ``PIGLIN`` 404 today,
+    as do ``DIAGONAL_UP_LEFT``/``RIGHT``), and a guild using one of those
+    should still get a banner with its other layers rather than nothing.
+    A miss is cached too, so a guild wearing a missing pattern doesn't
+    cost a 404 on every render.
+    """
+    if pattern in _pattern_cache:
+        return _pattern_cache[pattern]
+    try:
+        response = await _web.get(
+            f"/banners/{pattern}.svg", bucket=_BUCKET_BANNERS, urgent=urgent
+        )
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code != 404:
+            raise
+        _pattern_cache[pattern] = None
+        return None
+    _pattern_cache[pattern] = response.text
+    return response.text

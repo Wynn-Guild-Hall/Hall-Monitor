@@ -101,6 +101,11 @@ class GuildRole(Model):
     id = fields.IntField(pk=True)
     guild_tag = fields.CharField(max_length=8, unique=True)
     discord_role_id = fields.BigIntField(unique=True)
+    # Hash of the banner PNG last written as the role's display icon, so
+    # the hourly pass can tell "already right" from "never set" without
+    # an edit. Servers below boost level 2 have no role icons at all and
+    # this stays NULL forever.
+    icon_hash = fields.CharField(max_length=64, null=True)
     created_at = fields.DatetimeField(auto_now_add=True)
 
     class Meta:
@@ -126,6 +131,29 @@ class RosterMessage(Model):
 
     class Meta:
         table = "roster_message"
+
+
+class GuildEmote(Model):
+    """A custom emote this bot uploaded for a guild's banner.
+
+    Recorded for the same reason as :class:`GuildRole`: the eviction pass
+    may only delete emotes *we* made. The community's emote list is not
+    ours to prune, and an emote that happens to share a guild's tag might
+    be somebody's joke from two years ago.
+
+    ``image_hash`` is the rendered PNG's digest — a banner that hasn't
+    changed is not re-uploaded, because every upload is a new emote ID and
+    every message that already used the old one breaks.
+    """
+
+    id = fields.IntField(pk=True)
+    guild_tag = fields.CharField(max_length=8, unique=True)
+    discord_emoji_id = fields.BigIntField(unique=True)
+    image_hash = fields.CharField(max_length=64)
+    created_at = fields.DatetimeField(auto_now_add=True)
+
+    class Meta:
+        table = "guild_emote"
 
 
 class GuildContact(Model):

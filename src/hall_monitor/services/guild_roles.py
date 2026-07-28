@@ -24,7 +24,12 @@ import discord
 
 from hall_monitor.config import settings
 from hall_monitor.db.models import Delegate, GuildRole, PendingInvite
-from hall_monitor.services import athena_colour, delegate_registry, guild_tag as tags
+from hall_monitor.services import (
+    athena_colour,
+    banner_render,
+    delegate_registry,
+    guild_tag as tags,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -153,6 +158,63 @@ async def reconcile_role(
     if not changed:
         return UNCHANGED
     return RECOLOURED if notable else GREYED
+
+
+async def sync_role_icon(
+    discord_guild: discord.Guild,
+    role: discord.Role,
+    guild_tag: str,
+    *,
+    icon: bytes | None,
+) -> bool:
+    """Put the guild's banner on its role as a display icon, or take it off.
+
+    The icon shows immediately left of the name in the member list and in
+    every ``@VETS`` mention, which is the only way a banner can sit beside
+    a role name at all — a custom emote in a role *name* renders as literal
+    text (§11).
+
+    **Entirely optional.** Role icons need the server at boost level 2
+    (`ROLE_ICONS`), and below that every write is a 403. So an unboosted
+    server is detected and skipped rather than made to fail hourly, and a
+    role without an icon works exactly as it did before.
+
+    Written only when it differs, by hash: an unconditional edit per hour
+    is an audit-log entry per hour. ``icon=None`` clears one we set, which
+    is what an eviction from the emote budget should look like.
+
+    Driven by ``services/emote_slots.py`` rather than by the role
+    reconcile, because that module already holds the rendered bytes —
+    rendering them a second time here would double the work for every
+    guild in the budget, every hour.
+    """
+    if "ROLE_ICONS" not in getattr(discord_guild, "features", []):
+        return False
+    owned = await GuildRole.filter(
+        guild_tag__iexact=guild_tag, discord_role_id=role.id
+    ).first()
+    if owned is None:
+        return False  # not ours to decorate
+
+    digest = None if icon is None else banner_render.image_hash(icon)
+    if owned.icon_hash == digest:
+        return False
+
+    try:
+        await role.edit(
+            display_icon=icon, reason=f"hall-monitor: {guild_tag} banner icon"
+        )
+    except discord.HTTPException:
+        logger.exception("guild roles: couldn't set the %s role icon", guild_tag)
+        return False
+    owned.icon_hash = digest
+    await owned.save(update_fields=["icon_hash"])
+    logger.info(
+        "guild roles: %s the %s role icon",
+        "cleared" if icon is None else "updated",
+        guild_tag,
+    )
+    return True
 
 
 async def sync_standing(

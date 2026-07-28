@@ -40,7 +40,12 @@ from dataclasses import dataclass
 import discord
 
 from hall_monitor.config import settings
-from hall_monitor.db.models import Delegate, NotabilityCache, RosterMessage
+from hall_monitor.db.models import (
+    Delegate,
+    GuildEmote,
+    NotabilityCache,
+    RosterMessage,
+)
 from hall_monitor.services import (
     contacts,
     delegate_registry,
@@ -182,10 +187,13 @@ async def listed_guilds() -> list[ListedGuild]:
 
 
 async def render_guild(
-    discord_guild: discord.Guild, tag: str, name: str
+    discord_guild: discord.Guild,
+    tag: str,
+    name: str,
+    minted: dict[str, int] | None = None,
 ) -> str:
     """The block for one guild: banner emote, name, tag, four contacts."""
-    lines = [f"{emote_for(discord_guild, tag)} **{name}** (`{tag}`)"]
+    lines = [f"{emote_for(discord_guild, tag, minted)} **{name}** (`{tag}`)"]
     holders = await contacts.current_contacts_for_guild(tag, discord_guild)
     for role in ORDERED_CONTACT_ROLES:
         lines.append(
@@ -197,11 +205,26 @@ async def render_guild(
 
 async def render_full_roster(discord_guild: discord.Guild) -> list[RosterChunk]:
     """The whole roster, packed into message-sized chunks in order."""
+    minted = await minted_emotes()
     blocks = [
-        (one.tag, await render_guild(discord_guild, one.tag, one.name))
+        (one.tag, await render_guild(discord_guild, one.tag, one.name, minted))
         for one in await listed_guilds()
     ]
     return chunk(blocks)
+
+
+async def minted_emotes() -> dict[str, int]:
+    """Comparison key → Discord emoji ID, for the banners we uploaded.
+
+    Read once per render rather than per guild, and keyed by ID rather
+    than by name for the same reason roles are (§11): the name belongs to
+    whoever last edited it, and `emote_slots` may have had to rewrite a
+    tag to satisfy Discord's naming rules anyway.
+    """
+    return {
+        tags.normalise(row["guild_tag"]): row["discord_emoji_id"]
+        for row in await GuildEmote.all().values("guild_tag", "discord_emoji_id")
+    }
 
 
 def chunk(
@@ -243,18 +266,29 @@ def chunk(
     return messages
 
 
-def emote_for(discord_guild: discord.Guild, tag: str) -> str:
+def emote_for(
+    discord_guild: discord.Guild, tag: str, minted: dict[str, int] | None = None
+) -> str:
     """The guild's banner emote, the shared placeholder, or a plain flag.
 
-    Stage 12 mints the per-guild ones; until then every guild wears the
-    placeholder. Resolved by *name* rather than from a stored ID because
-    the emote is the server's to re-upload, and a roster that breaks when
-    somebody does that would be worse than one that finds it again.
+    Three steps down, and each rung is a real situation: the banner we
+    minted for this guild (`services/emote_slots.py`), the shared
+    placeholder for guilds outside the emote budget, and a unicode flag
+    for a server that hasn't uploaded even that. A missing emote must
+    never be the thing that stops the roster.
+
+    Our own banner is found by recorded **ID**; the placeholder by name,
+    since nothing records it. Matching ours by name would break the
+    moment a tag needed rewriting to satisfy Discord's naming rules.
     """
-    for name in (tag, PLACEHOLDER_EMOTE_NAME):
-        for emoji in discord_guild.emojis:
-            if emoji.name.casefold() == name.casefold():
-                return str(emoji)
+    emoji_id = (minted or {}).get(tags.normalise(tag))
+    if emoji_id is not None:
+        ours = discord.utils.get(discord_guild.emojis, id=emoji_id)
+        if ours is not None:
+            return str(ours)
+    for emoji in discord_guild.emojis:
+        if emoji.name.casefold() == PLACEHOLDER_EMOTE_NAME.casefold():
+            return str(emoji)
     return FALLBACK_EMOTE
 
 

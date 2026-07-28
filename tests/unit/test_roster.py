@@ -10,6 +10,7 @@ from hall_monitor.db.models import (
     Delegate,
     ForceOverride,
     GuildContact,
+    GuildEmote,
     NotabilityCache,
     RosterMessage,
 )
@@ -26,11 +27,12 @@ def configured(monkeypatch):
 
 
 class FakeEmoji:
-    def __init__(self, name: str) -> None:
+    def __init__(self, name: str, emoji_id: int = 1) -> None:
         self.name = name
+        self.id = emoji_id
 
     def __str__(self) -> str:
-        return f"<:{self.name}:1>"
+        return f"<:{self.name}:{self.id}>"
 
 
 class FakeMessage:
@@ -196,15 +198,18 @@ async def test_a_guild_with_no_cached_name_falls_back_to_its_tag(db):
 
 
 async def test_a_block_matches_the_reference_layout(db):
-    guild = FakeGuild(emojis=[FakeEmoji("VETS")])
+    guild = FakeGuild(emojis=[FakeEmoji("VETS", 77)])
+    await GuildEmote.create(guild_tag="VETS", discord_emoji_id=77, image_hash="h")
     delegate = await _delegate("uuid-a", 1, "VETS", username="wenweia")
     guild.add_member(1)
     await GuildContact.create(guild_tag="VETS", role="ownership", delegate=delegate)
 
-    block = await roster.render_guild(guild, "VETS", "Returners")
+    block = await roster.render_guild(
+        guild, "VETS", "Returners", await roster.minted_emotes()
+    )
 
     assert block.splitlines() == [
-        "<:VETS:1> **Returners** (`VETS`)",
+        "<:VETS:77> **Returners** (`VETS`)",
         "- **Ownership Contact**: <@1> (`wenweia`)",
         "- **Events Contact**: `unclaimed`",
         "- **Warring Contact**: `unclaimed`",
@@ -218,6 +223,29 @@ async def test_a_guild_without_its_own_emote_wears_the_placeholder(db):
     block = await roster.render_guild(guild, "VETS", "Returners")
 
     assert block.startswith(f"<:{roster.PLACEHOLDER_EMOTE_NAME}:1> ")
+
+
+async def test_our_banner_is_found_by_id_not_by_name(db):
+    """`emote_slots` may rewrite a tag to satisfy Discord's naming rules,
+    and the name belongs to whoever last edited it either way."""
+    guild = FakeGuild(emojis=[FakeEmoji("A_B", 77), FakeEmoji(roster.PLACEHOLDER_EMOTE_NAME, 5)])
+    await GuildEmote.create(guild_tag="A B", discord_emoji_id=77, image_hash="h")
+
+    block = await roster.render_guild(
+        guild, "A B", "Spaced Out", await roster.minted_emotes()
+    )
+
+    assert block.startswith("<:A_B:77> ")
+
+
+async def test_a_guild_outside_the_emote_budget_wears_the_placeholder(db):
+    """Far more notable guilds than emote slots, so most of the roster
+    sits on the shared placeholder permanently."""
+    guild = FakeGuild(emojis=[FakeEmoji(roster.PLACEHOLDER_EMOTE_NAME, 5)])
+
+    block = await roster.render_guild(guild, "VETS", "Returners", {})
+
+    assert block.startswith(f"<:{roster.PLACEHOLDER_EMOTE_NAME}:5> ")
 
 
 async def test_a_server_missing_the_placeholder_still_renders(db):

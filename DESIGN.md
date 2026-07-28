@@ -295,3 +295,45 @@ Besides the hourly pass, `roster.request_sync(guild)` is called from the join li
 `~script roster` runs the same pass on demand. Like `~script reconcile` it reads the notability cache rather than refreshing it, so `~script refresh_notability` comes first if that matters.
 
 The `on_member_remove` listener is deliberately small: it sets `Delegate.left_at` and asks for a redraw. The `GuildContact` rows stay, on the same reasoning as everywhere else — coming back costs no re-verification, and the display side already reads an absent holder as unclaimed. Marking the row is what stops the guild watch spending a Wynncraft request per sweep on somebody who has gone.
+
+## 15. Guild banner emotes
+
+**Status:** implemented (Stage 12)
+
+Each roster entry leads with the guild's own Minecraft banner as a custom emote, so the list reads the way the guilds look in-game rather than as forty rows of identical placeholder. `services/banner_render.py` draws it and `services/emote_slots.py` decides which guilds get one.
+
+### 15.1 Drawing a banner
+
+A Wynncraft banner is a base dye colour plus an ordered stack of patterns, each in a dye colour of its own (`wynnpool.guild_details(name).banner`). Wynnpool publishes the pattern art as SVG at `www.wynnpool.com/banners/<PATTERN>.svg` — a different host from the API, so it gets its own requester and its own rate-limit bucket, and the art is cached for the life of the process because a given pattern's SVG never changes.
+
+**The art is a mask, not a picture.** Every shape in it is black at an opacity of 1, 0.5 or 0.25; the colour comes from us and the alpha from the art, and those partial opacities are Minecraft's own shading. Compositing is therefore: fill the canvas with the base dye, then for each layer take a solid sheet of its dye colour, cut it to the art's alpha channel, and alpha-composite it on. That's not inferred — it's what Wynnpool's own site does, which renders each layer as a coloured `div` with `mask: url(/banners/<PATTERN>.svg); mask-size: cover`. Drawing the art directly instead would make every banner a black silhouette.
+
+Two deliberate departures from that reference:
+
+- **`SILVER` is a colour here.** Wynncraft's API returns `SILVER` where modern Minecraft says `LIGHT_GRAY`, and Wynnpool's lookup table is keyed only on the modern name — so a silver banner renders with *no base colour at all* on their site. Both names map to `#999999` in `DYES`. An unmapped dye renders magenta rather than transparent: a hole reads as a rendering bug, magenta reads as "a dye nobody mapped", which is what it is.
+- **A missing pattern is skipped, not fatal.** Wynnpool publishes no art for several real patterns (`GLOBE`, `PIGLIN`, `DIAGONAL_UP_LEFT`, `DIAGONAL_UP_RIGHT`). A guild wearing one still gets a banner from its remaining layers, which is far closer to right than no banner. The 404 is cached, so it costs one request ever rather than one per render.
+
+Rasterisation is **resvg** (`resvg-py`), not cairosvg: it ships self-contained wheels for Linux and Windows, so the image needs no `libcairo` and the render tests run on a developer's machine. It also handles the `<style>` opacity classes and the two gradient patterns natively, which a hand-rolled rasteriser would have had to grow — every other pattern is rectilinear, but `GRADIENT` and `GRADIENT_UP` are not.
+
+The composite runs at the art's own 160×320 and the result is centred on a **transparent 128×128 square**. A banner is 1:2 and an emote is square; stretching it produces a different banner, and recognising it is the entire point. Compositing is CPU work on a worker thread (`asyncio.to_thread`) — five layers of rasterisation on the event loop would stall the gateway heartbeat, and a reconcile does this for every guild in the budget.
+
+### 15.2 Spending the emote budget
+
+Emote slots are scarce and shared: a server has 50 (250 at boost level 3), the community's own emotes live in the same list, and there are far more notable guilds than slots. So `ROSTER_EMOTE_BUDGET` is a budget to spend, not a set to fill, and it **defaults to zero** — the emote list belongs to the server, and taking slots is something an operator asks for rather than something a deploy does to them. The effective budget is the smaller of that and `guild.emoji_limit`, so a boost level lost overnight can't leave the bot minting into slots that no longer exist.
+
+Within the budget the rule is roster order (§14.1), which is Wynnpool's guild-level board. Guilds above the line get their banner minted; guilds that fall below it are evicted, and **eviction runs before minting** so the freed slots are available to the guilds that displaced them — otherwise a full list makes every mint fail and the boundary never moves.
+
+Two invariants, both the same shape as §11's rules for roles:
+
+- **Only emotes we created are ever deleted.** `GuildEmote` records the ones we minted and they're resolved by **ID, never by name**. An emote that happens to share a guild's tag might be somebody's own from years ago, and deleting it breaks every message that used it, irreversibly.
+- **An unchanged banner is never re-uploaded.** Discord has no replace-in-place for emotes, so a re-mint is a delete and an upload and the ID *moves* — breaking every message and role icon already pointing at the old one. `GuildEmote.image_hash` is what decides, so a re-render producing identical bytes costs nothing.
+
+The roster picks them up on its own: `roster.emote_for` tries our recorded emote by ID, falls back to a shared `:Empty_Banner:` for guilds outside the budget, and then to a plain unicode flag for a server that hasn't uploaded even that. A missing emote must never be the thing that stops the roster. Uploading needs **Manage Expressions**.
+
+### 15.3 The same image on the role
+
+The rendered PNG has a second consumer: the guild role's `display_icon`, which shows immediately left of the name in the member list and in every `@VETS` mention. That is the *only* way a banner can sit beside a role name — a custom emote in a role name renders as literal text (§11) — so the icon is the whole mechanism, not a nicety.
+
+`emote_slots` drives it rather than the role reconcile, because it already holds the bytes; rendering again in §12's pass would double the work per guild per hour. Role icons need the server at **boost level 2** (`ROLE_ICONS` in `guild.features`), and below that every write is a 403 — so an unboosted server is detected and skipped rather than made to fail hourly, and a role without an icon works exactly as it did before. The icon is written only when its hash differs, since an unconditional edit per hour is an audit-log entry per hour, and it's *cleared* when a guild is evicted from the budget: an icon outliving the emote it came from would drift the moment the guild changed its banner. Only roles we created are decorated, on the same reasoning as never deleting one we didn't.
+
+`~script render_banner <TAG>` renders a guild's banner and posts it as an attachment with its hash, so it can be checked against the in-game article without spending a slot to find out. `~script emotes` runs the whole reconcile on demand.
