@@ -1,10 +1,16 @@
-"""``~force notable`` — override a guild's notability status for a duration.
+"""``~force major`` — override whether a guild counts as major, for a duration.
 
 Janitors get a three-month ceiling: long enough to carry a guild through
 a quiet patch, short enough that nobody can quietly park a guild in the
 Hall forever. Monitors have no ceiling and can pass ``0`` for a permanent
 override. There's no floor — a janitor who wants to grant a week has a
 reason, and a short override expires on its own anyway.
+
+``notable`` stays as an **alias**. It was the word for this everywhere
+until the Hall settled on "major guild", and janitors have it in their
+fingers and in older instructions written in the Discord. An alias costs
+nothing and keeps every one of those working; the help listing shows only
+``major``, so nothing teaches the old name to anybody new.
 """
 
 from datetime import datetime, timezone
@@ -28,12 +34,12 @@ def _is_monitor(ctx: commands.Context) -> bool:
 
 
 def register(cog: commands.Cog) -> None:
-    @cog.force.command(name="notable")
+    @cog.force.command(name="major", aliases=["notable"])
     @is_janitor()
-    async def force_notable(
+    async def force_major(
         ctx: commands.Context, guild_tag: str, duration: str
     ) -> None:
-        """treat a guild as notable for a while, whatever the signals say"""
+        """treat a guild as major for a while, whatever the signals say"""
         try:
             delta = parse_duration(duration)
         except InvalidDuration:
@@ -49,14 +55,14 @@ def register(cog: commands.Cog) -> None:
 
         expires_at = None if delta is None else datetime.now(timezone.utc) + delta
         # Match an existing row case-insensitively before creating one:
-        # `~force notable vets` and `~force notable VETS` are the same
+        # `~force major vets` and `~force major VETS` are the same
         # guild, and two rows would mean re-forcing silently did nothing.
         existing = await ForceOverride.filter(
-            kind="notable", subject__iexact=guild_tag
+            kind="major", subject__iexact=guild_tag
         ).first()
         if existing is None:
             await ForceOverride.create(
-                kind="notable",
+                kind="major",
                 subject=guild_tag,
                 expires_at=expires_at,
                 payload_json="{}",
@@ -65,16 +71,16 @@ def register(cog: commands.Cog) -> None:
             existing.expires_at = expires_at
             await existing.save()
         window = "permanently" if expires_at is None else f"until {expires_at.isoformat(timespec='minutes')}"
-        await ctx.reply(f"forced `{guild_tag}` notable {window}.")
+        await ctx.reply(f"forced `{guild_tag}` major {window}.")
 
-    @cog.unforce.command(name="notable")
+    @cog.unforce.command(name="major", aliases=["notable"])
     @is_janitor()
-    async def unforce_notable(ctx: commands.Context, guild_tag: str) -> None:
-        """drop a notability override and go back to the signals"""
+    async def unforce_major(ctx: commands.Context, guild_tag: str) -> None:
+        """drop a major-guild override and go back to the signals"""
         deleted = await ForceOverride.filter(
-            kind="notable", subject__iexact=guild_tag
+            kind="major", subject__iexact=guild_tag
         ).delete()
         if deleted:
-            await ctx.reply(f"cleared notable override on `{guild_tag}`.")
+            await ctx.reply(f"cleared major override on `{guild_tag}`.")
         else:
-            await ctx.reply(f"no notable override on `{guild_tag}` to clear.")
+            await ctx.reply(f"no major override on `{guild_tag}` to clear.")

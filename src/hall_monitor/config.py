@@ -48,7 +48,7 @@ class Settings(BaseSettings):
 
     pending_invite_ttl_minutes: int = 45
     pending_invite_sweep_seconds: int = 60
-    notability_refresh_seconds: int = 3600
+    major_guild_refresh_seconds: int = 3600
 
     # How long an expel motion stays open before it lapses. Long enough
     # that a representative away for a weekend still gets a vote, short

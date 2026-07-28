@@ -11,12 +11,12 @@ module exists to keep from surprising us:
    assume a tag is a single word, or that it's safe to split on.
 
 The case-folding matters most where a human types the tag. A janitor
-running ``~force notable vets 3mo`` will not reliably match the API's
+running ``~force major vets 3mo`` will not reliably match the API's
 capitalisation, and an override that silently applies to a different key
-than the one notability looks up is an override that does nothing.
+than the one the major-guild sweep looks up is an override that does nothing.
 
 Discord's own argument parser handles rarity 2 already: a tag containing
-a space needs quoting at the call site — ``~force notable "My Guild" 3mo``
+a space needs quoting at the call site — ``~force major "My Guild" 3mo``
 — which discord.py splits correctly.
 """
 

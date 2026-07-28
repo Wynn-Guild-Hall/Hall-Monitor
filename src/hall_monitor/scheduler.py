@@ -1,4 +1,4 @@
-"""Background jobs — notability refresh and pending-invite expiry sweep."""
+"""Background jobs — major-guild refresh and pending-invite expiry sweep."""
 
 import functools
 import logging
@@ -13,7 +13,7 @@ from hall_monitor.services import (
     discord_invites,
     emote_slots,
     expel,
-    notability,
+    major_guilds,
     roster,
     transitions,
 )
@@ -26,8 +26,8 @@ def build_scheduler(bot: commands.Bot) -> AsyncIOScheduler:
     scheduler.add_job(
         functools.partial(refresh_and_reconcile, bot),
         "interval",
-        seconds=settings.notability_refresh_seconds,
-        id="notability-refresh",
+        seconds=settings.major_guild_refresh_seconds,
+        id="major-guild-refresh",
     )
     # Sweep needs the bot to revoke stale Discord invites. Bind it here so
     # discord_invites stays a plain service module with no hidden globals.
@@ -44,7 +44,7 @@ async def refresh_and_reconcile(bot: commands.Bot) -> None:
     """Re-gather the facts, then make Discord match them.
 
     One job rather than four intervals, in this order deliberately: the
-    reconcile reads both the notability cache and each delegate's current
+    reconcile reads both the major-guild cache and each delegate's current
     guild, so gathering them separately would spend an hour of every
     change acting on the previous sweep's numbers. The roster goes last
     for the same reason — it publishes what the pass just settled.
@@ -54,7 +54,7 @@ async def refresh_and_reconcile(bot: commands.Bot) -> None:
     that lost a race with Discord, costs at most an hour of staleness
     rather than permanent drift.
     """
-    await notability.refresh_all()
+    await major_guilds.refresh_all()
     checked, external = await delegate_registry.refresh_current_guilds()
     logger.info(
         "guild watch: %d delegate(s) checked, %d representing a guild they've left",

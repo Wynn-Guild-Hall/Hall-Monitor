@@ -1,4 +1,4 @@
-"""The reconcile pass: contact roles gated on notability, guild roles
+"""The reconcile pass: contact roles gated on major-guild status, guild roles
 coloured or greyed to match, and spent guild roles recycled."""
 
 from unittest.mock import AsyncMock, MagicMock
@@ -6,12 +6,12 @@ from unittest.mock import AsyncMock, MagicMock
 import httpx
 import pytest
 
-from hall_monitor.db.models import Delegate, GuildContact, GuildRole, NotabilityCache
+from hall_monitor.db.models import Delegate, GuildContact, GuildRole, MajorGuildCache
 from hall_monitor.services import (
     athena_colour,
     delegate_registry,
     guild_roles,
-    notability,
+    major_guilds,
     transitions,
 )
 
@@ -49,14 +49,14 @@ def configured(monkeypatch):
 
 
 @pytest.fixture
-def notable(monkeypatch):
-    """Control which tags count as notable without touching the APIs."""
+def major(monkeypatch):
+    """Control which tags count as major without touching the APIs."""
     tags = set()
 
-    async def fake_is_notable(tag):
+    async def fake_is_major(tag):
         return tag.upper() in tags
 
-    monkeypatch.setattr(notability, "is_notable", fake_is_notable)
+    monkeypatch.setattr(major_guilds, "is_major", fake_is_major)
     return tags
 
 
@@ -132,8 +132,8 @@ def _removed(member) -> set[int]:
 async def test_only_guilds_with_a_presence_are_visited(db):
     """The cache knows a couple of hundred guilds. Reconciling them all
     would mint a role for every guild in Wynncraft."""
-    await NotabilityCache.create(
-        guild_tag="AAAA", is_notable=True, signals_json="{}"
+    await MajorGuildCache.create(
+        guild_tag="AAAA", is_major=True, signals_json="{}"
     )
     await _delegate("uuid-a", 1, "VETS")
     await GuildRole.create(guild_tag="OTHR", discord_role_id=9)
@@ -164,7 +164,7 @@ async def test_a_delegate_who_left_doesnt_keep_a_guild_alive(db):
 # --------------------------------------------------------------------------
 
 
-async def test_a_non_notable_guild_loses_its_contact_roles_and_colour(db, notable):
+async def test_a_non_major_guild_loses_its_contact_roles_and_colour(db, major):
     role = _role(1, "VETS", members=[MagicMock()])
     guild = FakeGuild([role])
     await GuildRole.create(guild_tag="VETS", discord_role_id=1)
@@ -176,15 +176,15 @@ async def test_a_non_notable_guild_loses_its_contact_roles_and_colour(db, notabl
 
     summary = await transitions.reconcile(guild)
 
-    assert summary.guilds == 1 and summary.notable == 0
+    assert summary.guilds == 1 and summary.major == 0
     assert summary.contacts_changed == 1
     assert summary.roles == {guild_roles.GREYED: 1}
     assert CONTACT_ROLE_IDS["events"] in _removed(member)
     member.kick.assert_not_awaited()
 
 
-async def test_a_returning_guild_gets_its_contacts_back(db, notable):
-    notable.add("VETS")
+async def test_a_returning_guild_gets_its_contacts_back(db, major):
+    major.add("VETS")
     role = _role(1, "VETS", members=[MagicMock()])
     guild = FakeGuild([role])
     await GuildRole.create(guild_tag="VETS", discord_role_id=1)
@@ -194,7 +194,7 @@ async def test_a_returning_guild_gets_its_contacts_back(db, notable):
 
     summary = await transitions.reconcile(guild)
 
-    assert summary.notable == 1
+    assert summary.major == 1
     assert summary.contacts_changed == 1
     assert CONTACT_ROLE_IDS["events"] in _added(member)
 
@@ -204,7 +204,7 @@ async def test_a_returning_guild_gets_its_contacts_back(db, notable):
 # --------------------------------------------------------------------------
 
 
-async def test_losing_notability_relegates_the_representatives(db, notable):
+async def test_losing_major_relegates_the_representatives(db, major):
     role = _role(1, "VETS", members=[MagicMock()])
     guild = FakeGuild([role])
     await _delegate("uuid-a", 1, "VETS")
@@ -218,8 +218,8 @@ async def test_losing_notability_relegates_the_representatives(db, notable):
     assert role.id not in _removed(member)
 
 
-async def test_regaining_notability_promotes_them_back(db, notable):
-    notable.add("VETS")
+async def test_regaining_major_promotes_them_back(db, major):
+    major.add("VETS")
     role = _role(1, "VETS", members=[MagicMock()])
     guild = FakeGuild([role])
     await _delegate("uuid-a", 1, "VETS")
@@ -231,9 +231,9 @@ async def test_regaining_notability_promotes_them_back(db, notable):
     assert STANDING_ROLE_IDS[delegate_registry.RELEGATE] in _removed(member)
 
 
-async def test_a_rep_who_moved_guilds_becomes_an_external_relegate(db, notable):
+async def test_a_rep_who_moved_guilds_becomes_an_external_relegate(db, major):
     """Wearing VETS while playing for OTHR misinforms the whole room."""
-    notable.add("VETS")
+    major.add("VETS")
     role = _role(1, "VETS", members=[MagicMock()])
     guild = FakeGuild([role])
     await _delegate("uuid-a", 1, "VETS", currently="OTHR")
@@ -246,19 +246,19 @@ async def test_a_rep_who_moved_guilds_becomes_an_external_relegate(db, notable):
     assert role.id in _removed(member), "out of the guild's own role"
 
 
-async def test_moving_guilds_outranks_the_guild_being_notable(db, notable):
-    notable.add("VETS")
+async def test_moving_guilds_outranks_the_guild_being_major(db, major):
+    major.add("VETS")
     delegate = await _delegate("uuid-a", 1, "VETS", currently="OTHR")
     assert (
-        await delegate_registry.standing(delegate, notable=True)
+        await delegate_registry.standing(delegate, major=True)
         == delegate_registry.EXTERNAL
     )
 
 
-async def test_a_guildless_rep_is_left_alone(db, notable):
+async def test_a_guildless_rep_is_left_alone(db, major):
     """Between guilds is not the same as gone — relegating someone who
     left for an afternoon is the behaviour the brief rules out."""
-    notable.add("VETS")
+    major.add("VETS")
     role = _role(1, "VETS", members=[MagicMock()])
     guild = FakeGuild([role])
     await _delegate("uuid-a", 1, "VETS", currently=None)
@@ -270,11 +270,11 @@ async def test_a_guildless_rep_is_left_alone(db, notable):
     member.remove_roles.assert_not_awaited()
 
 
-async def test_an_external_rep_vacates_their_contact_slots(db, notable):
+async def test_an_external_rep_vacates_their_contact_slots(db, major):
     """Not withheld — given up. A slot held by somebody who has moved to
     another guild is vacant in every sense that matters, and leaving the
     row makes it read as claimed on one screen and free on another."""
-    notable.add("VETS")
+    major.add("VETS")
     role = _role(1, "VETS", members=[MagicMock()])
     guild = FakeGuild([role])
     delegate = await _delegate("uuid-a", 1, "VETS", currently="OTHR")
@@ -288,9 +288,9 @@ async def test_an_external_rep_vacates_their_contact_slots(db, notable):
     member.kick.assert_not_awaited(), "they moved guilds; they didn't lose a fight"
 
 
-async def test_a_settled_member_costs_no_requests(db, notable):
+async def test_a_settled_member_costs_no_requests(db, major):
     """It runs hourly; a member already in the right state must be quiet."""
-    notable.add("VETS")
+    major.add("VETS")
     role = _role(1, "VETS", members=[MagicMock()])
     guild = FakeGuild([role])
     await _delegate("uuid-a", 1, "VETS")
@@ -303,7 +303,7 @@ async def test_a_settled_member_costs_no_requests(db, notable):
     member.remove_roles.assert_not_awaited()
 
 
-async def test_a_rep_who_left_the_server_is_skipped(db, notable):
+async def test_a_rep_who_left_the_server_is_skipped(db, major):
     """The leave path owns that; this pass can't act on an absent member."""
     guild = FakeGuild([_role(1, "VETS")])
     await _delegate("uuid-a", 1, "VETS")  # no matching Discord member
@@ -313,7 +313,7 @@ async def test_a_rep_who_left_the_server_is_skipped(db, notable):
     assert summary.members_changed == 0
 
 
-async def test_a_spent_role_is_recycled(db, notable):
+async def test_a_spent_role_is_recycled(db, major):
     """Nobody wearing it, no delegates left — it costs a role slot and
     holds nothing. The next join recreates it."""
     role = _role(1, "VETS")
@@ -445,8 +445,8 @@ async def test_the_watch_folds_case_on_the_tag(db, monkeypatch):
     assert external == 0
 
 
-async def test_one_guilds_failure_doesnt_stop_the_pass(db, notable, monkeypatch):
-    notable.update({"VETS", "OTHR"})
+async def test_one_guilds_failure_doesnt_stop_the_pass(db, major, monkeypatch):
+    major.update({"VETS", "OTHR"})
     ours = _role(1, "VETS", members=[MagicMock()])
     theirs = _role(2, "OTHR", members=[MagicMock()])
     guild = FakeGuild([ours, theirs])
@@ -455,10 +455,10 @@ async def test_one_guilds_failure_doesnt_stop_the_pass(db, notable, monkeypatch)
 
     real = guild_roles.reconcile_role
 
-    async def explode_on_vets(discord_guild, tag, *, notable):
+    async def explode_on_vets(discord_guild, tag, *, major):
         if tag == "VETS":
             raise RuntimeError("Discord had an opinion")
-        return await real(discord_guild, tag, notable=notable)
+        return await real(discord_guild, tag, major=major)
 
     monkeypatch.setattr(guild_roles, "reconcile_role", explode_on_vets)
 
@@ -468,9 +468,9 @@ async def test_one_guilds_failure_doesnt_stop_the_pass(db, notable, monkeypatch)
     assert summary.roles, "OTHR was still settled"
 
 
-async def test_the_summary_reads_as_a_log_line(db, notable):
+async def test_the_summary_reads_as_a_log_line(db, major):
     summary = await transitions.reconcile(FakeGuild())
-    assert "0 guilds (0 notable)" in summary.line()
+    assert "0 guilds (0 major)" in summary.line()
     assert "nothing to do" in summary.line()
 
 
@@ -479,10 +479,10 @@ async def test_the_summary_reads_as_a_log_line(db, notable):
 # --------------------------------------------------------------------------
 
 
-async def test_a_repointed_rep_moves_guild_role_and_stays_a_delegate(db, notable):
+async def test_a_repointed_rep_moves_guild_role_and_stays_a_delegate(db, major):
     """The operator's ask: forced to ANO means representing ANO. ANO's
     colour, ANO's role, delegate standing — not External Relegate."""
-    notable.update({"VETS", "ANO"})
+    major.update({"VETS", "ANO"})
     vets = _role(1, "VETS", members=[MagicMock()])
     ano = _role(2, "ANO")
     guild = FakeGuild([vets, ano])
@@ -501,7 +501,7 @@ async def test_a_repointed_rep_moves_guild_role_and_stays_a_delegate(db, notable
     assert vets.id in _removed(member), "and only that one"
 
 
-async def test_the_repointed_guild_is_visited_even_with_no_other_presence(db, notable):
+async def test_the_repointed_guild_is_visited_even_with_no_other_presence(db, major):
     """ANO has no delegates, no slots and no role of its own — but somebody
     now represents it, so it has to be reconciled."""
     await _delegate("uuid-a", 1, "VETS", currently="VETS")
@@ -510,9 +510,9 @@ async def test_the_repointed_guild_is_visited_even_with_no_other_presence(db, no
     assert "ANO" in await transitions.guilds_present()
 
 
-async def test_the_repointed_guilds_role_is_minted_on_demand(db, notable):
+async def test_the_repointed_guilds_role_is_minted_on_demand(db, major):
     """Nobody verified for ANO, so nothing has created its role yet."""
-    notable.add("ANO")
+    major.add("ANO")
     guild = FakeGuild()
     guild.create_role = AsyncMock(return_value=_role(9, "ANO"))
     await _delegate("uuid-a", 1, "VETS", currently="VETS")
@@ -524,16 +524,16 @@ async def test_the_repointed_guilds_role_is_minted_on_demand(db, notable):
     assert guild.create_role.await_args.kwargs["name"] == "ANO"
 
 
-async def test_the_old_guilds_pass_leaves_a_repointed_member_alone(db, notable):
+async def test_the_old_guilds_pass_leaves_a_repointed_member_alone(db, major):
     """Settling by row rather than by representation would have VETS's pass
     undo what ANO's just did."""
-    notable.update({"VETS", "ANO"})
+    major.update({"VETS", "ANO"})
     vets = _role(1, "VETS", members=[MagicMock()])
     guild = FakeGuild([vets])
     await GuildRole.create(guild_tag="VETS", discord_role_id=1)
     await _delegate("uuid-a", 1, "VETS", currently="VETS")
     await delegate_registry.set_forced_guild(1, "ANO", None)
 
-    changed = await transitions.settle_members(guild, "VETS", notable=True)
+    changed = await transitions.settle_members(guild, "VETS", major=True)
 
     assert changed == 0, "not VETS's member any more"

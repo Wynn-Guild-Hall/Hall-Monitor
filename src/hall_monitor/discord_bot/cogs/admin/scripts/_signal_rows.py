@@ -1,4 +1,4 @@
-"""Shared reading of ``NotabilityCache`` for the notability scripts.
+"""Shared reading of ``MajorGuildCache`` for the major-guild scripts.
 
 Underscore-prefixed, so the loader treats it as a helper rather than
 exposing it as ``~script _signal_rows``.
@@ -7,7 +7,7 @@ exposing it as ``~script _signal_rows``.
 import json
 from dataclasses import dataclass
 
-from hall_monitor.db.models import NotabilityCache
+from hall_monitor.db.models import MajorGuildCache
 
 # Canonical column order. Anything the cache carries that isn't here still
 # shows up, appended — a signal added later shouldn't vanish from reports.
@@ -38,7 +38,7 @@ DISCORD_LIMIT = 2000
 @dataclass(frozen=True)
 class Row:
     tag: str
-    notable: bool
+    major: bool
     signals: dict
 
     @property
@@ -53,7 +53,7 @@ class Row:
 
 async def load() -> list[Row]:
     rows = []
-    for row in await NotabilityCache.all().order_by("guild_tag"):
+    for row in await MajorGuildCache.all().order_by("guild_tag"):
         try:
             signals = json.loads(row.signals_json)
         except (TypeError, ValueError):
@@ -61,7 +61,7 @@ async def load() -> list[Row]:
         rows.append(
             Row(
                 tag=row.guild_tag,
-                notable=row.is_notable,
+                major=row.is_major,
                 signals=signals if isinstance(signals, dict) else {},
             )
         )

@@ -47,12 +47,12 @@ class Delegate(Model):
         table = "delegate"
 
 
-class NotabilityCache(Model):
-    """Per-guild cached notability result plus the signals that produced it."""
+class MajorGuildCache(Model):
+    """Per-guild cached major-guild result plus the signals that produced it."""
 
     id = fields.IntField(pk=True)
     guild_tag = fields.CharField(max_length=8, unique=True)
-    is_notable = fields.BooleanField()
+    is_major = fields.BooleanField()
     signals_json = fields.TextField()
     # The numbers behind the signals — board ranks, level, territories,
     # wars. The booleans say *whether* a guild qualifies; these say by how
@@ -69,7 +69,7 @@ class NotabilityCache(Model):
     updated_at = fields.DatetimeField(auto_now=True)
 
     class Meta:
-        table = "notability_cache"
+        table = "major_guild_cache"
 
 
 class ForceOverride(Model):

@@ -8,12 +8,12 @@ that is the boost level: 50 slots at tier 0, 100 at 1, 150 at 2, 250 at
 `ROSTER_EMOTE_RESERVE`, which is exactly what makes a boost gained or
 lost take care of itself.
 
-There are far more notable guilds than slots either way, so which ones
-get a banner is decided by **how strongly each guild is notable**, not
+There are far more major guilds than slots either way, so which ones
+get a banner is decided by **how strongly each guild is major**, not
 by the roster's running order. A guild qualifying on four signals is
 more securely part of the Hall than one scraping in on a single
 leaderboard, so the placeholder falls to the guilds that qualify by the
-least — see `notability.strength`. Guilds above the line are minted;
+least — see `major_guilds.strength`. Guilds above the line are minted;
 guilds that fall below it are evicted to make room, and **eviction runs
 first** so the slots it frees are available to whatever displaced them.
 A full list is a wall every later mint fails against silently.
@@ -111,7 +111,7 @@ from hall_monitor.services import (
     banner_render,
     guild_roles,
     guild_tag as tags,
-    notability,
+    major_guilds,
     roster,
 )
 from hall_monitor.external import wynnpool
@@ -340,7 +340,7 @@ async def rendered_banner(guild_tag: str, guild_name: str | None) -> bytes | Non
 
     Addressed by *name*, because that's the only key Wynnpool's guild
     endpoint takes — so a tag with no name resolved (see
-    `notability._learn_missing_names`) has nothing to ask for.
+    `major_guilds._learn_missing_names`) has nothing to ask for.
     """
     if not guild_name:
         logger.info("emotes: no guild name known for %s; can't fetch a banner", guild_tag)
@@ -353,11 +353,11 @@ async def rendered_banner(guild_tag: str, guild_name: str | None) -> bytes | Non
 
 
 async def by_strength() -> list[roster.ListedGuild]:
-    """Every listed guild, most strongly notable first.
+    """Every listed guild, most strongly major first.
 
     The order slots are handed out in, and not the same as the roster's:
     that one is sorted for someone reading down it, this one for who has
-    most claim on a scarce emote. `notability.strength` counts matched
+    most claim on a scarce emote. `major_guilds.strength` counts matched
     signals first and breaks ties on the numbers behind them.
 
     A guild with no cached measurement sorts last — that's a fresh force
@@ -366,7 +366,7 @@ async def by_strength() -> list[roster.ListedGuild]:
     tiebreak, purely so the order is stable between passes and a
     coin-flip doesn't churn an emote every hour.
     """
-    strengths = await notability.strength_by_tag()
+    strengths = await major_guilds.strength_by_tag()
     listed = await roster.listed_guilds()
     return sorted(
         listed,

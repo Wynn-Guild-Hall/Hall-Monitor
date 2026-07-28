@@ -80,7 +80,7 @@ class Banner:
 class Guild:
     """Trimmed Wynncraft guild payload — the fields Hall-Monitor uses.
 
-    Notability reads ``level`` and ``territories``; join-eligibility walks
+    The major-guild sweep reads ``level`` and ``territories``; join-eligibility walks
     ``members`` looking for the requester at OWNER/CHIEF rank; banner
     rendering (Stage 12) reads ``banner``.
     """

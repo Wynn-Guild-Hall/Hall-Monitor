@@ -13,7 +13,7 @@ from aerich.models import Aerich
 from tortoise import Tortoise
 
 from hall_monitor import db as db_module
-from hall_monitor.db.models import Delegate, NotabilityCache
+from hall_monitor.db.models import Delegate, MajorGuildCache
 
 
 @pytest.fixture
@@ -227,6 +227,51 @@ def test_no_migration_adds_a_not_null_column_without_a_default():
     )
 
 
+_DROP_TABLE = re.compile(r'DROP\s+TABLE\s+(IF\s+EXISTS\s+)?"(?P<table>[^"]+)"', re.I)
+
+
+def test_no_migration_drops_a_table_another_one_created():
+    """Aerich renders a *rename* as CREATE-then-DROP, which is a data-losing
+    no-op wearing a rename's clothes: every row goes, the next sweep
+    rebuilds what it can, and nothing looks broken until somebody asks
+    why the roster was empty for an hour. It generated exactly that for
+    `notability_cache` → `major_guild_cache`.
+
+    So: no upgrade may drop a table an earlier upgrade created. A table
+    genuinely being retired would need this test updated, which is the
+    point — it should be a decision, not a diff nobody read.
+    """
+    created, offenders = set(), []
+    for path in sorted((db_module.MIGRATIONS_DIR / "models").glob("[0-9]*.py")):
+        source = path.read_text(encoding="utf-8")
+        upgrade = source.split("async def downgrade")[0]
+        for match in re.finditer(r'CREATE\s+TABLE\s+(IF\s+NOT\s+EXISTS\s+)?"([^"]+)"', upgrade, re.I):
+            created.add(match.group(2))
+        for match in _DROP_TABLE.finditer(upgrade):
+            if match.group("table") in created:
+                offenders.append(f"{path.name}: {match.group('table')}")
+    assert not offenders, (
+        "these drop a table an earlier migration created — if it's a "
+        "rename, use ALTER TABLE ... RENAME TO: " + ", ".join(offenders)
+    )
+
+
+async def test_renaming_a_table_keeps_its_rows(connected):
+    """The production condition for migration 11. A fresh-schema test
+    can't model it: the rename is invisible on an empty table, which is
+    exactly why the generated version looked fine."""
+    await db_module.migrate()
+
+    await MajorGuildCache.create(
+        guild_tag="VETS", is_major=True, signals_json="{}", guild_name="Returners"
+    )
+    await db_module.migrate()  # a second pass must not re-run the rename
+
+    cached = await MajorGuildCache.get(guild_tag="VETS")
+    assert cached.guild_name == "Returners"
+    assert cached.is_major is True
+
+
 async def test_migrations_apply_to_a_database_with_rows(connected):
     """The production condition, and the one a fresh-schema test can't
     model. Every column added after the initial migration lands on a
@@ -234,8 +279,8 @@ async def test_migrations_apply_to_a_database_with_rows(connected):
     await db_module.migrate()
 
     await Delegate.create(mc_uuid="u", discord_user_id=1, guild_tag="VETS")
-    await NotabilityCache.create(
-        guild_tag="VETS", is_notable=True, signals_json="{}"
+    await MajorGuildCache.create(
+        guild_tag="VETS", is_major=True, signals_json="{}"
     )
 
     # Re-running is a no-op, but the rows above are what make a second
@@ -243,5 +288,5 @@ async def test_migrations_apply_to_a_database_with_rows(connected):
     # needs a default and hasn't got one.
     await db_module.migrate()
 
-    cached = await NotabilityCache.get(guild_tag="VETS")
+    cached = await MajorGuildCache.get(guild_tag="VETS")
     assert cached.metrics_json == "{}", "existing rows got the default"

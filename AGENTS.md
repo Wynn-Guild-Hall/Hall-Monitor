@@ -38,12 +38,12 @@ Administrator covers all eight (and overrides channel overwrites), which is how 
 
 Use **`WYNN`** for anything that needs a live guild to poke at. It's a
 real but tiny admin guild, so every API call resolves the way it would in
-production while no real signal marks it notable — which makes it the
-honest subject for `~force notable`, since you can watch a guild flip
+production while no real signal marks it major — which makes it the
+honest subject for `~force major`, since you can watch a guild flip
 false → true → false. An invented tag like `ZZZZ` 404s at the per-guild
 lookup and never exercises that path at all.
 
-`VETS` is the stock example for a guild that *is* notable.
+`VETS` is the stock example for a guild that *is* major.
 
 ## Poking the clients on a running container
 

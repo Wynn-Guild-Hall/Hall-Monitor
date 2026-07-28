@@ -46,14 +46,14 @@ async def guild_name_for(tag: str, *, urgent: bool = False) -> str | None:
     one question being asked here — the tag is all we have.
 
     Needed because the leaderboards are where names normally come from,
-    and a guild can be notable without being on one of them: season
+    and a guild can be major without being on one of them: season
     boards carry no prefix, and a force override carries nothing at all.
     ``VETS`` is exactly that case, which is why the roster printed it as
     ``**VETS** (`VETS`)``.
 
     Errors are swallowed rather than raised. A name is decoration — the
     tag reads fine without it — and a 429 here must not cost a guild its
-    notability evaluation.
+    major-guild evaluation.
     """
     try:
         guild = await wynncraft.get_guild_by_prefix(tag, urgent=urgent)
@@ -65,7 +65,7 @@ async def guild_name_for(tag: str, *, urgent: bool = False) -> str | None:
 
 @dataclass(frozen=True)
 class GuildStats:
-    """Per-guild numbers the notability signals need, plus who answered."""
+    """Per-guild numbers the major-guild signals need, plus who answered."""
 
     name: str
     tag: str
@@ -80,7 +80,7 @@ async def guild_stats(
     """Territory count and war total, preferring Wynnpool.
 
     Wynnpool mirrors the same numbers on a much more forgiving rate limit,
-    and the hourly notability sweep is the heaviest per-guild caller we
+    and the hourly major-guild sweep is the heaviest per-guild caller we
     have — pointing it at Wynncraft is what exhausts the shared anonymous
     limit. Wynncraft stays the authority, so anything Wynnpool can't
     answer falls through to it, **including a 404**: Wynnpool only knows
@@ -91,7 +91,7 @@ async def guild_stats(
 
     Wynnpool errors are swallowed (that's the fallback). Wynncraft errors
     propagate: a 429 there must not be recorded as "no territories, no
-    wars", which would quietly read as a guild losing its notability.
+    wars", which would quietly read as a guild losing its major_guilds.
     """
     if name:
         try:

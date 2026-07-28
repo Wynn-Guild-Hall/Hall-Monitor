@@ -23,7 +23,7 @@ from hall_monitor.db.models import (
     ExpelBan,
     ForceOverride,
     GuildContact,
-    NotabilityCache,
+    MajorGuildCache,
     PendingInvite,
 )
 from hall_monitor.sidecar import build_app
@@ -137,7 +137,7 @@ async def test_verify_happy_path_mints_invite(db, app, httpx_mock, monkeypatch):
                 },
             },
         )
-        await NotabilityCache.create(guild_tag="VETS", is_notable=True, signals_json="{}")
+        await MajorGuildCache.create(guild_tag="VETS", is_major=True, signals_json="{}")
 
         r = await c.get("/api/verify/uuid-chief/HALL05")
         kick = r.json()["kick_message"]
@@ -181,7 +181,7 @@ async def test_verify_logs_every_outcome(db, app, httpx_mock, monkeypatch, caplo
             "guild": {"name": "Wynncraft Veterans", "prefix": "VETS", "rank": "CHIEF"},
         },
     )
-    await NotabilityCache.create(guild_tag="VETS", is_notable=True, signals_json="{}")
+    await MajorGuildCache.create(guild_tag="VETS", is_major=True, signals_json="{}")
 
     transport = httpx.ASGITransport(app=app)
     with caplog.at_level(logging.INFO):
@@ -233,7 +233,7 @@ async def test_verify_not_chief_or_owner_kick_message(db, app, httpx_mock, monke
         assert "chief or owner" in body["chat_message"]
 
 
-async def test_verify_guild_not_notable_kick_message(db, app, httpx_mock, monkeypatch):
+async def test_verify_guild_not_major_kick_message(db, app, httpx_mock, monkeypatch):
     monkeypatch.setattr(
         "hall_monitor.sidecar.routes.verify.settings.discord_guild_id", 1
     )
@@ -250,14 +250,14 @@ async def test_verify_guild_not_notable_kick_message(db, app, httpx_mock, monkey
             url="https://api.wynncraft.com/v3/player/uuid-chief",
             json={"guild": {"name": "Small", "prefix": "SMLL", "rank": "CHIEF"}},
         )
-        await NotabilityCache.create(
-            guild_tag="SMLL", is_notable=False, signals_json="{}"
+        await MajorGuildCache.create(
+            guild_tag="SMLL", is_major=False, signals_json="{}"
         )
         r = await c.get("/api/verify/uuid-chief/HALL01")
         body = r.json()
         assert body["kick_message"] is None
         assert "SMLL" in body["chat_message"]
-        assert "notable guild" in body["chat_message"]
+        assert "major guild" in body["chat_message"]
 
 
 async def test_verify_already_a_delegate_kick_message(db, app, httpx_mock, monkeypatch):
@@ -273,7 +273,7 @@ async def test_verify_already_a_delegate_kick_message(db, app, httpx_mock, monke
     guild.get_member = lambda uid: MagicMock() if uid == 42 else None
     app.state.bot = bot
 
-    await NotabilityCache.create(guild_tag="VETS", is_notable=True, signals_json="{}")
+    await MajorGuildCache.create(guild_tag="VETS", is_major=True, signals_json="{}")
     await Delegate.create(
         mc_uuid="uuid-existing", discord_user_id=42, guild_tag="VETS"
     )
@@ -304,7 +304,7 @@ async def test_verify_second_request_revokes_first_invite(db, app, httpx_mock, m
     )
     bot, channel = _bot_with_welcome_channel("first")
     app.state.bot = bot
-    await NotabilityCache.create(guild_tag="VETS", is_notable=True, signals_json="{}")
+    await MajorGuildCache.create(guild_tag="VETS", is_major=True, signals_json="{}")
 
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(
@@ -376,7 +376,7 @@ async def test_join_lookup_no_guild(client, httpx_mock):
     assert body["guild_tag"] is None
 
 
-async def test_join_lookup_guild_not_notable(db, client, httpx_mock):
+async def test_join_lookup_guild_not_major(db, client, httpx_mock):
     httpx_mock.add_response(
         url="https://api.mojang.com/users/profiles/minecraft/chief",
         json={"id": "u1", "name": "chief"},
@@ -385,24 +385,24 @@ async def test_join_lookup_guild_not_notable(db, client, httpx_mock):
         url="https://api.wynncraft.com/v3/player/u1",
         json={"guild": {"name": "Small Guild", "prefix": "SMLL", "rank": "CHIEF"}},
     )
-    # Cache SMLL as not notable so is_notable takes the fast path.
-    await NotabilityCache.create(
-        guild_tag="SMLL", is_notable=False, signals_json="{}"
+    # Cache SMLL as not major so is_major takes the fast path.
+    await MajorGuildCache.create(
+        guild_tag="SMLL", is_major=False, signals_json="{}"
     )
     r = await client.get("/api/join/lookup?username=chief")
     body = r.json()
     assert body["eligible"] is False
-    assert body["reason"] == "guild not notable"
+    assert body["reason"] == "guild not major"
     assert body["guild_tag"] == "SMLL"
 
 
-async def test_join_lookup_says_expelled_rather_than_not_notable(
+async def test_join_lookup_says_expelled_rather_than_not_major(
     db, client, httpx_mock
 ):
     """The /join page is the fifth place a ban has to bite, and the one
     that would otherwise walk an expelled chief all the way to a code
-    before anything told them. Checked before notability, because an
-    expelled guild can be perfectly notable and "not notable" would send
+    before anything told them. Checked before major-guild status, because an
+    expelled guild can be perfectly major and "not major" would send
     them off chasing leaderboards over a decision about them."""
     httpx_mock.add_response(
         url="https://api.mojang.com/users/profiles/minecraft/chief",
@@ -412,8 +412,8 @@ async def test_join_lookup_says_expelled_rather_than_not_notable(
         url="https://api.wynncraft.com/v3/player/u1",
         json={"guild": {"name": "Others", "prefix": "OTHR", "rank": "CHIEF"}},
     )
-    await NotabilityCache.create(
-        guild_tag="OTHR", is_notable=True, signals_json="{}"
+    await MajorGuildCache.create(
+        guild_tag="OTHR", is_major=True, signals_json="{}"
     )
     await ExpelBan.create(guild_tag="OTHR", reason="voted out")
 
@@ -433,8 +433,8 @@ async def test_join_lookup_happy_path(db, client, httpx_mock):
         url="https://api.wynncraft.com/v3/player/chief-uuid",
         json={"guild": {"name": "Wynncraft Veterans", "prefix": "VETS", "rank": "OWNER"}},
     )
-    await NotabilityCache.create(
-        guild_tag="VETS", is_notable=True, signals_json="{}"
+    await MajorGuildCache.create(
+        guild_tag="VETS", is_major=True, signals_json="{}"
     )
     r = await client.get("/api/join/lookup?username=wenweia")
     assert r.status_code == 200
@@ -466,7 +466,7 @@ async def test_join_lookup_populates_contacts_when_assigned(db, client, httpx_mo
         url="https://api.wynncraft.com/v3/player/chief-uuid",
         json={"guild": {"name": "Wynncraft Veterans", "prefix": "VETS", "rank": "OWNER"}},
     )
-    await NotabilityCache.create(guild_tag="VETS", is_notable=True, signals_json="{}")
+    await MajorGuildCache.create(guild_tag="VETS", is_major=True, signals_json="{}")
     holder = await Delegate.create(
         mc_uuid="holder-uuid",
         mc_username="Holidaze",
@@ -498,7 +498,7 @@ async def test_join_lookup_resolves_a_holder_stored_before_usernames(
         url="https://api.wynncraft.com/v3/player/fa8aa700-4538-485f-bf91-325263606995",
         json={"username": "Holidaze", "guild": None},
     )
-    await NotabilityCache.create(guild_tag="VETS", is_notable=True, signals_json="{}")
+    await MajorGuildCache.create(guild_tag="VETS", is_major=True, signals_json="{}")
     holder = await Delegate.create(
         mc_uuid="fa8aa700-4538-485f-bf91-325263606995",
         discord_user_id=42,
@@ -513,9 +513,9 @@ async def test_join_lookup_resolves_a_holder_stored_before_usernames(
     assert (await Delegate.get(id=holder.id)).mc_username == "Holidaze"
 
 
-async def test_join_lookup_force_override_makes_notable(db, client, httpx_mock):
-    """A force-notable override alone is enough to pass the notability gate,
-    even when there's no NotabilityCache row and every real signal would fail."""
+async def test_join_lookup_force_override_makes_major(db, client, httpx_mock):
+    """A force-major override alone is enough to pass the major-guild status gate,
+    even when there's no MajorGuildCache row and every real signal would fail."""
     httpx_mock.add_response(
         url="https://api.mojang.com/users/profiles/minecraft/chief",
         json={"id": "u1", "name": "chief"},
@@ -524,7 +524,7 @@ async def test_join_lookup_force_override_makes_notable(db, client, httpx_mock):
         url="https://api.wynncraft.com/v3/player/u1",
         json={"guild": {"name": "Forced Guild", "prefix": "FRCD", "rank": "CHIEF"}},
     )
-    await ForceOverride.create(kind="notable", subject="FRCD", expires_at=None)
+    await ForceOverride.create(kind="major", subject="FRCD", expires_at=None)
     r = await client.get("/api/join/lookup?username=chief")
     body = r.json()
     assert body["eligible"] is True

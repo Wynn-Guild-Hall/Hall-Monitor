@@ -1,6 +1,6 @@
-"""``~script`` dispatch plus the refresh_notability script's reporting.
+"""``~script`` dispatch plus the refresh_major script's reporting.
 
-The script is the supported way to trigger a notability sweep: doing it
+The script is the supported way to trigger a major-guild sweep: doing it
 from a second process contends with the bot for the SQLite write lock.
 """
 
@@ -8,9 +8,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from hall_monitor.discord_bot.cogs.admin.scripts import _loader, refresh_notability
-from hall_monitor.services import notability
-from hall_monitor.services.notability import RefreshSummary
+from hall_monitor.discord_bot.cogs.admin.scripts import _loader, refresh_major
+from hall_monitor.services import major_guilds
+from hall_monitor.services.major_guilds import RefreshSummary
 
 
 def _fake_ctx():
@@ -27,7 +27,7 @@ def _edits(message) -> list[str]:
 
 
 def test_script_is_discoverable():
-    assert "refresh_notability" in set(_loader.discover_scripts())
+    assert "refresh_major" in set(_loader.discover_scripts())
 
 
 def test_private_modules_are_not_scripts():
@@ -46,30 +46,30 @@ async def test_refresh_script_reports_the_summary(monkeypatch):
     async def fake_refresh(*, on_progress=None, exhaustive=False):
         await on_progress(1, 2)
         await on_progress(2, 2)
-        return RefreshSummary(evaluated=2, failed=0, notable=1, seconds=12.3)
+        return RefreshSummary(evaluated=2, failed=0, major=1, seconds=12.3)
 
-    monkeypatch.setattr(notability, "refresh_all", fake_refresh)
-    monkeypatch.setattr(notability, "is_refreshing", lambda: False)
+    monkeypatch.setattr(major_guilds, "refresh_all", fake_refresh)
+    monkeypatch.setattr(major_guilds, "is_refreshing", lambda: False)
 
     ctx, message = _fake_ctx()
-    await refresh_notability.main(ctx)
+    await refresh_major.main(ctx)
 
     edits = _edits(message)
     assert "2/2 guilds" in edits[-2]
     assert "12s" in edits[-1]
-    assert "2 guilds evaluated, 1 notable" in edits[-1]
+    assert "2 guilds evaluated, 1 major" in edits[-1]
     assert "failed" not in edits[-1], "a clean sweep shouldn't mention failures"
 
 
 async def test_refresh_script_surfaces_failures(monkeypatch):
     async def fake_refresh(*, on_progress=None, exhaustive=False):
-        return RefreshSummary(evaluated=8, failed=2, notable=3, seconds=5.0)
+        return RefreshSummary(evaluated=8, failed=2, major=3, seconds=5.0)
 
-    monkeypatch.setattr(notability, "refresh_all", fake_refresh)
-    monkeypatch.setattr(notability, "is_refreshing", lambda: False)
+    monkeypatch.setattr(major_guilds, "refresh_all", fake_refresh)
+    monkeypatch.setattr(major_guilds, "is_refreshing", lambda: False)
 
     ctx, message = _fake_ctx()
-    await refresh_notability.main(ctx)
+    await refresh_major.main(ctx)
     assert "2 failed" in _edits(message)[-1]
 
 
@@ -79,13 +79,13 @@ async def test_refresh_script_throttles_its_edits(monkeypatch):
     async def fake_refresh(*, on_progress=None, exhaustive=False):
         for done in range(1, 51):
             await on_progress(done, 50)
-        return RefreshSummary(evaluated=50, failed=0, notable=5, seconds=1.0)
+        return RefreshSummary(evaluated=50, failed=0, major=5, seconds=1.0)
 
-    monkeypatch.setattr(notability, "refresh_all", fake_refresh)
-    monkeypatch.setattr(notability, "is_refreshing", lambda: False)
+    monkeypatch.setattr(major_guilds, "refresh_all", fake_refresh)
+    monkeypatch.setattr(major_guilds, "is_refreshing", lambda: False)
 
     ctx, message = _fake_ctx()
-    await refresh_notability.main(ctx)
+    await refresh_major.main(ctx)
 
     # 50 progress callbacks, but the interval hasn't elapsed: only the
     # completion tick plus the final summary get through.
@@ -94,17 +94,17 @@ async def test_refresh_script_throttles_its_edits(monkeypatch):
 
 
 async def test_refresh_script_declines_when_one_is_running(monkeypatch):
-    monkeypatch.setattr(notability, "is_refreshing", lambda: True)
+    monkeypatch.setattr(major_guilds, "is_refreshing", lambda: True)
     called = False
 
     async def fake_refresh(*, on_progress=None, exhaustive=False):
         nonlocal called
         called = True
 
-    monkeypatch.setattr(notability, "refresh_all", fake_refresh)
+    monkeypatch.setattr(major_guilds, "refresh_all", fake_refresh)
 
     ctx, message = _fake_ctx()
-    await refresh_notability.main(ctx)
+    await refresh_major.main(ctx)
 
     assert not called, "must not start a second sweep"
     assert "already running" in ctx.reply.await_args.args[0]
@@ -113,25 +113,25 @@ async def test_refresh_script_declines_when_one_is_running(monkeypatch):
 
 async def test_refresh_script_handles_losing_the_race(monkeypatch):
     """is_refreshing was False at the check but the scheduler got in first."""
-    monkeypatch.setattr(notability, "is_refreshing", lambda: False)
+    monkeypatch.setattr(major_guilds, "is_refreshing", lambda: False)
 
     async def fake_refresh(*, on_progress=None, exhaustive=False):
         return None
 
-    monkeypatch.setattr(notability, "refresh_all", fake_refresh)
+    monkeypatch.setattr(major_guilds, "refresh_all", fake_refresh)
 
     ctx, message = _fake_ctx()
-    await refresh_notability.main(ctx)
+    await refresh_major.main(ctx)
     assert "already running" in _edits(message)[-1]
 
 
 # --------------------------------------------------------------------------
-# notability_breakdown
+# major_breakdown
 # --------------------------------------------------------------------------
 
 
-async def _cache(tag: str, notable: bool, **signals):
-    from hall_monitor.db.models import NotabilityCache
+async def _cache(tag: str, major: bool, **signals):
+    from hall_monitor.db.models import MajorGuildCache
 
     import json as _json
 
@@ -139,8 +139,8 @@ async def _cache(tag: str, notable: bool, **signals):
         "top25_average_online", "level_100_plus", "season_placement",
         "territory_ownership", "war_count", "force_override",
     )}
-    await NotabilityCache.create(
-        guild_tag=tag, is_notable=notable, signals_json=_json.dumps(full)
+    await MajorGuildCache.create(
+        guild_tag=tag, is_major=major, signals_json=_json.dumps(full)
     )
 
 
@@ -159,7 +159,7 @@ def _table(body: str) -> dict[str, tuple[int, int]]:
 
 
 async def test_breakdown_counts_any_versus_sole_cause(db):
-    from hall_monitor.discord_bot.cogs.admin.scripts import notability_breakdown
+    from hall_monitor.discord_bot.cogs.admin.scripts import major_breakdown
 
     await _cache("WYNN", True, level_100_plus=True)
     await _cache("AAAB", True, level_100_plus=True)
@@ -167,10 +167,10 @@ async def test_breakdown_counts_any_versus_sole_cause(db):
     await _cache("SMLL", False)
 
     ctx, _ = _fake_ctx()
-    await notability_breakdown.main(ctx)
+    await major_breakdown.main(ctx)
     body = ctx.reply.await_args.args[0]
 
-    assert "4 cached, 3 notable" in body
+    assert "4 cached, 3 major" in body
     table = _table(body)
     assert table["level_100_plus"] == (3, 2, 0)
     # top25 corroborates VETS but is never the sole reason for anything.
@@ -179,14 +179,14 @@ async def test_breakdown_counts_any_versus_sole_cause(db):
 
 
 async def test_breakdown_ranks_the_criterion_to_tighten_first(db):
-    from hall_monitor.discord_bot.cogs.admin.scripts import notability_breakdown
+    from hall_monitor.discord_bot.cogs.admin.scripts import major_breakdown
 
     await _cache("AAAB", True, season_placement=True)
     for tag in ("WYNN", "AAAC", "AAAD"):
         await _cache(tag, True, level_100_plus=True)
 
     ctx, _ = _fake_ctx()
-    await notability_breakdown.main(ctx)
+    await major_breakdown.main(ctx)
     body = ctx.reply.await_args.args[0]
 
     rows = [l for l in body.splitlines() if l.startswith(("level_", "season_"))]
@@ -195,16 +195,16 @@ async def test_breakdown_ranks_the_criterion_to_tighten_first(db):
 
 async def test_breakdown_treats_null_as_not_met(db):
     """A skipped signal is `null`, which must not be counted as satisfied."""
-    from hall_monitor.db.models import NotabilityCache
-    from hall_monitor.discord_bot.cogs.admin.scripts import notability_breakdown
+    from hall_monitor.db.models import MajorGuildCache
+    from hall_monitor.discord_bot.cogs.admin.scripts import major_breakdown
 
-    await NotabilityCache.create(
+    await MajorGuildCache.create(
         guild_tag="VETS",
-        is_notable=True,
+        is_major=True,
         signals_json='{"top25_average_online": true, "war_count": null}',
     )
     ctx, _ = _fake_ctx()
-    await notability_breakdown.main(ctx)
+    await major_breakdown.main(ctx)
     body = ctx.reply.await_args.args[0]
     # null == not evaluated: it counts as skipped, never as met.
     assert _table(body)["war_count"] == (0, 0, 1)
@@ -213,93 +213,93 @@ async def test_breakdown_treats_null_as_not_met(db):
 
 
 async def test_breakdown_lists_sole_cause_guilds(db):
-    from hall_monitor.discord_bot.cogs.admin.scripts import notability_breakdown
+    from hall_monitor.discord_bot.cogs.admin.scripts import major_breakdown
 
     await _cache("WYNN", True, level_100_plus=True)
     await _cache("AAAB", True, level_100_plus=True, war_count=True)
 
     ctx, _ = _fake_ctx()
-    await notability_breakdown.main(ctx, "level_100_plus")
+    await major_breakdown.main(ctx, "level_100_plus")
     body = ctx.reply.await_args.args[0]
-    assert "**1** guilds are notable on `level_100_plus` alone" in body
+    assert "**1** guilds are major on `level_100_plus` alone" in body
     assert "WYNN" in body and "AAAB" not in body
 
 
 async def test_breakdown_rejects_an_unknown_signal(db):
-    from hall_monitor.discord_bot.cogs.admin.scripts import notability_breakdown
+    from hall_monitor.discord_bot.cogs.admin.scripts import major_breakdown
 
     await _cache("WYNN", True, level_100_plus=True)
     ctx, _ = _fake_ctx()
-    await notability_breakdown.main(ctx, "wars_lol")
+    await major_breakdown.main(ctx, "wars_lol")
     assert "unknown signal" in ctx.reply.await_args.args[0]
 
 
 async def test_breakdown_says_so_when_the_cache_is_empty(db):
-    from hall_monitor.discord_bot.cogs.admin.scripts import notability_breakdown
+    from hall_monitor.discord_bot.cogs.admin.scripts import major_breakdown
 
     ctx, _ = _fake_ctx()
-    await notability_breakdown.main(ctx)
-    assert "refresh_notability" in ctx.reply.await_args.args[0]
+    await major_breakdown.main(ctx)
+    assert "refresh_major" in ctx.reply.await_args.args[0]
 
 
 # --------------------------------------------------------------------------
-# notability_table / notable_guilds
+# major_table / major_guilds
 # --------------------------------------------------------------------------
 
 
-async def test_table_and_notable_scripts_are_discoverable():
+async def test_table_and_major_scripts_are_discoverable():
     found = set(_loader.discover_scripts())
-    assert {"notability_table", "notable_guilds"} <= found
+    assert {"major_table", "major_guilds"} <= found
     assert "_signal_rows" not in found, "helpers must not be callable as scripts"
 
 
 async def test_table_writes_a_csv_of_every_guild(db):
-    from hall_monitor.discord_bot.cogs.admin.scripts import notability_table
+    from hall_monitor.discord_bot.cogs.admin.scripts import major_table
 
     await _cache("WYNN", False)
     await _cache("VETS", True, level_100_plus=True)
 
     ctx, _ = _fake_ctx()
-    await notability_table.main(ctx)
+    await major_table.main(ctx)
 
     body = ctx.reply.await_args.args[0]
-    assert "2 guilds, 1 notable" in body
+    assert "2 guilds, 1 major" in body
 
     attachment = ctx.reply.await_args.kwargs["file"]
     text = attachment.fp.getvalue().decode()
     header, *rows = text.strip().splitlines()
-    assert header.startswith("tag,notable,top25_average_online,level_100_plus")
+    assert header.startswith("tag,major,top25_average_online,level_100_plus")
     assert rows[0].startswith("VETS,true")   # ordered by tag
     assert rows[1].startswith("WYNN,false")
     assert "level_100_plus" in header
 
 
-async def test_table_can_restrict_to_notable(db):
-    from hall_monitor.discord_bot.cogs.admin.scripts import notability_table
+async def test_table_can_restrict_to_major(db):
+    from hall_monitor.discord_bot.cogs.admin.scripts import major_table
 
     await _cache("WYNN", False)
     await _cache("VETS", True, war_count=True)
 
     ctx, _ = _fake_ctx()
-    await notability_table.main(ctx, "notable")
+    await major_table.main(ctx, "major")
 
     text = ctx.reply.await_args.kwargs["file"].fp.getvalue().decode()
     assert "VETS" in text and "WYNN" not in text
-    assert ctx.reply.await_args.kwargs["file"].filename == "notable-guilds.csv"
+    assert ctx.reply.await_args.kwargs["file"].filename == "major-guilds.csv"
 
 
 async def test_table_leaves_an_unevaluated_signal_blank(db):
     """Blank must not read as false — it means nothing asked."""
-    from hall_monitor.db.models import NotabilityCache
-    from hall_monitor.discord_bot.cogs.admin.scripts import notability_table
+    from hall_monitor.db.models import MajorGuildCache
+    from hall_monitor.discord_bot.cogs.admin.scripts import major_table
 
-    await NotabilityCache.create(
+    await MajorGuildCache.create(
         guild_tag="VETS",
-        is_notable=True,
+        is_major=True,
         signals_json='{"level_100_plus": true, "war_count": null}',
     )
     ctx, _ = _fake_ctx()
-    await notability_table.main(ctx)
+    await major_table.main(ctx)
 
     text = ctx.reply.await_args.kwargs["file"].fp.getvalue().decode()
     row = [l for l in text.splitlines() if l.startswith("VETS")][0]
@@ -310,18 +310,18 @@ async def test_table_leaves_an_unevaluated_signal_blank(db):
     assert "unevaluated" in ctx.reply.await_args.args[0]
 
 
-async def test_notable_guilds_lists_only_the_notable(db):
-    from hall_monitor.discord_bot.cogs.admin.scripts import notable_guilds
+async def test_major_guilds_lists_only_the_major(db):
+    from hall_monitor.discord_bot.cogs.admin.scripts import major_guilds
 
     await _cache("WYNN", False)
     await _cache("VETS", True, level_100_plus=True)
     await _cache("AVO", True, war_count=True, level_100_plus=True)
 
     ctx, _ = _fake_ctx()
-    await notable_guilds.main(ctx)
+    await major_guilds.main(ctx)
     body = ctx.reply.await_args.args[0]
 
-    assert "**2 notable guilds**" in body
+    assert "**2 major guilds**" in body
     assert "1 qualify on a single signal" in body
     assert "VETS" in body and "AVO" in body
     assert "WYNN" not in body
@@ -329,16 +329,16 @@ async def test_notable_guilds_lists_only_the_notable(db):
     assert body.index("VETS") < body.index("AVO")
 
 
-async def test_notable_guilds_splits_across_messages(db):
+async def test_major_guilds_splits_across_messages(db):
     """A hundred-odd guilds is past Discord's 2000-char limit."""
-    from hall_monitor.discord_bot.cogs.admin.scripts import notable_guilds
+    from hall_monitor.discord_bot.cogs.admin.scripts import major_guilds
 
     for i in range(120):
         await _cache(f"G{i:03d}", True, level_100_plus=True)
 
     ctx, _ = _fake_ctx()
     ctx.send = AsyncMock()
-    await notable_guilds.main(ctx)
+    await major_guilds.main(ctx)
 
     sent = [ctx.reply.await_args.args[0]] + [
         call.args[0] for call in ctx.send.await_args_list
@@ -348,13 +348,13 @@ async def test_notable_guilds_splits_across_messages(db):
     assert "G119" in "".join(sent)
 
 
-async def test_notable_guilds_says_so_when_empty(db):
-    from hall_monitor.discord_bot.cogs.admin.scripts import notable_guilds
+async def test_major_guilds_says_so_when_empty(db):
+    from hall_monitor.discord_bot.cogs.admin.scripts import major_guilds
 
     await _cache("WYNN", False)
     ctx, _ = _fake_ctx()
-    await notable_guilds.main(ctx)
-    assert "no notable guilds" in ctx.reply.await_args.args[0]
+    await major_guilds.main(ctx)
+    assert "no major guilds" in ctx.reply.await_args.args[0]
 
 
 # --------------------------------------------------------------------------
@@ -474,7 +474,7 @@ async def test_standing_script_flags_a_role_it_cannot_manage(db, monkeypatch):
     bot, which makes every removal a silent 403."""
     from hall_monitor.db.models import Delegate, GuildRole
     from hall_monitor.discord_bot.cogs.admin.scripts import standing
-    from hall_monitor.services import notability as notability_service
+    from hall_monitor.services import major_guilds as major_service
 
     await Delegate.create(
         mc_uuid="u", discord_user_id=1, guild_tag="VETS", current_guild_tag="ANO"
@@ -482,10 +482,10 @@ async def test_standing_script_flags_a_role_it_cannot_manage(db, monkeypatch):
     role = _guild_role(position=99)  # dragged above the bot
     await GuildRole.create(guild_tag="VETS", discord_role_id=role.id)
 
-    async def notable(tag):
+    async def major(tag):
         return True
 
-    monkeypatch.setattr(notability_service, "is_notable", notable)
+    monkeypatch.setattr(major_service, "is_major", major)
     member = _standing_member(1, holding=[role])
     ctx, _ = _fake_ctx()
     ctx.guild = _guild_with(member, roles=[role], my_top_position=10)
@@ -504,17 +504,17 @@ async def test_standing_script_names_the_guild_each_slot_belongs_to(db, monkeypa
     bare `ownership` it reads exactly like the roster being wrong."""
     from hall_monitor.db.models import Delegate, GuildContact
     from hall_monitor.discord_bot.cogs.admin.scripts import standing
-    from hall_monitor.services import notability as notability_service
+    from hall_monitor.services import major_guilds as major_service
 
     delegate = await Delegate.create(
         mc_uuid="u", discord_user_id=1, guild_tag="VETS", current_guild_tag="VETS"
     )
     await GuildContact.create(guild_tag="ANO", role="ownership", delegate=delegate)
 
-    async def notable(tag):
+    async def major(tag):
         return True
 
-    monkeypatch.setattr(notability_service, "is_notable", notable)
+    monkeypatch.setattr(major_service, "is_major", major)
     ctx, _ = _fake_ctx()
     ctx.guild = _guild_with(_standing_member(1))
 
@@ -539,17 +539,17 @@ async def test_standing_script_needs_a_member(db):
 # --------------------------------------------------------------------------
 
 
-async def _season_cached(tag, name, ranks, *, notable=True):
+async def _season_cached(tag, name, ranks, *, major=True):
     import json as _json
 
-    from hall_monitor.db.models import NotabilityCache
-    from hall_monitor.services import notability as _n
+    from hall_monitor.db.models import MajorGuildCache
+    from hall_monitor.services import major_guilds as _n
 
-    await NotabilityCache.create(
+    await MajorGuildCache.create(
         guild_tag=tag,
         guild_name=name,
-        is_notable=notable,
-        signals_json=_json.dumps({"season_placement": notable}),
+        is_major=major,
+        signals_json=_json.dumps({"season_placement": major}),
         metrics_json=_json.dumps(
             {"season_ranks": ranks, "season_rules": _n.season_rules(ranks)}
         ),
@@ -558,11 +558,11 @@ async def _season_cached(tag, name, ranks, *, notable=True):
 
 async def test_season_script_separates_the_three_rules(db):
     """A great season years ago, a good one recently, and a steady record
-    all read as one `Y` in `notable_guilds`. They are not the same claim,
+    all read as one `Y` in `major_guilds`. They are not the same claim,
     and the count of guilds resting on each *alone* is what says which
     bound is doing the admitting."""
     from hall_monitor.discord_bot.cogs.admin.scripts import season
-    from hall_monitor.services import notability as _n
+    from hall_monitor.services import major_guilds as _n
 
     # Each guild is carried by exactly one rule, so the "alone" counts
     # have a single unambiguous answer.
@@ -603,7 +603,7 @@ async def test_season_script_shows_one_guilds_record(db):
 async def test_the_mean_rule_needs_a_placement_in_every_one_of_five(db):
     """A guild that turned up once and came second has a brilliant average
     over the season it attended, which isn't a steady record."""
-    from hall_monitor.services import notability as _n
+    from hall_monitor.services import major_guilds as _n
 
     assert not _n.season_rules([2, None, None, None, None])[_n.MEAN_LAST_5]
     assert _n.season_rules([2, 12, 20, 18, 15])[_n.MEAN_LAST_5]  # mean 13.4
@@ -612,7 +612,7 @@ async def test_the_mean_rule_needs_a_placement_in_every_one_of_five(db):
 async def test_a_dash_is_outside_the_top_100_not_a_bad_rank(db):
     """The boards are top-100, so absence has to stay distinguishable
     from a poor placement — averaging it as a number would be wrong."""
-    from hall_monitor.services import notability as _n
+    from hall_monitor.services import major_guilds as _n
 
     rules = _n.season_rules([None] * 10)
     assert not any(rules.values())

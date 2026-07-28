@@ -1,4 +1,4 @@
-"""Aggregate the 7 guild-notability signals into a single boolean.
+"""Aggregate the 7 major-guild signals into a single boolean.
 
 Signals
 -------
@@ -19,18 +19,18 @@ Signals
    board (the same bound as signal 1, and the same claim: near the top
    of what the board publishes), or top 15 on any *single* raid's
    ``<raid>SrGuilds`` board. See ``RAID_RULES``.
-7. **Force override** — a `ForceOverride(kind="notable", subject=tag)`
+7. **Force override** — a `ForceOverride(kind="major", subject=tag)`
    row with no expiry or an expiry in the future.
 
-Any single signal being true marks the guild notable. Every one is
+Any single signal being true marks the guild major. Every one is
 answered from bulk Wynnpool leaderboards, so a sweep costs a fixed ~20
 requests regardless of how many guilds it evaluates. Signals 4 and 5 rely
 on a property of top-N boards: while the board's floor sits below our
 threshold, a guild absent from it must be under that threshold. When that
 stops holding, ``external.guild_stats`` is the per-guild fallback.
 
-The scheduler refreshes every ``NOTABILITY_REFRESH_SECONDS`` (default
-3600 s); ``~script refresh_notability`` triggers the same sweep on demand.
+The scheduler refreshes every ``MAJOR_GUILD_REFRESH_SECONDS`` (default
+3600 s); ``~script refresh_major`` triggers the same sweep on demand.
 """
 
 import asyncio
@@ -42,7 +42,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 from hall_monitor import external
-from hall_monitor.db.models import Delegate, ForceOverride, NotabilityCache
+from hall_monitor.db.models import Delegate, ForceOverride, MajorGuildCache
 from hall_monitor.external import wynncraft, wynnpool
 from hall_monitor.services import guild_tag as tags, territory_history
 
@@ -141,14 +141,14 @@ class _BulkContext:
         self.folded_to_name.setdefault(tags.normalise(tag), name)
 
 
-async def is_notable(guild_tag: str) -> bool:
+async def is_major(guild_tag: str) -> bool:
     """Fast cache read; falls through to an inline single-guild evaluation
     if the cache doesn't know this tag yet."""
-    if await _has_active_notable_override(guild_tag):
+    if await _has_active_major_override(guild_tag):
         return True
-    cached = await NotabilityCache.get_or_none(guild_tag__iexact=guild_tag)
+    cached = await MajorGuildCache.get_or_none(guild_tag__iexact=guild_tag)
     if cached is not None:
-        return cached.is_notable
+        return cached.is_major
     return await _evaluate_and_cache_single(guild_tag)
 
 
@@ -158,7 +158,7 @@ class RefreshSummary:
 
     evaluated: int
     failed: int
-    notable: int
+    major: int
     seconds: float
 
 
@@ -176,7 +176,7 @@ ProgressCallback = Callable[[int, int], Awaitable[None]]
 async def refresh_all(
     *, on_progress: ProgressCallback | None = None
 ) -> RefreshSummary | None:
-    """Recompute notability for every candidate guild and update the cache.
+    """Recompute major-guild status for every candidate guild and update the cache.
 
     Candidates = the union of guilds visible on any Wynnpool leaderboard,
     guilds we already have Delegate rows for, and guilds with a force
@@ -196,7 +196,7 @@ async def refresh_all(
 
     """
     if _refresh_lock.locked():
-        logger.info("notability refresh already running; skipping this trigger")
+        logger.info("major-guild refresh already running; skipping this trigger")
         return None
     async with _refresh_lock:
         return await _refresh_all(on_progress)
@@ -214,53 +214,53 @@ async def _refresh_all(on_progress: "ProgressCallback | None" = None) -> Refresh
     }
     override_tags = {
         row["subject"]
-        for row in await ForceOverride.filter(kind="notable").values("subject")
+        for row in await ForceOverride.filter(kind="major").values("subject")
     }
     # Everything we've ever cached is a candidate, not just what's on a
     # board today. A guild that falls off every board — loses its last
     # territory, drops out of the raid top 100 — would otherwise never be
     # re-evaluated, and its row would keep whatever verdict it last had
-    # for good. That is how two guilds stayed notable on territory they
+    # for good. That is how two guilds stayed major on territory they
     # no longer held: the signal was fixed, and nothing recomputed them.
     #
     # It costs nothing. Every signal is answered from bulk data already
     # loaded, so a guild that's dropped off is a few dictionary lookups
     # that all come back false.
     cached_tags = {
-        row["guild_tag"] for row in await NotabilityCache.all().values("guild_tag")
+        row["guild_tag"] for row in await MajorGuildCache.all().values("guild_tag")
     }
     tags = set(context.tag_to_name) | delegate_tags | override_tags | cached_tags
 
     ordered = sorted(tags)
     await _learn_missing_names(context, ordered)
-    notable = 0
+    major = 0
     failed = 0
     for index, tag in enumerate(ordered, start=1):
         try:
             if await _evaluate_and_cache(tag, context):
-                notable += 1
+                major += 1
         except Exception:
             # One guild's API hiccup or write contention shouldn't cost us
             # the other ninety-nine; its cache row keeps its prior value.
             failed += 1
-            logger.exception("notability refresh failed for %s", tag)
+            logger.exception("major-guild refresh failed for %s", tag)
         if on_progress is not None:
             try:
                 await on_progress(index, len(ordered))
             except Exception:
                 # Reporting is a nicety; a broken callback must not cost
                 # us the sweep it's reporting on.
-                logger.exception("notability refresh progress callback failed")
+                logger.exception("major-guild refresh progress callback failed")
     summary = RefreshSummary(
         evaluated=len(tags) - failed,
         failed=failed,
-        notable=notable,
+        major=major,
         seconds=time.monotonic() - started,
     )
     logger.info(
-        "notability refresh: %d evaluated, %d notable, %d failed in %.1fs",
+        "major-guild refresh: %d evaluated, %d major, %d failed in %.1fs",
         summary.evaluated,
-        summary.notable,
+        summary.major,
         summary.failed,
         summary.seconds,
     )
@@ -282,7 +282,7 @@ async def _load_context() -> _BulkContext:
         # `guildTerritories` board. That board is a snapshot that can lag
         # badly — it credited two guilds with 61 and 57 territories while
         # the game said they held none — and a stale count here doesn't
-        # make a guild slightly wrong, it makes it notable.
+        # make a guild slightly wrong, it makes it major.
         wynncraft.territory_holdings(),
         wynncraft.get_seasons(),
     )
@@ -379,7 +379,7 @@ async def _season_boards(
       to one.
     - **A board that fails is an empty board, not a failed sweep.** One
       429 here used to abort the whole refresh — the `gather` had no
-      `return_exceptions` — which is how `~script refresh_notability`
+      `return_exceptions` — which is how `~script refresh_major`
       came back with "that broke on my end". An empty board keeps the
       list positionally aligned, so "the last five seasons" still means
       the last five; the guild simply doesn't place in the one we
@@ -435,7 +435,7 @@ async def _learn_missing_names(context: _BulkContext, candidates: list[str]) -> 
 
     remembered = {
         tags.normalise(row["guild_tag"]): row["guild_name"]
-        for row in await NotabilityCache.filter(guild_name__isnull=False).values(
+        for row in await MajorGuildCache.filter(guild_name__isnull=False).values(
             "guild_tag", "guild_name"
         )
     }
@@ -450,7 +450,7 @@ async def _learn_missing_names(context: _BulkContext, candidates: list[str]) -> 
             learned += 1
     if asked:
         logger.info(
-            "notability: %d candidate(s) off every board; asked Wynncraft, "
+            "major guilds: %d candidate(s) off every board; asked Wynncraft, "
             "learned %d name(s)",
             asked,
             learned,
@@ -506,7 +506,7 @@ async def _evaluate_and_cache(tag: str, context: _BulkContext) -> bool:
     signals = await _evaluate(tag, context)
     result = any(signals.values())
     defaults: dict[str, object] = {
-        "is_notable": result,
+        "is_major": result,
         "signals_json": json.dumps(signals),
         "metrics_json": json.dumps(_metrics(tag, context)),
         # Where the roster sorts this guild (services/roster.py). Written
@@ -516,11 +516,11 @@ async def _evaluate_and_cache(tag: str, context: _BulkContext) -> bool:
         "level_rank": _level_rank(tag, context),
     }
     # The name only appears on boards, so a guild the sweep can't see on
-    # one — a forced-notable tag, say — keeps whatever name we last knew
+    # one — a forced-major tag, say — keeps whatever name we last knew
     # rather than being blanked back to nothing.
     if (name := context.name_for(tag)) is not None:
         defaults["guild_name"] = name
-    await NotabilityCache.update_or_create(guild_tag=tag, defaults=defaults)
+    await MajorGuildCache.update_or_create(guild_tag=tag, defaults=defaults)
     return result
 
 
@@ -541,7 +541,7 @@ def _metrics(tag: str, context: _BulkContext) -> dict[str, float | None]:
     """The numbers behind the signals, for ranking guilds against each other.
 
     The signals answer "does this guild qualify"; these answer "by how
-    much". Nothing in notability itself needs them — a guild is notable
+    much". Nothing in the major-guild decision itself needs them — a guild is major
     on any single signal, and no amount of extra margin makes it more so
     — but they're the only way to order guilds when there are more
     qualifying than there are emote slots (:func:`strength`).
@@ -602,7 +602,7 @@ def strength(
     """How strongly a guild qualifies, as a sortable tuple. Bigger is stronger.
 
     First element is **how many signals it matched**, which is the
-    headline: a guild notable on four counts is more securely part of the
+    headline: a guild major on four counts is more securely part of the
     Hall than one scraping in on a single leaderboard. The rest break
     ties with the underlying numbers, signal by signal in
     :data:`SIGNAL_ORDER`.
@@ -654,7 +654,7 @@ async def strength_by_tag() -> dict[str, tuple[float, ...]]:
     actually measured.
     """
     by_tag = {}
-    for row in await NotabilityCache.all().values(
+    for row in await MajorGuildCache.all().values(
         "guild_tag", "signals_json", "metrics_json"
     ):
         try:
@@ -689,7 +689,7 @@ def reset_context_memo() -> None:
 async def _memoised_context() -> _BulkContext:
     """The bulk leaderboards, reused from the last sweep when they're fresh.
 
-    ``is_notable`` falls through to a single-guild evaluation on a cache
+    ``is_major`` falls through to a single-guild evaluation on a cache
     miss, and rebuilding the context there means twenty-odd sequential
     leaderboard fetches — on a request a player is waiting on in
     Minecraft. Picolimbo blocks that client's connection handling for the
@@ -711,8 +711,8 @@ async def _memoised_context() -> _BulkContext:
 async def _evaluate(tag: str, context: _BulkContext) -> dict[str, bool | None]:
     """Compute each signal for ``tag`` and return a labelled dict.
 
-    The dict is persisted verbatim to ``NotabilityCache.signals_json`` so a
-    janitor can see exactly why a guild is (or isn't) notable without
+    The dict is persisted verbatim to ``MajorGuildCache.signals_json`` so a
+    janitor can see exactly why a guild is (or isn't) major without
     re-running the refresh.
 
     Every signal is answered from bulk data the sweep already holds, so
@@ -742,7 +742,7 @@ async def _evaluate(tag: str, context: _BulkContext) -> dict[str, bool | None]:
         ),
         "war_count": _signal_war_count(wars),
         "guild_raids": any(raid_rules(tag, context).values()),
-        "force_override": await _has_active_notable_override(tag),
+        "force_override": await _has_active_major_override(tag),
     }
 
 
@@ -901,11 +901,11 @@ def _signal_war_count(wars: float | None) -> bool:
     return wars > _SIGNAL_5_MIN_WARS
 
 
-async def active_notable_overrides() -> dict[str, str]:
-    """Every tag currently forced notable: comparison key → as recorded.
+async def active_major_overrides() -> dict[str, str]:
+    """Every tag currently forced major: comparison key → as recorded.
 
     The bulk counterpart to the per-tag check below, for callers weighing
-    up a few hundred guilds at once — the roster asking :func:`is_notable`
+    up a few hundred guilds at once — the roster asking :func:`is_major`
     per guild would be two queries each for an answer two queries can give
     for all of them.
 
@@ -916,17 +916,17 @@ async def active_notable_overrides() -> dict[str, str]:
     now = datetime.now(timezone.utc)
     return {
         tags.normalise(row["subject"]): row["subject"]
-        for row in await ForceOverride.filter(kind="notable").values(
+        for row in await ForceOverride.filter(kind="major").values(
             "subject", "expires_at"
         )
         if row["expires_at"] is None or row["expires_at"] > now
     }
 
 
-async def _has_active_notable_override(tag: str) -> bool:
+async def _has_active_major_override(tag: str) -> bool:
     now = datetime.now(timezone.utc)
     override = await ForceOverride.filter(
-        kind="notable", subject__iexact=tag
+        kind="major", subject__iexact=tag
     ).first()
     if override is None:
         return False

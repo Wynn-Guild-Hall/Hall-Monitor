@@ -11,7 +11,7 @@ outside — Administrator doesn't waive it.
 import re
 
 from hall_monitor.db.models import GuildContact
-from hall_monitor.services import contacts, delegate_registry, guild_roles, notability
+from hall_monitor.services import contacts, delegate_registry, guild_roles, major_guilds
 
 _MENTION = re.compile(r"[<@!&>]")
 
@@ -63,8 +63,8 @@ async def main(ctx, *args: str) -> None:
 
     forced = await delegate_registry.forced_guild(member.id)
     represents = await delegate_registry.represented_guild(delegate)
-    notable = await notability.is_notable(represents)
-    standing = await delegate_registry.standing(delegate, notable=notable)
+    major = await major_guilds.is_major(represents)
+    standing = await delegate_registry.standing(delegate, major=major)
     role = await guild_roles.resolve_role(ctx.guild, represents)
     slots = await _slot_lines(delegate)
 
@@ -88,7 +88,7 @@ async def main(ctx, *args: str) -> None:
             [
                 f"**{member}** ({member.id})",
                 f"**represents:** `{represents}` "
-                f"({'notable' if notable else 'not notable'})"
+                f"({'major' if major else 'not major'})"
                 + (f" — forced; verified for `{delegate.guild_tag}`" if forced else ""),
                 f"**watch last saw:** `{delegate.current_guild_tag or 'no guild'}`",
                 f"**standing:** `{standing}`",

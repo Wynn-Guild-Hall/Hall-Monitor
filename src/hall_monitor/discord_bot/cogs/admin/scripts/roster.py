@@ -1,9 +1,9 @@
 """``~script roster`` — redraw the Current Guilds channel now.
 
-The same pass the hourly job runs after the reconcile: every notable
+The same pass the hourly job runs after the reconcile: every major
 guild, in level-board order, with its four contacts. It reads the
-notability cache rather than refreshing it, so a stale cache gives a
-stale roster — run `~script refresh_notability` first if that matters.
+major-guild cache rather than refreshing it, so a stale cache gives a
+stale roster — run `~script refresh_major` first if that matters.
 
 Anything in the channel that isn't one of the bot's tracked roster
 messages is deleted, which is what makes the first run tidy up whatever

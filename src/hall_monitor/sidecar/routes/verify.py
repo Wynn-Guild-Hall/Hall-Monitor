@@ -30,7 +30,7 @@ from hall_monitor.services import (
     discord_invites,
     expel,
     mc_command,
-    notability,
+    major_guilds,
     role_bits,
 )
 
@@ -129,13 +129,13 @@ async def _decide(request: Request, uuid: str, msg: str) -> tuple[dict, str]:
     player_guild = player.guild if player else None
     if player_guild is None or player_guild.rank not in delegate_registry.ELIGIBLE_RANKS:
         return (
-            _chat("You aren't chief or owner of a notable guild."),
+            _chat("You aren't chief or owner of a major guild."),
             f"chat: not eligible (rank={player_guild.rank if player_guild else None})",
         )
 
-    # Before notability, deliberately. An expelled guild can be perfectly
-    # notable — expulsion is about welcome, not significance — and telling
-    # a chief their guild "isn't notable" when the Hall voted it out sends
+    # Before the major-guild check, deliberately. An expelled guild can be perfectly
+    # major — expulsion is about welcome, not significance — and telling
+    # a chief their guild "isn't major" when the Hall voted it out sends
     # them off chasing leaderboards.
     if await expel.is_banned(player_guild.prefix):
         return (
@@ -146,10 +146,10 @@ async def _decide(request: Request, uuid: str, msg: str) -> tuple[dict, str]:
             f"chat: {player_guild.prefix} expelled",
         )
 
-    if not await notability.is_notable(player_guild.prefix):
+    if not await major_guilds.is_major(player_guild.prefix):
         return (
-            _chat(f"{player_guild.prefix} isn't a notable guild."),
-            f"chat: {player_guild.prefix} not notable",
+            _chat(f"{player_guild.prefix} isn't a major guild."),
+            f"chat: {player_guild.prefix} not major",
         )
 
     bot = getattr(request.app.state, "bot", None)

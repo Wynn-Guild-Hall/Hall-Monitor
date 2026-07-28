@@ -3,7 +3,7 @@
 The override doesn't say "they're playing over there", it says "they
 speak for this guild now", and everything keys off that single answer:
 the tag on their nickname, the colour they wear, which slots they may
-hold, and whose notability decides their standing.
+hold, and whose major-guild status decides their standing.
 """
 
 from datetime import datetime, timedelta, timezone
@@ -44,7 +44,7 @@ async def test_a_forced_representative_is_never_external(db):
 
     assert await delegate_registry.is_external(delegate) is False
     assert (
-        await delegate_registry.standing(delegate, notable=True)
+        await delegate_registry.standing(delegate, major=True)
         == delegate_registry.DELEGATE
     )
 
@@ -59,7 +59,7 @@ async def test_the_override_can_undo_a_wrong_external(db):
 
     assert await delegate_registry.is_external(delegate) is False
     assert (
-        await delegate_registry.standing(delegate, notable=True)
+        await delegate_registry.standing(delegate, major=True)
         == delegate_registry.DELEGATE
     )
 
@@ -67,7 +67,7 @@ async def test_the_override_can_undo_a_wrong_external(db):
 async def test_drifting_off_unforced_is_still_external(db):
     delegate = await _delegate(1, tag="VETS", currently="OTHR")
     assert (
-        await delegate_registry.standing(delegate, notable=True)
+        await delegate_registry.standing(delegate, major=True)
         == delegate_registry.EXTERNAL
     )
     assert await delegate_registry.represented_guild(delegate) == "VETS"
@@ -194,7 +194,7 @@ async def test_apply_now_settles_the_guild_they_moved_to(db, monkeypatch):
     which after the repoint is the one pass that no longer contains them —
     so a member forced to ANO got no ANO role and no error either."""
     from hall_monitor.discord_bot.cogs.force import guild as force_guild
-    from hall_monitor.services import athena_colour, guild_roles, notability
+    from hall_monitor.services import athena_colour, guild_roles, major_guilds
 
     monkeypatch.setattr(
         "hall_monitor.services.guild_roles.settings.delegate_role_id", 100
@@ -204,11 +204,11 @@ async def test_apply_now_settles_the_guild_they_moved_to(db, monkeypatch):
     async def unknown(guild_tag, *, urgent=False):
         return None
 
-    async def notable(tag):
+    async def major(tag):
         return True
 
     monkeypatch.setattr(athena_colour, "lookup", unknown)
-    monkeypatch.setattr(notability, "is_notable", notable)
+    monkeypatch.setattr(major_guilds, "is_major", major)
 
     vets = _role(1, "VETS")
     delegate_role = _role(100, "Guild Hall Delegate")
@@ -238,7 +238,7 @@ async def test_apply_now_says_when_it_changed_nothing(db, monkeypatch):
     """The failure that took three bugs to spot: a command replying with
     confident success while doing nothing at all."""
     from hall_monitor.discord_bot.cogs.force import guild as force_guild
-    from hall_monitor.services import athena_colour, notability
+    from hall_monitor.services import athena_colour, major_guilds
 
     monkeypatch.setattr(
         "hall_monitor.services.guild_roles.settings.delegate_role_id", 100
@@ -248,11 +248,11 @@ async def test_apply_now_says_when_it_changed_nothing(db, monkeypatch):
     async def unknown(guild_tag, *, urgent=False):
         return None
 
-    async def notable(tag):
+    async def major(tag):
         return True
 
     monkeypatch.setattr(athena_colour, "lookup", unknown)
-    monkeypatch.setattr(notability, "is_notable", notable)
+    monkeypatch.setattr(major_guilds, "is_major", major)
 
     vets = _role(1, "VETS")
     delegate_role = _role(100, "Guild Hall Delegate")

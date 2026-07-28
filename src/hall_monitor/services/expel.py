@@ -21,9 +21,9 @@ guild finds its own way back in:
 - **The join listener.** An invite minted *before* the ban is still live
   for its ten minutes, so the redemption is checked too and the member is
   removed on arrival (``cogs/listeners/on_join.py``).
-- **The roster.** A banned guild is not listed, whatever its notability
+- **The roster.** A banned guild is not listed, whatever its major-guild status
   says — expulsion is about welcome, not about significance, and a guild
-  can be both notable and unwelcome (``services/roster.py``).
+  can be both major and unwelcome (``services/roster.py``).
 - **The hourly sweep**, via :func:`enforce`. That's the backstop for the
   other four and for everything nobody thought of: a ``~force guild``
   pointed at a banned tag, a member who slipped in while the bot was

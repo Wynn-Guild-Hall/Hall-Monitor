@@ -2,7 +2,7 @@
 
 The one endpoint we consume is ``/cache/get/guildList``, which returns a
 row per guild — around 2 700 of them. We read the ``color`` field to seed
-the aesthetic Discord role for each notable guild (DESIGN.md §11).
+the aesthetic Discord role for each major guild (DESIGN.md §11).
 
 Two things about the payload worth not rediscovering: the guild *name*
 arrives as ``_id`` (Athena keys its cache by name), and a guild that never

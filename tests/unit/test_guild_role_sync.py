@@ -213,7 +213,7 @@ async def test_unknown_guild_gets_the_default_colour(db, athena):
 
 async def test_explicit_colour_overrides_athena(db, athena):
     """Relegation clears a guild's colour without this module needing to
-    know what notability is."""
+    know what major-guild status is."""
     guild = FakeGuild()
 
     await guild_roles.ensure_guild_role(guild, "VETS", colour_hex="#000000")
@@ -247,19 +247,19 @@ async def test_edit_failure_still_returns_the_role(db, athena):
 # --------------------------------------------------------------------------
 
 
-async def test_reconcile_colours_a_notable_guilds_role(db, athena):
+async def test_reconcile_colours_a_major_guilds_role(db, athena):
     role = _fake_role(1, "VETS", "#000000", members=[MagicMock()])
     guild = FakeGuild([role])
     await _owned("VETS", role)
 
     assert (
-        await guild_roles.reconcile_role(guild, "VETS", notable=True)
+        await guild_roles.reconcile_role(guild, "VETS", major=True)
         == guild_roles.RECOLOURED
     )
     assert role.edit.await_args.kwargs["colour"] == _as_colour(VISIBLE_RED)
 
 
-async def test_reconcile_greys_a_role_whose_guild_lost_notability(db, athena):
+async def test_reconcile_greys_a_role_whose_guild_lost_major(db, athena):
     """Members still wear it, so it isn't deleted — the colour going away
     says the same thing without breaking every past mention."""
     role = _fake_role(1, "VETS", VISIBLE_RED, members=[MagicMock()])
@@ -267,7 +267,7 @@ async def test_reconcile_greys_a_role_whose_guild_lost_notability(db, athena):
     await _owned("VETS", role)
 
     assert (
-        await guild_roles.reconcile_role(guild, "VETS", notable=False)
+        await guild_roles.reconcile_role(guild, "VETS", major=False)
         == guild_roles.GREYED
     )
     assert role.edit.await_args.kwargs["colour"] == discord.Colour.default()
@@ -280,7 +280,7 @@ async def test_reconcile_recycles_a_role_nobody_holds(db, athena):
     await _owned("VETS", role)
 
     assert (
-        await guild_roles.reconcile_role(guild, "VETS", notable=False)
+        await guild_roles.reconcile_role(guild, "VETS", major=False)
         == guild_roles.DELETED
     )
     role.delete.assert_awaited_once()
@@ -294,7 +294,7 @@ async def test_reconcile_keeps_an_empty_role_while_a_delegate_remains(db, athena
     await _owned("VETS", role)
     await Delegate.create(mc_uuid="u", discord_user_id=5, guild_tag="VETS")
 
-    await guild_roles.reconcile_role(guild, "VETS", notable=True)
+    await guild_roles.reconcile_role(guild, "VETS", major=True)
 
     role.delete.assert_not_awaited()
 
@@ -311,7 +311,7 @@ async def test_reconcile_keeps_an_empty_role_while_a_verification_is_in_flight(
         mc_uuid="u", guild_tag="VETS", roles_bits=1, discord_invite_code="abc"
     )
 
-    await guild_roles.reconcile_role(guild, "VETS", notable=True)
+    await guild_roles.reconcile_role(guild, "VETS", major=True)
 
     role.delete.assert_not_awaited()
 
@@ -322,7 +322,7 @@ async def test_reconcile_never_recycles_a_role_we_didnt_create(db, athena):
     guild = FakeGuild([role])  # no GuildRole row
 
     assert (
-        await guild_roles.reconcile_role(guild, "VETS", notable=False)
+        await guild_roles.reconcile_role(guild, "VETS", major=False)
         == guild_roles.GREYED
     )
     role.delete.assert_not_awaited()
@@ -334,7 +334,7 @@ async def test_reconcile_reports_nothing_to_do(db, athena):
     await _owned("VETS", role)
 
     assert (
-        await guild_roles.reconcile_role(guild, "VETS", notable=True)
+        await guild_roles.reconcile_role(guild, "VETS", major=True)
         == guild_roles.UNCHANGED
     )
     role.edit.assert_not_awaited()
@@ -342,7 +342,7 @@ async def test_reconcile_reports_nothing_to_do(db, athena):
 
 async def test_reconcile_on_a_guild_with_no_role_does_nothing(db, athena):
     assert (
-        await guild_roles.reconcile_role(FakeGuild(), "VETS", notable=True)
+        await guild_roles.reconcile_role(FakeGuild(), "VETS", major=True)
         == guild_roles.ABSENT
     )
 
@@ -352,7 +352,7 @@ async def test_reconcile_forgets_a_role_deleted_by_hand(db, athena):
     await GuildRole.create(guild_tag="VETS", discord_role_id=999)
 
     assert (
-        await guild_roles.reconcile_role(guild, "VETS", notable=True)
+        await guild_roles.reconcile_role(guild, "VETS", major=True)
         == guild_roles.ABSENT
     )
     assert await GuildRole.all().count() == 0
@@ -367,6 +367,6 @@ async def test_a_failed_delete_leaves_the_record_intact(db, athena):
     guild = FakeGuild([role])
     await _owned("VETS", role)
 
-    await guild_roles.reconcile_role(guild, "VETS", notable=False)
+    await guild_roles.reconcile_role(guild, "VETS", major=False)
 
     assert await GuildRole.all().count() == 1

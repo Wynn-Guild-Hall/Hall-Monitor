@@ -468,11 +468,11 @@ async def test_clear_on_an_empty_slot_is_a_no_op(db):
 
 
 # --------------------------------------------------------------------------
-# sync_contact_roles — notability gating
+# sync_contact_roles — major-guild status gating
 # --------------------------------------------------------------------------
 
 
-async def test_sync_withdraws_contact_roles_from_a_guild_that_lost_notability(db):
+async def test_sync_withdraws_contact_roles_from_a_guild_that_lost_major(db):
     """The contact channels are for guilds currently in the Hall."""
     guild = FakeGuild()
     delegate = await _delegate("uuid-a", 1)

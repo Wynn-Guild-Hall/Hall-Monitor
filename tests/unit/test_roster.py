@@ -11,7 +11,7 @@ from hall_monitor.db.models import (
     ForceOverride,
     GuildContact,
     GuildEmote,
-    NotabilityCache,
+    MajorGuildCache,
     RosterMessage,
 )
 from hall_monitor.services import delegate_registry, roster
@@ -103,10 +103,10 @@ class FakeGuild:
         return member
 
 
-async def _cache(tag, *, notable=True, name=None, rank=None):
-    return await NotabilityCache.create(
+async def _cache(tag, *, major=True, name=None, rank=None):
+    return await MajorGuildCache.create(
         guild_tag=tag,
-        is_notable=notable,
+        is_major=major,
         signals_json="{}",
         guild_name=name,
         level_rank=rank,
@@ -146,17 +146,17 @@ async def test_unranked_guilds_sort_last_alphabetically(db):
     assert [one.tag for one in await roster.listed_guilds()] == ["VETS", "BBB", "ZZZ"]
 
 
-async def test_only_notable_guilds_are_listed(db):
-    await _cache("VETS", notable=True)
-    await _cache("WYNN", notable=False)
+async def test_only_major_guilds_are_listed(db):
+    await _cache("VETS", major=True)
+    await _cache("WYNN", major=False)
 
     assert [one.tag for one in await roster.listed_guilds()] == ["VETS"]
 
 
 async def test_a_forced_guild_appears_before_its_first_sweep(db):
-    """`~force notable NEWG 3mo` has to show up now — an entry that waits
+    """`~force major NEWG 3mo` has to show up now — an entry that waits
     an hour reads as the command not having worked."""
-    await ForceOverride.create(kind="notable", subject="NEWG", expires_at=None)
+    await ForceOverride.create(kind="major", subject="NEWG", expires_at=None)
 
     assert [one.tag for one in await roster.listed_guilds()] == ["NEWG"]
 
@@ -164,9 +164,9 @@ async def test_a_forced_guild_appears_before_its_first_sweep(db):
 async def test_an_expired_force_doesnt_keep_a_guild_listed(db):
     from datetime import datetime, timedelta, timezone
 
-    await _cache("OLDG", notable=False)
+    await _cache("OLDG", major=False)
     await ForceOverride.create(
-        kind="notable",
+        kind="major",
         subject="OLDG",
         expires_at=datetime.now(timezone.utc) - timedelta(days=1),
     )
@@ -178,7 +178,7 @@ async def test_a_guild_is_listed_once_whatever_its_spelling(db):
     """`VETS` and `vets` are one guild; printing both would have the room
     reading two entries for the same people."""
     await _cache("VETS", rank=3, name="Returners")
-    await ForceOverride.create(kind="notable", subject="vets", expires_at=None)
+    await ForceOverride.create(kind="major", subject="vets", expires_at=None)
 
     listed = await roster.listed_guilds()
 
@@ -239,7 +239,7 @@ async def test_our_banner_is_found_by_id_not_by_name(db):
 
 
 async def test_a_guild_outside_the_emote_budget_wears_the_placeholder(db):
-    """Far more notable guilds than emote slots, so most of the roster
+    """Far more major guilds than emote slots, so most of the roster
     sits on the shared placeholder permanently."""
     guild = FakeGuild(emojis=[FakeEmoji(roster.PLACEHOLDER_EMOTE_NAME, 5)])
 
@@ -582,7 +582,7 @@ async def test_a_leaving_guest_is_left_alone(db, monkeypatch):
 
 
 async def test_every_force_command_redraws_the_roster(db, monkeypatch):
-    """`~force guild` and `~force notable` shipped without a hook, and the
+    """`~force guild` and `~force major` shipped without a hook, and the
     roster silently went stale. The group owns it now, so a sub-command
     added later can't repeat that."""
     from hall_monitor.discord_bot.cogs import force

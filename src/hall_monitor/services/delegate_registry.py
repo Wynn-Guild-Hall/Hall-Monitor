@@ -173,7 +173,7 @@ async def represented_guild(delegate: Delegate) -> str:
     replaces it outright — the janitor is asserting who they represent,
     and everything downstream follows from that single answer: the tag on
     their nickname, the colour they wear, which guild's contact slots they
-    may hold, and whose notability decides their standing.
+    may hold, and whose major-guild status decides their standing.
 
     The override can't live in ``current_guild_tag``: the watch rewrites
     that column every hour from Wynncraft, so a forced value stored there
@@ -202,15 +202,15 @@ async def is_external(delegate: Delegate) -> bool:
     return not tags.matches(delegate.current_guild_tag, delegate.guild_tag)
 
 
-async def standing(delegate: Delegate, *, notable: bool) -> str:
+async def standing(delegate: Delegate, *, major: bool) -> str:
     """Which of the three standing roles this delegate should be wearing.
 
-    Moving guilds outranks the guild's own notability: a rep who's left
+    Moving guilds outranks the guild's own major-guild status: a rep who's left
     can't be promoted back by their old guild having a good month.
     """
     if await is_external(delegate):
         return EXTERNAL
-    return DELEGATE if notable else RELEGATE
+    return DELEGATE if major else RELEGATE
 
 
 # How long a delegate may go unchecked before it's worth telling someone.

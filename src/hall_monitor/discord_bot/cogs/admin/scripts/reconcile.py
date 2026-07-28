@@ -1,11 +1,11 @@
-"""``~script reconcile`` — settle roles against notability without waiting.
+"""``~script reconcile`` — settle roles against major-guild status without waiting.
 
 The same pass the hourly job runs: contact roles withdrawn from guilds
-that aren't notable and handed back to the ones that are, guild roles
+that aren't major and handed back to the ones that are, guild roles
 recoloured or greyed, and spent guild roles recycled.
 
-It reads the notability cache rather than refreshing it, so a stale cache
-gives a stale answer — run `~script refresh_notability` first if that
+It reads the major-guild cache rather than refreshing it, so a stale cache
+gives a stale answer — run `~script refresh_major` first if that
 matters.
 """
 

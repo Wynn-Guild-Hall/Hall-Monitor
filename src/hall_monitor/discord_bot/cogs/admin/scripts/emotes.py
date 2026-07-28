@@ -2,7 +2,7 @@
 
 Without an argument: the same pass the hourly job runs after the roster,
 and the one a boost change triggers. Mint banners for as many of the most
-strongly notable guilds as there are free emote slots, evict the ones
+strongly major guilds as there are free emote slots, evict the ones
 that have dropped below the line, and put the same image on each guild's
 role as its display icon where the boost level allows one.
 
@@ -16,7 +16,7 @@ the usual re-check window. Guilds redesign about twice a year, so polling
 for it often would be thousands of requests a year to catch a handful of
 events — this is the path for when somebody has already noticed one.
 
-Reads the notability cache rather than refreshing it, so both the
+Reads the major-guild cache rather than refreshing it, so both the
 ordering and the count come from whatever the last sweep decided.
 """
 
@@ -75,7 +75,7 @@ async def _refresh_one(ctx, wanted: str) -> None:
         one for one in await roster.listed_guilds() if tags.matches(one.tag, wanted)
     ]
     if not listed:
-        await ctx.reply(f"`{wanted}` isn't a notable guild I know about.")
+        await ctx.reply(f"`{wanted}` isn't a major guild I know about.")
         return
     tag = listed[0].tag
 
@@ -83,7 +83,7 @@ async def _refresh_one(ctx, wanted: str) -> None:
         await ctx.reply(
             f"`{tag}` doesn't hold one of the emote slots, so there's no banner "
             "to refresh — it wears the blank one. It gets a real banner by "
-            "climbing the notability ranking, or by the server gaining a boost."
+            "climbing the major-guild ranking, or by the server gaining a boost."
         )
         return
 

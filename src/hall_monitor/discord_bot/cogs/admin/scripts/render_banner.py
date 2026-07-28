@@ -26,15 +26,15 @@ async def main(ctx, *args: str) -> None:
     listed = [one for one in await roster.listed_guilds() if tags.matches(one.tag, wanted)]
     if not listed:
         await ctx.reply(
-            f"`{wanted}` isn't a notable guild I know about — "
-            "`~script refresh_notability` first if it should be."
+            f"`{wanted}` isn't a major guild I know about — "
+            "`~script refresh_major` first if it should be."
         )
         return
     one = listed[0]
     if tags.matches(one.name, one.tag):
         await ctx.reply(
             f"I don't have a full name for `{one.tag}`, and Wynnpool's banner "
-            "endpoint only takes names. `~script refresh_notability` resolves it."
+            "endpoint only takes names. `~script refresh_major` resolves it."
         )
         return
 

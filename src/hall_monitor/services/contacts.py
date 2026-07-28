@@ -236,10 +236,10 @@ async def sync_contact_roles(
 
     Two different situations, resolved differently on purpose.
 
-    **The guild isn't notable.** It has dropped out of the Hall for now,
+    **The guild isn't major.** It has dropped out of the Hall for now,
     so its contact roles are withdrawn and handed back — to the same
     people — when it returns. The ``GuildContact`` rows are left exactly
-    as they are: notability decides who may *use* a contact role, the row
+    as they are: major-guild status decides who may *use* a contact role, the row
     decides who holds the slot, and clearing them would cost a returning
     guild four re-verifications and lose the record of who to hand the
     roles back to. Nobody is kicked for it either — the kick is what
@@ -256,9 +256,9 @@ async def sync_contact_roles(
     nothing to do says so.
     """
     reason = reason or (
-        f"hall-monitor: {guild_tag} is notable"
+        f"hall-monitor: {guild_tag} is major"
         if granted
-        else f"hall-monitor: {guild_tag} is no longer notable"
+        else f"hall-monitor: {guild_tag} is no longer major"
     )
 
     changed = 0
@@ -387,7 +387,7 @@ async def _vacate(row: GuildContact, *, discord_guild: discord.Guild | None) -> 
     - **Not a kick.** The kick is for losing a slot to somebody else
       (:func:`_release`). Moving guilds already costs a representative
       their standing and their colour; it doesn't cost them the room.
-    - **Not the non-notable path.** A dormant guild keeps its rows, and
+    - **Not the non-major path.** A dormant guild keeps its rows, and
       the same four people get their roles back when it returns — nobody
       there has stopped being who they were.
 

@@ -21,7 +21,7 @@ from hall_monitor.services import (
     delegate_registry,
     expel,
     expel_motion,
-    notability,
+    major_guilds,
 )
 
 CONTACT_ROLE_IDS = {"events": 200, "housing": 201, "warring": 202, "ownership": 203}
@@ -99,11 +99,11 @@ def configured(monkeypatch):
 
 
 @pytest.fixture
-def notable(monkeypatch):
+def major(monkeypatch):
     async def always(tag):
         return True
 
-    monkeypatch.setattr(notability, "is_notable", always)
+    monkeypatch.setattr(major_guilds, "is_major", always)
 
 
 @pytest.fixture
@@ -145,7 +145,7 @@ class _Guild:
 # --------------------------------------------------------------------------
 
 
-async def test_force_expel_bars_and_removes(db, guild, notable):
+async def test_force_expel_bars_and_removes(db, guild, major):
     target = await _delegate(1, "OTHR")
     guild.add_member(1)
     await GuildContact.create(guild_tag="OTHR", role="ownership", delegate=target)
@@ -177,7 +177,7 @@ async def test_force_expel_refuses_a_guild_already_barred(db, guild):
     assert await ExpelBan.all().count() == 1
 
 
-async def test_force_expel_closes_an_open_motion(db, guild, notable):
+async def test_force_expel_closes_an_open_motion(db, guild, major):
     """Leaving it open would put live buttons under a vote about a guild
     that has already gone — and one that could still "carry" later."""
     await _delegate(1, "VETS")
@@ -213,7 +213,7 @@ async def test_a_superseded_motion_reads_as_neither_carried_nor_lapsed(db):
     assert "carried" not in body and "lapsed" not in body
 
 
-async def test_unforce_expel_lifts_the_ban_and_nothing_else(db, guild, notable):
+async def test_unforce_expel_lifts_the_ban_and_nothing_else(db, guild, major):
     delegate = await _delegate(1, "OTHR")
     guild.add_member(1)
     await force_expel.bar(_ctx(guild), "OTHR")
@@ -248,7 +248,7 @@ def wynncraft_says(monkeypatch):
     return answer
 
 
-async def test_force_rep_repoints_a_confirmed_chief(db, guild, notable, wynncraft_says):
+async def test_force_rep_repoints_a_confirmed_chief(db, guild, major, wynncraft_says):
     delegate = await _delegate(1, "VETS", uuid="u1")
     member = guild.add_member(1)
     await GuildContact.create(guild_tag="VETS", role="ownership", delegate=delegate)
@@ -287,7 +287,7 @@ async def test_force_rep_refuses_an_ordinary_member(db, guild, wynncraft_says):
     assert "chief or owner of any guild" in reply
 
 
-async def test_force_rep_drops_a_force_guild_override(db, guild, notable, wynncraft_says):
+async def test_force_rep_drops_a_force_guild_override(db, guild, major, wynncraft_says):
     """`~force guild` sits in front of the row, so leaving one would make
     this command appear to have done nothing at all."""
     await _delegate(1, "VETS", uuid="u1")
@@ -319,7 +319,7 @@ async def test_force_rep_on_a_non_delegate_says_so(db, guild):
     )
 
 
-async def test_force_rep_reports_the_end_state_it_applied(db, guild, notable, wynncraft_says):
+async def test_force_rep_reports_the_end_state_it_applied(db, guild, major, wynncraft_says):
     """Stage 10's structural fix: a command whose effect only shows up at
     the next reconcile is indistinguishable from one that did nothing."""
     await _delegate(1, "VETS", uuid="u1")
@@ -482,7 +482,9 @@ async def test_reload_cogs_names_the_ones_that_failed(db):
     bot = MagicMock()
 
     async def reload(name):
-        if name.endswith("notable"):
+        # Fully qualified: `endswith("major")` also catches
+        # `scripts.refresh_major`, which would make this assert two.
+        if name.endswith("cogs.force.major"):
             raise RuntimeError("boom")
         if name.endswith("_loader"):
             raise discord_commands.ExtensionNotLoaded(name)
@@ -495,7 +497,7 @@ async def test_reload_cogs_names_the_ones_that_failed(db):
 
     reply = ctx.reply.await_args.args[0]
     assert "1 failed and kept their old code" in reply
-    assert "`notable`" in reply
+    assert "`major`" in reply
 
 
 async def test_reload_cogs_is_quiet_when_everything_reloads(db):

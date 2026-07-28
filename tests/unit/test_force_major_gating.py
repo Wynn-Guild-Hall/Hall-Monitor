@@ -32,3 +32,24 @@ def test_year_rejected_for_janitor():
 
 def test_monitor_has_no_ceiling():
     assert gating_rejection(timedelta(days=3650), is_monitor=True) is None
+
+
+async def test_notable_survives_as_an_alias():
+    """The Hall calls these major guilds now, but `~force notable` is in
+    janitors' fingers and in older instructions written in the Discord.
+    An alias costs nothing; the help listing shows only `major`, so
+    nothing teaches the old name to anybody new."""
+    import asyncio
+
+    from hall_monitor.discord_bot import build_bot
+
+    async def tree():
+        bot = build_bot()
+        await bot.load_extension("hall_monitor.discord_bot.cogs.force")
+        return bot
+
+    bot = await tree()
+    force = bot.get_command("force")
+    assert force.get_command("major") is force.get_command("notable")
+    assert bot.get_command("unforce").get_command("notable") is not None
+    assert "notable" not in {c.name for c in force.commands}, "listed as `major`"

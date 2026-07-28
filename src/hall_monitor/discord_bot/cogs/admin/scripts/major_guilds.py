@@ -1,4 +1,4 @@
-"""``~script notable_guilds`` — the guilds that qualified, and on what.
+"""``~script major_guilds`` — the guilds that qualified, and on what.
 
 Short enough to read in the channel, unlike the full table. Each row
 shows which signals carried the guild, so a run of guilds riding on one
@@ -9,10 +9,10 @@ from . import _signal_rows
 
 
 async def main(ctx, *args: str) -> None:
-    rows = [row for row in await _signal_rows.load() if row.notable]
+    rows = [row for row in await _signal_rows.load() if row.major]
     if not rows:
         await ctx.reply(
-            "no notable guilds cached — run `~script refresh_notability` first."
+            "no major guilds cached — run `~script refresh_major` first."
         )
         return
 
@@ -37,7 +37,7 @@ async def main(ctx, *args: str) -> None:
 
     sole = sum(1 for row in rows if len(row.met) == 1)
     header = (
-        f"**{len(rows)} notable guilds** — {sole} qualify on a single signal, "
+        f"**{len(rows)} major guilds** — {sole} qualify on a single signal, "
         f"sorted fewest-signals first.\n"
     )
     blocks = _signal_rows.chunk(lines, prefix=header)

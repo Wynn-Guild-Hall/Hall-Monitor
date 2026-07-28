@@ -13,16 +13,16 @@ the signal stays false for everyone until the history spans the full
 window — five days after this first ran.
 """
 
-from hall_monitor.services import guild_tag as tags, notability, territory_history
+from hall_monitor.services import guild_tag as tags, major_guilds, territory_history
 
 
 async def main(ctx, *args: str) -> None:
-    window = await territory_history.load(notability.MIN_TERRITORIES)
+    window = await territory_history.load(major_guilds.MIN_TERRITORIES)
 
     if not window.sweeps:
         await ctx.reply(
-            "no territory readings yet — they're recorded by the notability "
-            "sweep, so run `~script refresh_notability` or wait for the hour."
+            "no territory readings yet — they're recorded by the major-guild "
+            "sweep, so run `~script refresh_major` or wait for the hour."
         )
         return
 
@@ -43,7 +43,7 @@ async def main(ctx, *args: str) -> None:
             f"{window.line(tag)}\n"
             f"_{window.sweeps} readings, {state}. Needs "
             f"{territory_history.SUSTAINED_FRACTION:.0%} of readings above "
-            f"{notability.MIN_TERRITORIES}._"
+            f"{major_guilds.MIN_TERRITORIES}._"
         )
         return
 
@@ -65,6 +65,6 @@ async def main(ctx, *args: str) -> None:
     head = f"guild    above/of    %    range  ok"
     body = "\n".join([head, *rows[:40]])
     await ctx.reply(
-        f"**Territory held above {notability.MIN_TERRITORIES}** across "
+        f"**Territory held above {major_guilds.MIN_TERRITORIES}** across "
         f"{window.sweeps} readings — {state}.\n```\n{body}\n```"
     )

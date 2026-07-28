@@ -83,7 +83,7 @@ async def ensure_guild_role(
     strictly alone — no edit, no request, no audit-log entry every hour.
 
     ``colour_hex`` overrides the Athena lookup, which is how relegation
-    clears a guild's colour without teaching this module about notability.
+    clears a guild's colour without teaching this module about major_guilds.
 
     Only the colour and the mention flag are ever written. The **name is
     left alone** once the role exists, so an operator is free to decorate
@@ -121,7 +121,7 @@ async def resolve_role(
 
 
 async def reconcile_role(
-    discord_guild: discord.Guild, guild_tag: str, *, notable: bool
+    discord_guild: discord.Guild, guild_tag: str, *, major: bool
 ) -> str:
     """Bring one guild's role in line with the Hall, and recycle it if spent.
 
@@ -132,10 +132,10 @@ async def reconcile_role(
       lose and no history worth keeping, and the next join recreates it —
       `ensure_guild_role` is create-on-demand — so leaving it would just
       spend one of Discord's 250 role slots on nothing.
-    - **Greyed.** The guild isn't notable but people still wear the role.
+    - **Greyed.** The guild isn't major but people still wear the role.
       Deleting it would blank every past `@TAG` in the channel history to
       `@deleted-role`; the colour going away says the same thing reversibly.
-    - **Recoloured.** Notable, so it carries the Athena hue.
+    - **Recoloured.** Major, so it carries the Athena hue.
 
     A role we didn't create is never deleted, only recoloured — a role
     adopted by name might be somebody's own, and by the time you find out
@@ -153,7 +153,7 @@ async def reconcile_role(
 
     colour = (
         _colour(await athena_colour.colour_for(guild_tag))
-        if notable
+        if major
         else discord.Colour.default()
     )
     changed = await _apply(
@@ -161,14 +161,14 @@ async def reconcile_role(
         colour,
         guild_tag=guild_tag,
         reason=(
-            f"hall-monitor: {guild_tag} is notable"
-            if notable
-            else f"hall-monitor: {guild_tag} is no longer notable"
+            f"hall-monitor: {guild_tag} is major"
+            if major
+            else f"hall-monitor: {guild_tag} is no longer major"
         ),
     )
     if not changed:
         return UNCHANGED
-    return RECOLOURED if notable else GREYED
+    return RECOLOURED if major else GREYED
 
 
 async def forget_role_icons() -> int:

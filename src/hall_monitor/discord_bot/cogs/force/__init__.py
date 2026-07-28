@@ -21,10 +21,10 @@ class ForceGroup(commands.Cog):
         """Redraw the roster after any force command that ran cleanly.
 
         Every `~force`/`~unforce` moves something the roster prints —
-        which guild is notable, who represents it, who holds its slots —
+        which guild is major, who represents it, who holds its slots —
         so the hook belongs on the group rather than on each sub-command.
         Hooking them one at a time is how `~force guild` and
-        `~force notable` shipped without one: the roster went stale and
+        `~force major` shipped without one: the roster went stale and
         the command said nothing was wrong. This way a sub-command added
         later, including the two Stage 14 and 15 still owe, is covered
         without anyone remembering to.
@@ -49,13 +49,13 @@ class ForceGroup(commands.Cog):
 
 
 async def setup(bot: commands.Bot) -> None:
-    from . import assign, expel, guild, notable, observer, rep
+    from . import assign, expel, guild, major, observer, rep
 
     cog = ForceGroup(bot)
     # Each sibling module attaches its `~force <name>` and `~unforce <name>` pair.
     # `rep` is the exception with no `~unforce`: it rewrites the row rather
     # than sitting in front of it, and there's no remembered previous guild
     # to go back to. Re-running it is the undo.
-    for module in (assign, notable, guild, observer, expel, rep):
+    for module in (assign, major, guild, observer, expel, rep):
         module.register(cog)
     await bot.add_cog(cog)

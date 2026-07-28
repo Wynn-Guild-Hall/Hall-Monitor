@@ -1,7 +1,7 @@
 """The Current Guilds channel — a bot-maintained list of the whole Hall.
 
 One channel, posts by nobody but this bot, listing every guild currently
-notable with its four contacts. It's the answer to "who do I ask about
+major with its four contacts. It's the answer to "who do I ask about
 housing in Sequoia?" without anyone having to know a delegate first, and
 it's the one place the Hall is legible from outside a DM.
 
@@ -28,9 +28,9 @@ here:
 
 The ordering is Wynnpool's guild-level board, highest first, with guilds
 absent from it after the ranked ones alphabetically. Both the rank and
-the guild's full name are read from ``NotabilityCache``, written by the
+the guild's full name are read from ``MajorGuildCache``, written by the
 hourly sweep — so rendering the roster costs no third-party request at
-all, and the ordering is exactly as fresh as the notability behind it.
+all, and the ordering is exactly as fresh as the major-guild status behind it.
 """
 
 import asyncio
@@ -43,7 +43,7 @@ from hall_monitor.config import settings
 from hall_monitor.db.models import (
     Delegate,
     GuildEmote,
-    NotabilityCache,
+    MajorGuildCache,
     RosterMessage,
 )
 from hall_monitor.services import (
@@ -51,7 +51,7 @@ from hall_monitor.services import (
     delegate_registry,
     expel,
     guild_tag as tags,
-    notability,
+    major_guilds,
 )
 
 logger = logging.getLogger(__name__)
@@ -151,18 +151,18 @@ class ListedGuild:
 async def listed_guilds() -> list[ListedGuild]:
     """Every guild the roster lists, in the order it lists them.
 
-    Candidates come from the notability cache and from live ``notable``
+    Candidates come from the major-guild cache and from live ``major``
     force overrides — a guild a janitor has just forced has no cache row
     until the next sweep, and waiting an hour to appear would read as the
     command not having worked.
 
     Deliberately *only* those two sources, and answered in bulk rather
-    than by asking :func:`notability.is_notable` per guild: that call
+    than by asking :func:`major_guilds.is_major` per guild: that call
     falls through to a live evaluation on a cache miss, and a roster
     render is not the place to discover a guild needs twenty leaderboard
     fetches. Two queries settle the lot.
 
-    Expelled guilds are then removed, whatever their notability says. The
+    Expelled guilds are then removed, whatever their major-guild status says. The
     two are different questions — a guild the Hall voted out can be as
     significant as it ever was — and this channel is a list of who's *in*
     the Hall, not of who matters in Wynncraft (DESIGN.md §16).
@@ -172,17 +172,17 @@ async def listed_guilds() -> list[ListedGuild]:
     # for display, cache before override, since the cache carries
     # Wynncraft's own capitalisation and the override carries a janitor's.
     cached: dict[str, dict] = {}
-    for row in await NotabilityCache.all().values(
-        "guild_tag", "guild_name", "level_rank", "is_notable"
+    for row in await MajorGuildCache.all().values(
+        "guild_tag", "guild_name", "level_rank", "is_major"
     ):
         cached.setdefault(tags.normalise(row["guild_tag"]), row)
-    forced = await notability.active_notable_overrides()
+    forced = await major_guilds.active_major_overrides()
     banned = await expel.banned_tags()
 
     listed = []
     for folded in {**forced, **cached}:
         row = cached.get(folded)
-        if not (folded in forced or (row and row["is_notable"])):
+        if not (folded in forced or (row and row["is_major"])):
             continue
         if folded in banned:
             continue

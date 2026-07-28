@@ -10,8 +10,8 @@ vote from any of its representatives replaces the earlier one. The ballot
 says so when it happens — a representative discovering by accident that a
 colleague overrode them is worse than being told.
 
-**The electorate is who's in the room.** Not every guild the notability
-cache marks notable: with 43 notable guilds and five of them ever having
+**The electorate is who's in the room.** Not every guild the major-guild
+cache marks major: with 43 major guilds and five of them ever having
 sent a representative, a 51% bar against the whole set could not be
 cleared by unanimity. So it's the guilds *seated* — at least one live
 representative, in the server, wearing the Delegate standing. A relegate
@@ -28,7 +28,7 @@ denominator as a guaranteed non-yay is a quieter version of the same
 problem, and it silently raises the bar for everyone else.
 
 **The electorate moves under the motion.** Guilds gain and lose
-notability, verify, and leave, all while a vote is open — so the tally is
+major-guild status, verify, and leave, all while a vote is open — so the tally is
 recomputed from the current electorate every time, and a vote from a
 guild that has since left the Hall stops counting. Two consequences worth
 naming:
@@ -64,14 +64,14 @@ from hall_monitor.db.models import (
     Delegate,
     ExpelMotion,
     ExpelVote,
-    NotabilityCache,
+    MajorGuildCache,
 )
 from hall_monitor.services import (
     delegate_registry,
     expel,
     guild_bar,
     guild_tag as tags,
-    notability,
+    major_guilds,
 )
 
 logger = logging.getLogger(__name__)
@@ -151,12 +151,12 @@ async def seated_guilds(discord_guild: discord.Guild) -> dict[str, str]:
     both fall out, which is the same line ``services/contacts.py`` draws
     for holding a slot.
 
-    Notability is memoised per tag across the walk: it's a cached read,
+    Major-guild status is memoised per tag across the walk: it's a cached read,
     but a Hall of fifty representatives across twenty guilds would
     otherwise ask the same question fifty times.
     """
     seated: dict[str, str] = {}
-    notable: dict[str, bool] = {}
+    major: dict[str, bool] = {}
     for delegate in await Delegate.filter(left_at=None):
         if discord_guild.get_member(delegate.discord_user_id) is None:
             continue
@@ -164,9 +164,9 @@ async def seated_guilds(discord_guild: discord.Guild) -> dict[str, str]:
         key = tags.normalise(tag)
         if key in seated:
             continue  # already seated by one of their colleagues
-        if key not in notable:
-            notable[key] = await notability.is_notable(tag)
-        standing = await delegate_registry.standing(delegate, notable=notable[key])
+        if key not in major:
+            major[key] = await major_guilds.is_major(tag)
+        standing = await delegate_registry.standing(delegate, major=major[key])
         if standing != delegate_registry.DELEGATE:
             continue
         seated[key] = tag
@@ -231,8 +231,8 @@ async def check_can_open(
     if tags.normalise(moving_for) not in seated:
         raise MotionRejected(
             f"`{moving_for}` isn't currently seated in the Hall, so it has no "
-            "motion to make. That's usually a guild that's dropped out of "
-            "notability, or a representative who has moved guilds."
+            "motion to make. That's usually a guild that has stopped being "
+            "major, or a representative who has moved guilds."
         )
     if tags.normalise(guild_tag) not in seated:
         raise MotionRejected(
@@ -457,7 +457,7 @@ async def _close(
 
 async def guild_name(guild_tag: str) -> str | None:
     """Wynncraft's spelling of a guild's full name, if the sweep learned it."""
-    row = await NotabilityCache.filter(guild_tag__iexact=guild_tag).first()
+    row = await MajorGuildCache.filter(guild_tag__iexact=guild_tag).first()
     return row.guild_name if row is not None else None
 
 

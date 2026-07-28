@@ -6,8 +6,8 @@ reading back an audit log: ``~force expel`` is a decision,
 ``~manage reload_cogs`` is maintenance.
 
 Two of these deliberately **delegate to the ``~script`` modules** rather
-than reimplementing them. ``~manage refresh_notability`` and
-``~script refresh_notability`` have to mean the same thing, and one of
+than reimplementing them. ``~manage refresh_major`` and
+``~script refresh_major`` have to mean the same thing, and one of
 them throttling its progress edits while the other doesn't is exactly the
 divergence nobody notices until an operator reports different behaviour
 from two commands that sound identical. The scripts own the work; these
@@ -65,12 +65,12 @@ class Manage(commands.Cog):
             )
         await ctx.reply(line)
 
-    @manage.command(name="refresh_notability")
+    @manage.command(name="refresh_major")
     @is_monitor()
-    async def refresh_notability(self, ctx: commands.Context) -> None:
-        """re-evaluate every guild's notability now"""
+    async def refresh_major(self, ctx: commands.Context) -> None:
+        """re-evaluate which guilds are major now"""
         from hall_monitor.discord_bot.cogs.admin.scripts import (
-            refresh_notability as script,
+            refresh_major as script,
         )
 
         await script.main(ctx)

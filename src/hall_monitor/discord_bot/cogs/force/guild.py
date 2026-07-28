@@ -3,7 +3,7 @@
 A janitor asserting who someone speaks for, which outranks both the guild
 they verified as a chief of and whatever the hourly watch sees. Everything
 follows from that one answer: the tag on their nickname, the colour they
-wear, whose contact slots they may hold, and whose notability decides
+wear, whose contact slots they may hold, and whose major-guild status decides
 their standing. Force someone to ANO and they are, for every purpose the
 Hall has, an ANO representative.
 
@@ -34,7 +34,7 @@ from hall_monitor.services import (
     delegate_registry,
     guild_tag as tags,
     nicknames,
-    notability,
+    major_guilds,
     transitions,
 )
 from hall_monitor.services.time_parse import (
@@ -104,9 +104,9 @@ async def apply_now(ctx: commands.Context, user: discord.Member) -> Applied:
     represents = await delegate_registry.represented_guild(delegate)
     contacts_changed = 0
     for tag in _affected(delegate.guild_tag, represents):
-        notable = await notability.is_notable(tag)
+        major = await major_guilds.is_major(tag)
         contacts_changed += await contacts.sync_contact_roles(
-            tag, discord_guild=ctx.guild, granted=notable
+            tag, discord_guild=ctx.guild, granted=major
         )
     settlement = await transitions.settle_representative(ctx.guild, delegate)
     renamed = await nicknames.enforce(

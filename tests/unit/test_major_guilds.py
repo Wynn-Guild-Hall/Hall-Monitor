@@ -1,4 +1,4 @@
-"""Coverage for each of the 6 notability signals + force-override precedence."""
+"""Coverage for each of the 6 major-guild signals + force-override precedence."""
 
 import asyncio
 import json
@@ -6,17 +6,17 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from hall_monitor.db.models import Delegate, ForceOverride, NotabilityCache
+from hall_monitor.db.models import Delegate, ForceOverride, MajorGuildCache
 from hall_monitor.external import wynncraft, wynnpool
-from hall_monitor.services import notability, territory_history
-from hall_monitor.services.notability import (
+from hall_monitor.services import major_guilds, territory_history
+from hall_monitor.services.major_guilds import (
     _BulkContext,
     _signal_level_100_plus,
     _signal_season_placement,
     _signal_territory_ownership,
     _signal_top25_avg_online,
     _signal_war_count,
-    is_notable,
+    is_major,
     refresh_all,
 )
 
@@ -25,7 +25,7 @@ from hall_monitor.services.notability import (
 def fresh_refresh_lock():
     """Give each test its own sweep lock.
 
-    ``notability._refresh_lock`` is module state, and pytest-asyncio runs
+    ``major_guilds._refresh_lock`` is module state, and pytest-asyncio runs
     every test on a new event loop. A lock left in any state by one test —
     or bound to a loop that has since closed — makes the next test's
     ``acquire`` wait on a future nothing will ever resolve.
@@ -34,12 +34,12 @@ def fresh_refresh_lock():
     board cache: left in place, one test's leaderboards would answer
     another's lookup and its registered mocks would go unrequested.
     """
-    notability._refresh_lock = asyncio.Lock()
-    notability.reset_context_memo()
-    notability.reset_season_cache()
+    major_guilds._refresh_lock = asyncio.Lock()
+    major_guilds.reset_context_memo()
+    major_guilds.reset_season_cache()
     yield
-    notability.reset_context_memo()
-    notability.reset_season_cache()
+    major_guilds.reset_context_memo()
+    major_guilds.reset_season_cache()
 
 
 def _lb(rank: int, tag: str, name: str = "n", value: float | None = None):
@@ -51,7 +51,7 @@ def _window(holdings=None, *, covered=True, sweeps=120) -> territory_history.Win
     return territory_history.Window(
         sweeps=sweeps,
         watched=territory_history.WINDOW if covered else timedelta(days=1),
-        threshold=notability.MIN_TERRITORIES,
+        threshold=major_guilds.MIN_TERRITORIES,
         holdings={
             tag.casefold(): territory_history.Holding(
                 readings=sweeps, above=above, low=0, high=99
@@ -157,7 +157,7 @@ def test_signal_3_top_3_in_any_of_last_10_seasons():
 
 def test_signal_3_peak_in_any_of_last_5_seasons():
     seasons = tuple(
-        (_season_lb(rank=notability.SEASON_PEAK_LAST_5),)
+        (_season_lb(rank=major_guilds.SEASON_PEAK_LAST_5),)
         if i == 2
         else (_season_lb(rank=50),)
         for i in range(5)
@@ -261,7 +261,7 @@ def test_sweeps_are_the_denominator_not_the_guilds_own_rows():
     window = territory_history.Window(
         sweeps=120,
         watched=territory_history.WINDOW,
-        threshold=notability.MIN_TERRITORIES,
+        threshold=major_guilds.MIN_TERRITORIES,
         holdings={
             "new": territory_history.Holding(readings=48, above=48, low=30, high=40)
         },
@@ -292,25 +292,25 @@ def test_signal_5_false_when_absent_from_the_board():
 
 
 async def test_force_override_beats_signals(db):
-    await ForceOverride.create(kind="notable", subject="VETS", expires_at=None)
-    assert await is_notable("VETS") is True
+    await ForceOverride.create(kind="major", subject="VETS", expires_at=None)
+    assert await is_major("VETS") is True
 
 
 async def test_expired_force_override_ignored(db):
     past = datetime.now(timezone.utc) - timedelta(days=1)
-    await ForceOverride.create(kind="notable", subject="VETS", expires_at=past)
-    await NotabilityCache.create(
-        guild_tag="VETS", is_notable=False, signals_json="{}"
+    await ForceOverride.create(kind="major", subject="VETS", expires_at=past)
+    await MajorGuildCache.create(
+        guild_tag="VETS", is_major=False, signals_json="{}"
     )
-    assert await is_notable("VETS") is False
+    assert await is_major("VETS") is False
 
 
 async def test_force_override_ignored_for_other_kinds(db):
     await ForceOverride.create(kind="guild", subject="VETS", expires_at=None)
-    await NotabilityCache.create(
-        guild_tag="VETS", is_notable=False, signals_json="{}"
+    await MajorGuildCache.create(
+        guild_tag="VETS", is_major=False, signals_json="{}"
     )
-    assert await is_notable("VETS") is False
+    assert await is_major("VETS") is False
 
 
 # --------------------------------------------------------------------------
@@ -318,13 +318,13 @@ async def test_force_override_ignored_for_other_kinds(db):
 # --------------------------------------------------------------------------
 
 
-async def test_is_notable_reads_cache(db):
+async def test_is_major_reads_cache(db):
     """Cache hit skips the expensive path — no API calls needed."""
-    await NotabilityCache.create(
-        guild_tag="VETS", is_notable=True, signals_json="{}"
+    await MajorGuildCache.create(
+        guild_tag="VETS", is_major=True, signals_json="{}"
     )
     # No httpx_mock — if _load_context ran, this would raise.
-    assert await is_notable("VETS") is True
+    assert await is_major("VETS") is True
 
 
 async def test_refresh_all_writes_cache_for_all_candidates(db, httpx_mock, monkeypatch):
@@ -344,31 +344,31 @@ async def test_refresh_all_writes_cache_for_all_candidates(db, httpx_mock, monke
         },
     }, territories={"Aeq": 97}, names={"DELEG": "Delegated", "OVRD": None})
     await Delegate.create(mc_uuid="u", discord_user_id=1, guild_tag="DELEG")
-    await ForceOverride.create(kind="notable", subject="OVRD", expires_at=None)
+    await ForceOverride.create(kind="major", subject="OVRD", expires_at=None)
 
     await refresh_all()
 
     # Boards contribute candidates alongside delegates and overrides — and
     # no per-guild request is registered, so any would fail the test.
-    cached = {r.guild_tag for r in await NotabilityCache.all()}
+    cached = {r.guild_tag for r in await MajorGuildCache.all()}
     assert cached == {"VETS", "AVO", "BTMW", "Aeq", "DELEG", "OVRD"}
 
-    vets = await NotabilityCache.get(guild_tag="VETS")
-    assert vets.is_notable is True
+    vets = await MajorGuildCache.get(guild_tag="VETS")
+    assert vets.is_major is True
     signals = json.loads(vets.signals_json)
     assert signals["top25_average_online"] is True
     # Every signal is evaluated now; none are left null.
     assert None not in signals.values()
     assert signals["war_count"] is False
 
-    avo = await NotabilityCache.get(guild_tag="AVO")
-    assert avo.is_notable is True
+    avo = await MajorGuildCache.get(guild_tag="AVO")
+    assert avo.is_major is True
     assert json.loads(avo.signals_json)["war_count"] is True
 
-    ovrd = await NotabilityCache.get(guild_tag="OVRD")
-    assert ovrd.is_notable is True
-    deleg = await NotabilityCache.get(guild_tag="DELEG")
-    assert deleg.is_notable is False
+    ovrd = await MajorGuildCache.get(guild_tag="OVRD")
+    assert ovrd.is_major is True
+    deleg = await MajorGuildCache.get(guild_tag="DELEG")
+    assert deleg.is_major is False
 
 
 async def test_a_guild_off_every_board_still_learns_its_name(db, httpx_mock, monkeypatch):
@@ -378,11 +378,11 @@ async def test_a_guild_off_every_board_still_learns_its_name(db, httpx_mock, mon
         "hall_monitor.external.wynncraft.settings.wynncraft_api_token", ""
     )
     _empty_boards(httpx_mock, names={"VETS": "Returners"})
-    await ForceOverride.create(kind="notable", subject="VETS", expires_at=None)
+    await ForceOverride.create(kind="major", subject="VETS", expires_at=None)
 
     await refresh_all()
 
-    assert (await NotabilityCache.get(guild_tag="VETS")).guild_name == "Returners"
+    assert (await MajorGuildCache.get(guild_tag="VETS")).guild_name == "Returners"
 
 
 async def test_a_name_already_known_is_never_re_fetched(db, httpx_mock, monkeypatch):
@@ -392,14 +392,14 @@ async def test_a_name_already_known_is_never_re_fetched(db, httpx_mock, monkeypa
         "hall_monitor.external.wynncraft.settings.wynncraft_api_token", ""
     )
     _empty_boards(httpx_mock)
-    await ForceOverride.create(kind="notable", subject="VETS", expires_at=None)
-    await NotabilityCache.create(
-        guild_tag="VETS", is_notable=True, signals_json="{}", guild_name="Returners"
+    await ForceOverride.create(kind="major", subject="VETS", expires_at=None)
+    await MajorGuildCache.create(
+        guild_tag="VETS", is_major=True, signals_json="{}", guild_name="Returners"
     )
 
     await refresh_all()
 
-    assert (await NotabilityCache.get(guild_tag="VETS")).guild_name == "Returners"
+    assert (await MajorGuildCache.get(guild_tag="VETS")).guild_name == "Returners"
 
 
 async def test_a_tag_nothing_knows_keeps_its_tag_as_a_name(db, httpx_mock, monkeypatch):
@@ -409,12 +409,12 @@ async def test_a_tag_nothing_knows_keeps_its_tag_as_a_name(db, httpx_mock, monke
         "hall_monitor.external.wynncraft.settings.wynncraft_api_token", ""
     )
     _empty_boards(httpx_mock, names={"ZZZZ": None})
-    await ForceOverride.create(kind="notable", subject="ZZZZ", expires_at=None)
+    await ForceOverride.create(kind="major", subject="ZZZZ", expires_at=None)
 
     await refresh_all()
 
-    cached = await NotabilityCache.get(guild_tag="ZZZZ")
-    assert cached.guild_name is None and cached.is_notable is True
+    cached = await MajorGuildCache.get(guild_tag="ZZZZ")
+    assert cached.guild_name is None and cached.is_major is True
 
 
 async def test_refresh_falls_back_per_guild_when_a_board_stops_covering(
@@ -440,9 +440,9 @@ async def test_refresh_falls_back_per_guild_when_a_board_stops_covering(
 
     await refresh_all()
 
-    vets = await NotabilityCache.get(guild_tag="VETS")
+    vets = await MajorGuildCache.get(guild_tag="VETS")
     assert json.loads(vets.signals_json)["war_count"] is True
-    assert vets.is_notable is True
+    assert vets.is_major is True
 
 
 async def test_refresh_all_survives_untagged_season_entries(db, httpx_mock, monkeypatch):
@@ -479,21 +479,21 @@ async def test_refresh_all_survives_untagged_season_entries(db, httpx_mock, monk
 
     await refresh_all()
 
-    cached = {r.guild_tag for r in await NotabilityCache.all()}
+    cached = {r.guild_tag for r in await MajorGuildCache.all()}
     assert cached == {"VETS"}, "a None tag must not reach the candidate set"
-    vets = await NotabilityCache.get(guild_tag="VETS")
+    vets = await MajorGuildCache.get(guild_tag="VETS")
     assert json.loads(vets.signals_json)["season_placement"] is True
 
 
-async def test_is_notable_slow_path_populates_cache(db, httpx_mock, monkeypatch):
+async def test_is_major_slow_path_populates_cache(db, httpx_mock, monkeypatch):
     """Cache miss triggers a full evaluation and stores the result."""
     monkeypatch.setattr(
         "hall_monitor.external.wynncraft.settings.wynncraft_api_token", ""
     )
     _boards(httpx_mock)
 
-    assert await is_notable("NEW") is False
-    assert await NotabilityCache.get_or_none(guild_tag="NEW") is not None
+    assert await is_major("NEW") is False
+    assert await MajorGuildCache.get_or_none(guild_tag="NEW") is not None
 
 
 # --------------------------------------------------------------------------
@@ -511,8 +511,8 @@ def _boards(httpx_mock, **overrides):
         "guild-average-online": {},
         "guildLevel": {},
         "guildWars": {},
-        notability.TOTAL_RAIDS_BOARD: {},
-        **{name: {} for name in notability.RAID_BOARDS},
+        major_guilds.TOTAL_RAIDS_BOARD: {},
+        **{name: {} for name in major_guilds.RAID_BOARDS},
     }
     boards.update(overrides.pop("boards", {}))
     # A case that wants to control one board's response registers it
@@ -577,8 +577,8 @@ async def test_refresh_reports_progress_and_a_summary(db, httpx_mock, monkeypatc
         "hall_monitor.external.wynncraft.settings.wynncraft_api_token", ""
     )
     _empty_boards(httpx_mock, names={"WYNN": "Wynn Admins", "VETS": "Returners"})
-    await ForceOverride.create(kind="notable", subject="WYNN", expires_at=None)
-    await ForceOverride.create(kind="notable", subject="VETS", expires_at=None)
+    await ForceOverride.create(kind="major", subject="WYNN", expires_at=None)
+    await ForceOverride.create(kind="major", subject="VETS", expires_at=None)
 
     seen: list[tuple[int, int]] = []
 
@@ -589,7 +589,7 @@ async def test_refresh_reports_progress_and_a_summary(db, httpx_mock, monkeypatc
 
     assert seen == [(1, 2), (2, 2)]
     assert summary is not None
-    assert (summary.evaluated, summary.notable, summary.failed) == (2, 2, 0)
+    assert (summary.evaluated, summary.major, summary.failed) == (2, 2, 0)
     assert summary.seconds >= 0
 
 
@@ -602,13 +602,13 @@ async def test_refresh_is_single_flight(db, httpx_mock):
     blocks outbound HTTP, so a broken guard fails immediately instead of
     reaching the real APIs and looking like a hang.
     """
-    await notability._refresh_lock.acquire()  # stand in for a sweep in flight
+    await major_guilds._refresh_lock.acquire()  # stand in for a sweep in flight
     try:
-        assert notability.is_refreshing()
+        assert major_guilds.is_refreshing()
         assert await refresh_all() is None
     finally:
-        notability._refresh_lock.release()
-    assert not notability.is_refreshing()
+        major_guilds._refresh_lock.release()
+    assert not major_guilds.is_refreshing()
 
 
 async def test_refresh_survives_a_broken_progress_callback(db, httpx_mock, monkeypatch):
@@ -617,14 +617,14 @@ async def test_refresh_survives_a_broken_progress_callback(db, httpx_mock, monke
         "hall_monitor.external.wynncraft.settings.wynncraft_api_token", ""
     )
     _empty_boards(httpx_mock, names={"WYNN": "Wynn Admins"})
-    await ForceOverride.create(kind="notable", subject="WYNN", expires_at=None)
+    await ForceOverride.create(kind="major", subject="WYNN", expires_at=None)
 
     async def on_progress(done, total):
         raise RuntimeError("discord fell over")
 
     summary = await refresh_all(on_progress=on_progress)
     assert summary is not None and summary.evaluated == 1
-    assert await NotabilityCache.get_or_none(guild_tag="WYNN") is not None
+    assert await MajorGuildCache.get_or_none(guild_tag="WYNN") is not None
 
 
 async def test_refresh_counts_a_failure_without_aborting(db, httpx_mock, monkeypatch):
@@ -632,11 +632,11 @@ async def test_refresh_counts_a_failure_without_aborting(db, httpx_mock, monkeyp
         "hall_monitor.external.wynncraft.settings.wynncraft_api_token", ""
     )
     _empty_boards(httpx_mock, names={"WYNN": "Wynn Admins", "VETS": "Returners"})
-    await ForceOverride.create(kind="notable", subject="WYNN", expires_at=None)
-    await ForceOverride.create(kind="notable", subject="VETS", expires_at=None)
+    await ForceOverride.create(kind="major", subject="WYNN", expires_at=None)
+    await ForceOverride.create(kind="major", subject="VETS", expires_at=None)
 
     calls: list[str] = []
-    real = notability._evaluate_and_cache
+    real = major_guilds._evaluate_and_cache
 
     async def flaky(tag, context, *, exhaustive=False):
         calls.append(tag)
@@ -644,11 +644,11 @@ async def test_refresh_counts_a_failure_without_aborting(db, httpx_mock, monkeyp
             raise RuntimeError("boom")
         return await real(tag, context)
 
-    monkeypatch.setattr(notability, "_evaluate_and_cache", flaky)
+    monkeypatch.setattr(major_guilds, "_evaluate_and_cache", flaky)
     summary = await refresh_all()
 
     assert calls == ["VETS", "WYNN"], "a failure must not stop the sweep"
-    assert (summary.evaluated, summary.failed, summary.notable) == (1, 1, 1)
+    assert (summary.evaluated, summary.failed, summary.major) == (1, 1, 1)
 
 
 async def test_a_cache_miss_reuses_the_last_sweep_s_leaderboards(db, httpx_mock, monkeypatch):
@@ -664,28 +664,28 @@ async def test_a_cache_miss_reuses_the_last_sweep_s_leaderboards(db, httpx_mock,
 
     # No further boards registered: a second load would fail on an
     # unmatched request, which is the assertion.
-    assert await is_notable("NEWG") is False
-    assert await NotabilityCache.get_or_none(guild_tag="NEWG") is not None
+    assert await is_major("NEWG") is False
+    assert await MajorGuildCache.get_or_none(guild_tag="NEWG") is not None
 
 
 async def test_the_memo_expires(db, httpx_mock, monkeypatch):
     monkeypatch.setattr(
         "hall_monitor.external.wynncraft.settings.wynncraft_api_token", ""
     )
-    monkeypatch.setattr(notability, "_CONTEXT_TTL_S", -1)  # instantly stale
+    monkeypatch.setattr(major_guilds, "_CONTEXT_TTL_S", -1)  # instantly stale
     _boards(httpx_mock)
     await refresh_all()
     _boards(httpx_mock)          # a stale memo must fetch again
-    assert await is_notable("NEWG") is False
+    assert await is_major("NEWG") is False
 
 
 async def test_a_force_override_matches_the_tag_whatever_its_case(db):
     """A janitor types the tag by hand; Wynncraft's capitalisation is
     whatever it is. An override keyed differently to the lookup is an
     override that does nothing."""
-    await ForceOverride.create(kind="notable", subject="vets", expires_at=None)
-    assert await is_notable("VETS") is True
-    assert await is_notable("Vets") is True
+    await ForceOverride.create(kind="major", subject="vets", expires_at=None)
+    assert await is_major("VETS") is True
+    assert await is_major("Vets") is True
 
 
 async def test_signals_match_a_differently_cased_board_entry(db):
@@ -707,19 +707,19 @@ async def test_signals_match_a_differently_cased_board_entry(db):
 
 
 def test_matched_signal_count_dominates():
-    """Notability is a yes/no, but a guild qualifying four ways is more
+    """Major-guild status is a yes/no, but a guild qualifying four ways is more
     securely part of the Hall than one scraping in on a leaderboard."""
-    many = notability.strength(
+    many = major_guilds.strength(
         {"level_100_plus": True, "war_count": True}, {"guild_level": 101, "wars": 50_001}
     )
-    one = notability.strength({"level_100_plus": True}, {"guild_level": 140})
+    one = major_guilds.strength({"level_100_plus": True}, {"guild_level": 140})
 
     assert many > one
 
 
 def test_a_tie_on_count_falls_to_the_numbers():
-    stronger = notability.strength({"level_100_plus": True}, {"guild_level": 140})
-    weaker = notability.strength({"level_100_plus": True}, {"guild_level": 101})
+    stronger = major_guilds.strength({"level_100_plus": True}, {"guild_level": 140})
+    weaker = major_guilds.strength({"level_100_plus": True}, {"guild_level": 101})
 
     assert stronger > weaker
 
@@ -727,10 +727,10 @@ def test_a_tie_on_count_falls_to_the_numbers():
 def test_rank_based_signals_are_inverted():
     """Rank 1 is the strongest, not the weakest — the one place a raw
     value sorts exactly backwards."""
-    first = notability.strength(
+    first = major_guilds.strength(
         {"top25_average_online": True}, {"average_online_rank": 1}
     )
-    twentieth = notability.strength(
+    twentieth = major_guilds.strength(
         {"top25_average_online": True}, {"average_online_rank": 20}
     )
 
@@ -740,38 +740,38 @@ def test_rank_based_signals_are_inverted():
 def test_an_unmatched_signal_contributes_nothing():
     """No credit for being *nearly* good at something you didn't qualify
     on — otherwise a guild's near-misses could outrank a real signal."""
-    near_miss = notability.strength(
+    near_miss = major_guilds.strength(
         {"level_100_plus": False, "war_count": True},
         {"guild_level": 99, "wars": 50_001},
     )
-    assert near_miss[1 + notability.SIGNAL_ORDER.index("level_100_plus")] == 0.0
+    assert near_miss[1 + major_guilds.SIGNAL_ORDER.index("level_100_plus")] == 0.0
 
 
 async def test_strength_by_tag_reads_the_cache(db):
-    await NotabilityCache.create(
-        guild_tag="VETS", is_notable=True,
+    await MajorGuildCache.create(
+        guild_tag="VETS", is_major=True,
         signals_json=json.dumps({"level_100_plus": True}),
         metrics_json=json.dumps({"guild_level": 130}),
     )
 
-    by_tag = await notability.strength_by_tag()
+    by_tag = await major_guilds.strength_by_tag()
 
     assert by_tag["vets"][0] == 1.0
-    assert by_tag["vets"][1 + notability.SIGNAL_ORDER.index("level_100_plus")] == 130.0
+    assert by_tag["vets"][1 + major_guilds.SIGNAL_ORDER.index("level_100_plus")] == 130.0
 
 
 async def test_a_row_with_unreadable_json_is_skipped_not_fatal(db):
-    await NotabilityCache.create(
-        guild_tag="BAD", is_notable=True, signals_json="{not json",
+    await MajorGuildCache.create(
+        guild_tag="BAD", is_major=True, signals_json="{not json",
         metrics_json="{}",
     )
-    await NotabilityCache.create(
-        guild_tag="OK", is_notable=True,
+    await MajorGuildCache.create(
+        guild_tag="OK", is_major=True,
         signals_json=json.dumps({"war_count": True}),
         metrics_json=json.dumps({"wars": 60_000}),
     )
 
-    by_tag = await notability.strength_by_tag()
+    by_tag = await major_guilds.strength_by_tag()
 
     assert "bad" not in by_tag and "ok" in by_tag
 
@@ -788,7 +788,7 @@ async def test_the_sweep_records_the_numbers_behind_the_signals(db, httpx_mock, 
 
     await refresh_all()
 
-    metrics = json.loads((await NotabilityCache.get(guild_tag="VETS")).metrics_json)
+    metrics = json.loads((await MajorGuildCache.get(guild_tag="VETS")).metrics_json)
     assert metrics["guild_level"] == 130
 
 
@@ -801,7 +801,7 @@ async def test_a_rate_limited_season_board_costs_that_board_not_the_sweep(
     db, httpx_mock, monkeypatch
 ):
     """A 429 on one season board used to abort the whole refresh — the
-    gather had no `return_exceptions` — and `~script refresh_notability`
+    gather had no `return_exceptions` — and `~script refresh_major`
     came back with "that broke on my end"."""
     monkeypatch.setattr(
         "hall_monitor.external.wynncraft.settings.wynncraft_api_token", ""
@@ -820,7 +820,7 @@ async def test_a_rate_limited_season_board_costs_that_board_not_the_sweep(
     summary = await refresh_all()
 
     assert summary is not None and summary.failed == 0
-    assert (await NotabilityCache.get(guild_tag="VETS")).is_notable is True
+    assert (await MajorGuildCache.get(guild_tag="VETS")).is_major is True
 
 
 async def test_a_finished_season_board_is_fetched_once(db, httpx_mock, monkeypatch):
@@ -864,7 +864,7 @@ async def test_territories_come_from_the_live_map(db, httpx_mock, monkeypatch):
     """Wynnpool's `guildTerritories` board lagged badly enough to credit
     two guilds with 61 and 57 territories while the game said they held
     none — and a stale count here doesn't make a guild slightly wrong, it
-    makes it notable."""
+    makes it major."""
     monkeypatch.setattr(
         "hall_monitor.external.wynncraft.settings.wynncraft_api_token", ""
     )
@@ -879,8 +879,8 @@ async def test_territories_come_from_the_live_map(db, httpx_mock, monkeypatch):
 
     await refresh_all()
 
-    big = json.loads((await NotabilityCache.get(guild_tag="BIG")).signals_json)
-    smol = json.loads((await NotabilityCache.get(guild_tag="SMOL")).signals_json)
+    big = json.loads((await MajorGuildCache.get(guild_tag="BIG")).signals_json)
+    smol = json.loads((await MajorGuildCache.get(guild_tag="SMOL")).signals_json)
     assert big["territory_ownership"] is True
     assert smol["territory_ownership"] is False
 
@@ -903,7 +903,7 @@ async def test_a_guild_off_every_board_still_counts_its_territory(db, httpx_mock
 
     await refresh_all()
 
-    assert (await NotabilityCache.get(guild_tag="HOLD")).is_notable is True
+    assert (await MajorGuildCache.get(guild_tag="HOLD")).is_major is True
 
 
 async def test_holding_nothing_is_a_fact_not_a_gap(db):
@@ -964,44 +964,44 @@ async def test_old_readings_are_pruned(db):
 
 
 def _raid_ctx(total=None, singles=None):
-    boards = {name: () for name in notability.RAID_BOARDS}
+    boards = {name: () for name in major_guilds.RAID_BOARDS}
     for name, entries in (singles or {}).items():
         boards[name] = entries
     return _ctx(total_raids=total or (), raid_boards=boards)
 
 
 def test_raids_top_of_the_combined_board_qualifies():
-    ctx = _raid_ctx(total=(_lb(notability.RAID_TOTAL_TOP, "SEQ"),))
-    assert notability.raid_rules("SEQ", ctx)[notability.RAIDS_TOTAL] is True
+    ctx = _raid_ctx(total=(_lb(major_guilds.RAID_TOTAL_TOP, "SEQ"),))
+    assert major_guilds.raid_rules("SEQ", ctx)[major_guilds.RAIDS_TOTAL] is True
 
 
 def test_raids_just_outside_the_combined_board_doesnt():
-    ctx = _raid_ctx(total=(_lb(notability.RAID_TOTAL_TOP + 1, "SEQ"),))
-    assert notability.raid_rules("SEQ", ctx)[notability.RAIDS_TOTAL] is False
+    ctx = _raid_ctx(total=(_lb(major_guilds.RAID_TOTAL_TOP + 1, "SEQ"),))
+    assert major_guilds.raid_rules("SEQ", ctx)[major_guilds.RAIDS_TOTAL] is False
 
 
 def test_raids_a_single_raid_is_the_narrower_bound():
     """Being near the top of one raid says less than being near the top
     of all of them together, so it's held to a tighter rank."""
-    rank = notability.RAID_SINGLE_TOP
+    rank = major_guilds.RAID_SINGLE_TOP
     ctx = _raid_ctx(singles={"orphionSrGuilds": (_lb(rank, "Cosm"),)})
-    rules = notability.raid_rules("Cosm", ctx)
+    rules = major_guilds.raid_rules("Cosm", ctx)
 
-    assert rules[notability.RAIDS_SINGLE] is True
-    assert rules[notability.RAIDS_TOTAL] is False
+    assert rules[major_guilds.RAIDS_SINGLE] is True
+    assert rules[major_guilds.RAIDS_TOTAL] is False
 
 
 def test_raids_any_single_raid_counts():
     ctx = _raid_ctx(singles={"frumaSrGuilds": (_lb(3, "VNP"),)})
-    assert notability.raid_rules("VNP", ctx)[notability.RAIDS_SINGLE] is True
+    assert major_guilds.raid_rules("VNP", ctx)[major_guilds.RAIDS_SINGLE] is True
 
 
 def test_raids_a_good_rank_on_no_board_in_particular_doesnt_qualify():
     ctx = _raid_ctx(
         total=(_lb(60, "MEH"),),
-        singles={name: (_lb(40, "MEH"),) for name in notability.RAID_BOARDS},
+        singles={name: (_lb(40, "MEH"),) for name in major_guilds.RAID_BOARDS},
     )
-    assert not any(notability.raid_rules("MEH", ctx).values())
+    assert not any(major_guilds.raid_rules("MEH", ctx).values())
 
 
 def test_raid_ranks_name_which_raid_carried_a_guild(db):
@@ -1009,7 +1009,7 @@ def test_raid_ranks_name_which_raid_carried_a_guild(db):
         singles={"namelessSrGuilds": (_lb(4, "FUMO"),),
                  "colossusSrGuilds": (_lb(80, "FUMO"),)}
     )
-    assert notability.raid_ranks("FUMO", ctx) == {
+    assert major_guilds.raid_ranks("FUMO", ctx) == {
         "namelessSrGuilds": 4, "colossusSrGuilds": 80
     }
 
@@ -1048,7 +1048,7 @@ async def test_the_sweep_records_which_raids_a_guild_placed_on(db, httpx_mock, m
 
     await refresh_all()
 
-    cached = await NotabilityCache.get(guild_tag="Cosm")
+    cached = await MajorGuildCache.get(guild_tag="Cosm")
     assert json.loads(cached.signals_json)["guild_raids"] is True
     metrics = json.loads(cached.metrics_json)
     assert metrics["total_raids_rank"] == 3
@@ -1057,24 +1057,24 @@ async def test_the_sweep_records_which_raids_a_guild_placed_on(db, httpx_mock, m
 
 
 async def test_a_guild_that_falls_off_every_board_is_re_evaluated(db, httpx_mock, monkeypatch):
-    """Two guilds stayed notable on territory they no longer held: the
+    """Two guilds stayed major on territory they no longer held: the
     signal was fixed, but nothing recomputed a guild that had dropped out
     of the candidate set, so its row kept the old verdict for good."""
     monkeypatch.setattr(
         "hall_monitor.external.wynncraft.settings.wynncraft_api_token", ""
     )
-    await NotabilityCache.create(
+    await MajorGuildCache.create(
         guild_tag="GONE",
         guild_name="Fallen Off",
-        is_notable=True,
+        is_major=True,
         signals_json=json.dumps({"territory_ownership": True}),
     )
     _boards(httpx_mock)  # GONE is on no board and holds no territory
 
     await refresh_all()
 
-    cached = await NotabilityCache.get(guild_tag="GONE")
-    assert cached.is_notable is False
+    cached = await MajorGuildCache.get(guild_tag="GONE")
+    assert cached.is_major is False
     signals = json.loads(cached.signals_json)
     assert signals["territory_ownership"] is False
     assert "guild_raids" in signals, "and every signal is present, not just the old ones"
@@ -1088,11 +1088,11 @@ async def test_a_re_evaluated_guild_keeps_its_name(db, httpx_mock, monkeypatch):
     monkeypatch.setattr(
         "hall_monitor.external.wynncraft.settings.wynncraft_api_token", ""
     )
-    await NotabilityCache.create(
-        guild_tag="GONE", guild_name="Fallen Off", is_notable=True, signals_json="{}"
+    await MajorGuildCache.create(
+        guild_tag="GONE", guild_name="Fallen Off", is_major=True, signals_json="{}"
     )
     _boards(httpx_mock)
 
     await refresh_all()
 
-    assert (await NotabilityCache.get(guild_tag="GONE")).guild_name == "Fallen Off"
+    assert (await MajorGuildCache.get(guild_tag="GONE")).guild_name == "Fallen Off"

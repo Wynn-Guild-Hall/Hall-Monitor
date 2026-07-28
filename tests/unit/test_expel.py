@@ -2,7 +2,7 @@
 
 Three things are worth more than the rest here: the arithmetic at the
 51% boundary (a float comparison gets 51-of-100 wrong), the electorate
-being the guilds *seated* rather than every notable guild, and the ban
+being the guilds *seated* rather than every major guild, and the ban
 actually holding at all four of the places a removed guild could get back
 in.
 """
@@ -18,13 +18,13 @@ from hall_monitor.db.models import (
     ExpelMotion,
     ExpelVote,
     GuildContact,
-    NotabilityCache,
+    MajorGuildCache,
 )
 from hall_monitor.services import (
     delegate_registry,
     expel,
     expel_motion,
-    notability,
+    major_guilds,
     roster,
 )
 
@@ -54,20 +54,20 @@ def guild():
 
 
 @pytest.fixture
-def notable(monkeypatch):
-    """Control which tags count as notable without touching the APIs."""
+def major(monkeypatch):
+    """Control which tags count as major without touching the APIs."""
     tags = set()
 
-    async def fake_is_notable(tag):
+    async def fake_is_major(tag):
         return tag.upper() in tags
 
-    monkeypatch.setattr(notability, "is_notable", fake_is_notable)
+    monkeypatch.setattr(major_guilds, "is_major", fake_is_major)
     return tags
 
 
-async def seat(guild, notable, tag: str, user_id: int, *, uuid: str | None = None):
+async def seat(guild, major, tag: str, user_id: int, *, uuid: str | None = None):
     """A guild with one representative present and in good standing."""
-    notable.add(tag.upper())
+    major.add(tag.upper())
     guild.add_member(user_id)
     return await Delegate.create(
         mc_uuid=uuid or f"uuid-{user_id}",
@@ -131,48 +131,48 @@ def test_an_empty_hall_carries_nothing():
 # --------------------------------------------------------------------------
 
 
-async def test_the_electorate_is_the_guilds_seated_in_the_hall(db, guild, notable):
-    """Not every notable guild: the cache knows dozens that have never
+async def test_the_electorate_is_the_guilds_seated_in_the_hall(db, guild, major):
+    """Not every major guild: the cache knows dozens that have never
     sent anyone, and a 51% bar against those could never be cleared."""
-    await seat(guild, notable, "VETS", 1)
-    await seat(guild, notable, "ANO", 2)
-    notable.add("NEVR")  # notable, but nobody from it has ever verified
-    await NotabilityCache.create(
-        guild_tag="NEVR", is_notable=True, signals_json="{}"
+    await seat(guild, major, "VETS", 1)
+    await seat(guild, major, "ANO", 2)
+    major.add("NEVR")  # major, but nobody from it has ever verified
+    await MajorGuildCache.create(
+        guild_tag="NEVR", is_major=True, signals_json="{}"
     )
 
     assert await expel_motion.electorate(guild) == {"vets", "ano"}
 
 
-async def test_the_accused_guild_does_not_vote(db, guild, notable):
-    await seat(guild, notable, "VETS", 1)
-    await seat(guild, notable, "OTHR", 2)
+async def test_the_accused_guild_does_not_vote(db, guild, major):
+    await seat(guild, major, "VETS", 1)
+    await seat(guild, major, "OTHR", 2)
 
     assert await expel_motion.electorate(guild, exclude="OTHR") == {"vets"}
 
 
 async def test_one_guild_is_one_vote_however_many_representatives(
-    db, guild, notable
+    db, guild, major
 ):
-    await seat(guild, notable, "VETS", 1)
-    await seat(guild, notable, "VETS", 2, uuid="uuid-vets-2")
+    await seat(guild, major, "VETS", 1)
+    await seat(guild, major, "VETS", 2, uuid="uuid-vets-2")
 
     assert await expel_motion.electorate(guild) == {"vets"}
 
 
-async def test_a_relegated_guild_has_no_seat(db, guild, notable):
-    """Losing notability takes the seat with it — a guild that isn't in
+async def test_a_relegated_guild_has_no_seat(db, guild, major):
+    """Losing major-guild status takes the seat with it — a guild that isn't in
     the Hall doesn't get a say in who else is."""
-    await seat(guild, notable, "VETS", 1)
-    notable.discard("VETS")
+    await seat(guild, major, "VETS", 1)
+    major.discard("VETS")
 
     assert await expel_motion.electorate(guild) == set()
 
 
-async def test_an_external_representative_has_no_seat(db, guild, notable):
+async def test_an_external_representative_has_no_seat(db, guild, major):
     """Same line `services/contacts.py` draws for holding a slot: someone
     who has moved guilds isn't currently speaking for one here."""
-    delegate = await seat(guild, notable, "VETS", 1)
+    delegate = await seat(guild, major, "VETS", 1)
     delegate.current_guild_tag = "ANO"
     await delegate.save()
 
@@ -180,19 +180,19 @@ async def test_an_external_representative_has_no_seat(db, guild, notable):
 
 
 async def test_a_representative_who_left_the_server_has_no_seat(
-    db, guild, notable
+    db, guild, major
 ):
-    await seat(guild, notable, "VETS", 1)
+    await seat(guild, major, "VETS", 1)
     guild.members.clear()
 
     assert await expel_motion.electorate(guild) == set()
 
 
-async def test_a_forced_guild_seats_the_guild_it_points_at(db, guild, notable):
+async def test_a_forced_guild_seats_the_guild_it_points_at(db, guild, major):
     """`~force guild` decides who someone represents, and the vote follows
     that like everything else does."""
-    delegate = await seat(guild, notable, "VETS", 1)
-    notable.add("ANO")
+    delegate = await seat(guild, major, "VETS", 1)
+    major.add("ANO")
     await delegate_registry.set_forced_guild(delegate.discord_user_id, "ANO", None)
 
     assert await expel_motion.electorate(guild) == {"ano"}
@@ -203,8 +203,8 @@ async def test_a_forced_guild_seats_the_guild_it_points_at(db, guild, notable):
 # --------------------------------------------------------------------------
 
 
-async def test_a_vote_is_recorded_against_the_voters_guild(db, guild, notable):
-    await seat(guild, notable, "VETS", 1)
+async def test_a_vote_is_recorded_against_the_voters_guild(db, guild, major):
+    await seat(guild, major, "VETS", 1)
     motion = await a_motion()
 
     outcome = await expel_motion.cast_vote(guild, motion, 1, yay=True)
@@ -216,12 +216,12 @@ async def test_a_vote_is_recorded_against_the_voters_guild(db, guild, notable):
 
 
 async def test_a_second_representative_replaces_their_guilds_vote(
-    db, guild, notable
+    db, guild, major
 ):
     """One guild, one vote — and the second voter is told they've
     overridden a colleague rather than discovering it from the turnout."""
-    await seat(guild, notable, "VETS", 1)
-    await seat(guild, notable, "VETS", 2, uuid="uuid-vets-2")
+    await seat(guild, major, "VETS", 1)
+    await seat(guild, major, "VETS", 2, uuid="uuid-vets-2")
     motion = await a_motion()
 
     await expel_motion.cast_vote(guild, motion, 1, yay=True)
@@ -233,8 +233,8 @@ async def test_a_second_representative_replaces_their_guilds_vote(
     assert (await ExpelVote.get(motion_id=motion.id)).yay is False
 
 
-async def test_changing_your_own_vote_says_so(db, guild, notable):
-    await seat(guild, notable, "VETS", 1)
+async def test_changing_your_own_vote_says_so(db, guild, major):
+    await seat(guild, major, "VETS", 1)
     motion = await a_motion()
 
     await expel_motion.cast_vote(guild, motion, 1, yay=True)
@@ -243,8 +243,8 @@ async def test_changing_your_own_vote_says_so(db, guild, notable):
     assert "changed from your earlier vote" in outcome.message
 
 
-async def test_a_non_delegate_cannot_vote(db, guild, notable):
-    await seat(guild, notable, "VETS", 1)
+async def test_a_non_delegate_cannot_vote(db, guild, major):
+    await seat(guild, major, "VETS", 1)
     guild.add_member(99)  # in the server, but no Delegate row
     motion = await a_motion()
 
@@ -254,9 +254,9 @@ async def test_a_non_delegate_cannot_vote(db, guild, notable):
     assert not await ExpelVote.exists()
 
 
-async def test_the_accused_guilds_representatives_cannot_vote(db, guild, notable):
-    await seat(guild, notable, "VETS", 1)
-    await seat(guild, notable, "OTHR", 2)
+async def test_the_accused_guilds_representatives_cannot_vote(db, guild, major):
+    await seat(guild, major, "VETS", 1)
+    await seat(guild, major, "OTHR", 2)
     motion = await a_motion(target="OTHR")
 
     outcome = await expel_motion.cast_vote(guild, motion, 2, yay=False)
@@ -265,8 +265,8 @@ async def test_the_accused_guilds_representatives_cannot_vote(db, guild, notable
     assert "your own guild" in outcome.message
 
 
-async def test_a_closed_motion_takes_no_more_votes(db, guild, notable):
-    await seat(guild, notable, "VETS", 1)
+async def test_a_closed_motion_takes_no_more_votes(db, guild, major):
+    await seat(guild, major, "VETS", 1)
     motion = await a_motion()
     motion.state = expel_motion.LAPSED
     await motion.save()
@@ -278,16 +278,16 @@ async def test_a_closed_motion_takes_no_more_votes(db, guild, notable):
 
 
 async def test_a_vote_from_a_guild_that_has_left_stops_counting(
-    db, guild, notable
+    db, guild, major
 ):
     """The electorate moves under an open motion, so a guild that has lost
     its seat since voting shouldn't still be pushing the motion along."""
-    await seat(guild, notable, "VETS", 1)
-    await seat(guild, notable, "ANO", 2)
+    await seat(guild, major, "VETS", 1)
+    await seat(guild, major, "ANO", 2)
     motion = await a_motion()
     await expel_motion.cast_vote(guild, motion, 1, yay=True)
 
-    notable.discard("VETS")
+    major.discard("VETS")
     voters = await expel_motion.electorate(guild, exclude="OTHR")
 
     assert (await expel_motion.tally(motion, voters)).yay == 0
@@ -298,53 +298,53 @@ async def test_a_vote_from_a_guild_that_has_left_stops_counting(
 # --------------------------------------------------------------------------
 
 
-async def test_a_non_delegate_cannot_move(db, guild, notable):
-    await seat(guild, notable, "OTHR", 2)
+async def test_a_non_delegate_cannot_move(db, guild, major):
+    await seat(guild, major, "OTHR", 2)
 
     with pytest.raises(expel_motion.MotionRejected, match="on file"):
         await expel_motion.check_can_open(guild, None, "OTHR")
 
 
-async def test_a_guild_cannot_move_to_expel_itself(db, guild, notable):
-    mover = await seat(guild, notable, "VETS", 1)
+async def test_a_guild_cannot_move_to_expel_itself(db, guild, major):
+    mover = await seat(guild, major, "VETS", 1)
 
     with pytest.raises(expel_motion.MotionRejected, match="itself"):
         await expel_motion.check_can_open(guild, mover, "VETS")
 
 
 async def test_the_motion_records_the_halls_spelling_of_the_tag(
-    db, guild, notable
+    db, guild, major
 ):
     """`~expel_motion othr` and `~expel_motion OTHR` are one guild, and the
     post shouldn't shout back whatever case the mover happened to use."""
-    mover = await seat(guild, notable, "VETS", 1)
-    await seat(guild, notable, "OTHR", 2)
+    mover = await seat(guild, major, "VETS", 1)
+    await seat(guild, major, "OTHR", 2)
 
     assert await expel_motion.check_can_open(guild, mover, "othr") == "OTHR"
 
 
-async def test_a_guild_that_is_not_seated_cannot_be_expelled(db, guild, notable):
-    mover = await seat(guild, notable, "VETS", 1)
+async def test_a_guild_that_is_not_seated_cannot_be_expelled(db, guild, major):
+    mover = await seat(guild, major, "VETS", 1)
 
     with pytest.raises(expel_motion.MotionRejected, match="nothing to expel"):
         await expel_motion.check_can_open(guild, mover, "NEVR")
 
 
 async def test_an_already_banned_guild_cannot_be_moved_against(
-    db, guild, notable
+    db, guild, major
 ):
-    mover = await seat(guild, notable, "VETS", 1)
-    await seat(guild, notable, "OTHR", 2)
+    mover = await seat(guild, major, "VETS", 1)
+    await seat(guild, major, "OTHR", 2)
     await ExpelBan.create(guild_tag="OTHR", reason="earlier")
 
     with pytest.raises(expel_motion.MotionRejected, match="already barred"):
         await expel_motion.check_can_open(guild, mover, "OTHR")
 
 
-async def test_only_one_motion_per_guild_at_a_time(db, guild, notable):
+async def test_only_one_motion_per_guild_at_a_time(db, guild, major):
     """Two open motions would split the vote and neither would carry."""
-    mover = await seat(guild, notable, "VETS", 1)
-    await seat(guild, notable, "OTHR", 2)
+    mover = await seat(guild, major, "VETS", 1)
+    await seat(guild, major, "OTHR", 2)
     await a_motion(target="OTHR")
 
     with pytest.raises(expel_motion.MotionRejected, match="already an open motion"):
@@ -356,10 +356,10 @@ async def test_only_one_motion_per_guild_at_a_time(db, guild, notable):
 # --------------------------------------------------------------------------
 
 
-async def test_reaching_the_bar_expels_the_guild(db, guild, notable):
-    await seat(guild, notable, "VETS", 1)
-    await seat(guild, notable, "ANO", 2)
-    target = await seat(guild, notable, "OTHR", 3)
+async def test_reaching_the_bar_expels_the_guild(db, guild, major):
+    await seat(guild, major, "VETS", 1)
+    await seat(guild, major, "ANO", 2)
+    target = await seat(guild, major, "OTHR", 3)
     await GuildContact.create(guild_tag="OTHR", role="ownership", delegate=target)
     motion = await a_motion(target="OTHR")
 
@@ -374,10 +374,10 @@ async def test_reaching_the_bar_expels_the_guild(db, guild, notable):
     assert not await GuildContact.filter(guild_tag="OTHR").exists()
 
 
-async def test_short_of_the_bar_leaves_the_motion_open(db, guild, notable):
-    await seat(guild, notable, "VETS", 1)
-    await seat(guild, notable, "ANO", 2)
-    await seat(guild, notable, "OTHR", 3)
+async def test_short_of_the_bar_leaves_the_motion_open(db, guild, major):
+    await seat(guild, major, "VETS", 1)
+    await seat(guild, major, "ANO", 2)
+    await seat(guild, major, "OTHR", 3)
     motion = await a_motion(target="OTHR")
 
     await expel_motion.cast_vote(guild, motion, 1, yay=True)
@@ -387,12 +387,12 @@ async def test_short_of_the_bar_leaves_the_motion_open(db, guild, notable):
     assert (await ExpelMotion.get(id=motion.id)).state == expel_motion.OPEN
 
 
-async def test_abstention_counts_against(db, guild, notable):
+async def test_abstention_counts_against(db, guild, major):
     """Three seated voters, one yay, two silent — a motion carried by a
     single guild out of three doesn't remove anyone."""
     for index, tag in enumerate(("VETS", "ANO", "SEQ"), start=1):
-        await seat(guild, notable, tag, index)
-    await seat(guild, notable, "OTHR", 9)
+        await seat(guild, major, tag, index)
+    await seat(guild, major, "OTHR", 9)
     motion = await a_motion(target="OTHR")
 
     await expel_motion.cast_vote(guild, motion, 1, yay=True)
@@ -400,9 +400,9 @@ async def test_abstention_counts_against(db, guild, notable):
     assert await expel_motion.settle(guild, motion) is None
 
 
-async def test_a_motion_lapses_at_its_deadline(db, guild, notable):
-    await seat(guild, notable, "VETS", 1)
-    await seat(guild, notable, "OTHR", 2)
+async def test_a_motion_lapses_at_its_deadline(db, guild, major):
+    await seat(guild, major, "VETS", 1)
+    await seat(guild, major, "OTHR", 2)
     motion = await a_motion(target="OTHR")
     motion.created_at = datetime.now(timezone.utc) - timedelta(days=8)
     await motion.save()
@@ -415,12 +415,12 @@ async def test_a_motion_lapses_at_its_deadline(db, guild, notable):
 
 
 async def test_the_bar_being_reached_on_the_last_day_still_carries(
-    db, guild, notable
+    db, guild, major
 ):
     """Passing is checked before the deadline, so a motion doesn't lapse
     on a technicality with the votes already in."""
-    await seat(guild, notable, "VETS", 1)
-    await seat(guild, notable, "OTHR", 2)
+    await seat(guild, major, "VETS", 1)
+    await seat(guild, major, "OTHR", 2)
     motion = await a_motion(target="OTHR")
     motion.created_at = datetime.now(timezone.utc) - timedelta(days=8)
     await motion.save()
@@ -432,29 +432,29 @@ async def test_the_bar_being_reached_on_the_last_day_still_carries(
 
 
 async def test_the_electorate_shrinking_can_carry_a_standing_vote(
-    db, guild, notable
+    db, guild, major
 ):
     """Nothing new is voted, but the Hall got smaller — which is why the
     hourly sweep resolves motions and not only the button does."""
     for index, tag in enumerate(("VETS", "ANO", "SEQ", "LOL"), start=1):
-        await seat(guild, notable, tag, index)
-    await seat(guild, notable, "OTHR", 9)
+        await seat(guild, major, tag, index)
+    await seat(guild, major, "OTHR", 9)
     motion = await a_motion(target="OTHR")
     await expel_motion.cast_vote(guild, motion, 1, yay=True)
     await expel_motion.cast_vote(guild, motion, 2, yay=True)
     assert await expel_motion.settle(guild, motion) is None, "two of four is short"
 
-    notable.discard("SEQ")  # two of three now, which carries
+    major.discard("SEQ")  # two of three now, which carries
     resolutions = await expel_motion.resolve_open(guild)
 
     assert [one.state for one in resolutions] == [expel_motion.PASSED]
 
 
-async def test_the_recorded_tally_is_the_one_that_carried(db, guild, notable):
+async def test_the_recorded_tally_is_the_one_that_carried(db, guild, major):
     """The electorate moves, so re-deriving the split a week later would
     answer with today's guilds rather than the ones who voted."""
-    await seat(guild, notable, "VETS", 1)
-    await seat(guild, notable, "OTHR", 2)
+    await seat(guild, major, "VETS", 1)
+    await seat(guild, major, "OTHR", 2)
     motion = await a_motion(target="OTHR")
     await expel_motion.cast_vote(guild, motion, 1, yay=True)
 
@@ -665,7 +665,7 @@ def _wire(guild, channel):
 
 
 async def test_one_guild_alone_never_pings_the_server(
-    db, guild, notable, delegate_channel
+    db, guild, major, delegate_channel
 ):
     """The whole point. People leave servers over stray pings, and a
     motion nobody else has backed is one member's opinion."""
@@ -673,8 +673,8 @@ async def test_one_guild_alone_never_pings_the_server(
 
     _wire(guild, delegate_channel)
     for index, tag in enumerate(("VETS", "ANO", "SEQ", "LOL", "FIVE"), start=1):
-        await seat(guild, notable, tag, index)
-    await seat(guild, notable, "OTHR", 9)
+        await seat(guild, major, tag, index)
+    await seat(guild, major, "OTHR", 9)
     motion = await a_motion(target="OTHR")
     await expel_motion.cast_vote(guild, motion, 1, yay=True)
 
@@ -683,14 +683,14 @@ async def test_one_guild_alone_never_pings_the_server(
 
 
 async def test_three_guilds_in_favour_calls_the_hall_once(
-    db, guild, notable, delegate_channel
+    db, guild, major, delegate_channel
 ):
     from hall_monitor.discord_bot.cogs.moderation import expel as cog
 
     _wire(guild, delegate_channel)
     for index, tag in enumerate(("VETS", "ANO", "SEQ", "LOL", "FIVE"), start=1):
-        await seat(guild, notable, tag, index)
-    await seat(guild, notable, "OTHR", 9)
+        await seat(guild, major, tag, index)
+    await seat(guild, major, "OTHR", 9)
     motion = await a_motion(target="OTHR")
     for voter in (1, 2, 3):
         await expel_motion.cast_vote(guild, motion, voter, yay=True)
@@ -710,15 +710,15 @@ async def test_three_guilds_in_favour_calls_the_hall_once(
 
 
 async def test_a_motion_that_has_already_carried_calls_nobody(
-    db, guild, notable, delegate_channel
+    db, guild, major, delegate_channel
 ):
     """Nothing left to rally to — and the guild is already gone."""
     from hall_monitor.discord_bot.cogs.moderation import expel as cog
 
     _wire(guild, delegate_channel)
     for index, tag in enumerate(("VETS", "ANO", "SEQ"), start=1):
-        await seat(guild, notable, tag, index)
-    await seat(guild, notable, "OTHR", 9)
+        await seat(guild, major, tag, index)
+    await seat(guild, major, "OTHR", 9)
     motion = await a_motion(target="OTHR")
     for voter in (1, 2, 3):
         await expel_motion.cast_vote(guild, motion, voter, yay=True)
@@ -729,7 +729,7 @@ async def test_a_motion_that_has_already_carried_calls_nobody(
 
 
 async def test_an_unset_delegate_channel_doesnt_stop_the_vote(
-    db, guild, notable, monkeypatch
+    db, guild, major, monkeypatch
 ):
     """Nobody is called to it, and it still runs and still resolves."""
     from hall_monitor.discord_bot.cogs.moderation import expel as cog
@@ -740,8 +740,8 @@ async def test_an_unset_delegate_channel_doesnt_stop_the_vote(
         0,
     )
     for index, tag in enumerate(("VETS", "ANO", "SEQ", "LOL", "FIVE"), start=1):
-        await seat(guild, notable, tag, index)
-    await seat(guild, notable, "OTHR", 9)
+        await seat(guild, major, tag, index)
+    await seat(guild, major, "OTHR", 9)
     motion = await a_motion(target="OTHR")
     for voter in (1, 2, 3):
         await expel_motion.cast_vote(guild, motion, voter, yay=True)
@@ -752,7 +752,7 @@ async def test_an_unset_delegate_channel_doesnt_stop_the_vote(
 
 
 async def test_a_failed_call_is_retried_rather_than_spent(
-    db, guild, notable, delegate_channel
+    db, guild, major, delegate_channel
 ):
     """The row is stamped only once the message is out, so a motion never
     silently loses the single announcement it gets."""
@@ -762,8 +762,8 @@ async def test_a_failed_call_is_retried_rather_than_spent(
 
     _wire(guild, delegate_channel)
     for index, tag in enumerate(("VETS", "ANO", "SEQ", "LOL", "FIVE"), start=1):
-        await seat(guild, notable, tag, index)
-    await seat(guild, notable, "OTHR", 9)
+        await seat(guild, major, tag, index)
+    await seat(guild, major, "OTHR", 9)
     motion = await a_motion(target="OTHR")
     for voter in (1, 2, 3):
         await expel_motion.cast_vote(guild, motion, voter, yay=True)
@@ -799,8 +799,8 @@ async def test_re_banning_updates_rather_than_duplicating(db):
     assert (await ExpelBan.first()).reason == "second"
 
 
-async def test_lifting_a_ban_restores_nothing_but_the_door(db, guild, notable):
-    delegate = await seat(guild, notable, "OTHR", 1)
+async def test_lifting_a_ban_restores_nothing_but_the_door(db, guild, major):
+    delegate = await seat(guild, major, "OTHR", 1)
     await expel.expel(guild, "OTHR", reason="voted out")
 
     assert await expel.lift("OTHR")
@@ -816,13 +816,13 @@ async def test_lifting_a_ban_that_isnt_there_says_so(db):
 
 
 async def test_expelling_removes_whoever_represents_the_guild_now(
-    db, guild, notable
+    db, guild, major
 ):
     """By represented guild, not by the row — a `~force guild` repoint has
     to be caught, and someone repointed away must not be."""
-    stayer = await seat(guild, notable, "OTHR", 1)
+    stayer = await seat(guild, major, "OTHR", 1)
     await delegate_registry.set_forced_guild(1, "VETS", None)
-    mover = await seat(guild, notable, "VETS", 2, uuid="uuid-2")
+    mover = await seat(guild, major, "VETS", 2, uuid="uuid-2")
     await delegate_registry.set_forced_guild(2, "OTHR", None)
 
     await expel.expel(guild, "OTHR", reason="voted out")
@@ -834,13 +834,13 @@ async def test_expelling_removes_whoever_represents_the_guild_now(
 
 
 async def test_a_kick_that_fails_still_leaves_the_guild_banned(
-    db, guild, notable
+    db, guild, major
 ):
     """The ban is what keeps them out; a rep still sitting in the server
     is visible and fixable, and the hourly sweep tries again."""
     import discord
 
-    await seat(guild, notable, "OTHR", 1)
+    await seat(guild, major, "OTHR", 1)
     guild.members[1].kick.side_effect = discord.HTTPException(
         MagicMock(status=403), "no"
     )
@@ -852,12 +852,12 @@ async def test_a_kick_that_fails_still_leaves_the_guild_banned(
 
 
 async def test_the_hourly_sweep_re_removes_anyone_a_ban_missed(
-    db, guild, notable
+    db, guild, major
 ):
     """The backstop for a 403'd kick, a `~force guild` at a banned tag, or
     somebody who joined while the bot was down."""
     await ExpelBan.create(guild_tag="OTHR", reason="voted out")
-    late = await seat(guild, notable, "OTHR", 1)
+    late = await seat(guild, major, "OTHR", 1)
 
     removals = await expel.enforce(guild)
 
@@ -865,9 +865,9 @@ async def test_the_hourly_sweep_re_removes_anyone_a_ban_missed(
     assert (await Delegate.get(id=late.id)).left_at is not None
 
 
-async def test_a_settled_hall_gives_the_sweep_nothing_to_do(db, guild, notable):
+async def test_a_settled_hall_gives_the_sweep_nothing_to_do(db, guild, major):
     await ExpelBan.create(guild_tag="OTHR", reason="voted out")
-    await seat(guild, notable, "VETS", 1)
+    await seat(guild, major, "VETS", 1)
 
     assert await expel.enforce(guild) == []
 
@@ -877,15 +877,15 @@ async def test_a_settled_hall_gives_the_sweep_nothing_to_do(db, guild, notable):
 # --------------------------------------------------------------------------
 
 
-async def test_the_diagnostic_shows_turnout_but_not_the_split(db, guild, notable):
+async def test_the_diagnostic_shows_turnout_but_not_the_split(db, guild, major):
     """Anonymity a staff command opts out of isn't a property anyone can
     rely on — `~script motions` shows a monitor exactly what the channel
     shows everyone else, plus who is entitled to vote."""
     from hall_monitor.discord_bot.cogs.admin.scripts import motions
 
-    await seat(guild, notable, "VETS", 1)
-    await seat(guild, notable, "ANO", 2)
-    await seat(guild, notable, "OTHR", 3)
+    await seat(guild, major, "VETS", 1)
+    await seat(guild, major, "ANO", 2)
+    await seat(guild, major, "OTHR", 3)
     motion = await a_motion(target="OTHR")
     await expel_motion.cast_vote(guild, motion, 1, yay=True)
 
@@ -903,12 +903,12 @@ async def test_the_diagnostic_shows_turnout_but_not_the_split(db, guild, notable
 
 async def test_the_roster_does_not_list_a_banned_guild(db):
     """Expulsion is about welcome, not significance — a guild the Hall
-    voted out can be as notable as it ever was."""
-    await NotabilityCache.create(
-        guild_tag="OTHR", is_notable=True, signals_json="{}", guild_name="Others"
+    voted out can be as major as it ever was."""
+    await MajorGuildCache.create(
+        guild_tag="OTHR", is_major=True, signals_json="{}", guild_name="Others"
     )
-    await NotabilityCache.create(
-        guild_tag="VETS", is_notable=True, signals_json="{}", guild_name="Returners"
+    await MajorGuildCache.create(
+        guild_tag="VETS", is_major=True, signals_json="{}", guild_name="Returners"
     )
     await ExpelBan.create(guild_tag="OTHR", reason="voted out")
 

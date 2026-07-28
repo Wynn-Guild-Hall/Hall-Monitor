@@ -1,4 +1,4 @@
-"""Wynnpool API client — leaderboards + guild banner/warcount for notability."""
+"""Wynnpool API client — leaderboards + guild banner/warcount for major_guilds."""
 
 from dataclasses import dataclass
 
@@ -29,7 +29,7 @@ class LeaderboardEntry:
 
     ``tag`` (guild prefix) is present on the dict-keyed leaderboards but
     absent on ``season-rating`` (which only exposes ``guild_name`` /
-    ``guild_uuid``), so it's optional. Notability's tag-based match will
+    ``guild_uuid``), so it's optional. The major-guild sweep's tag-based match will
     simply skip season entries whose tag is ``None`` — matching those by
     name would require a separate name→tag lookup we don't yet have.
     """
@@ -59,7 +59,7 @@ class GuildDetails:
 
     Wynnpool mirrors the same numbers Wynncraft publishes, on a far more
     forgiving rate limit, so this is the preferred source for the
-    per-guild notability signals — see :func:`external.guild_stats`.
+    per-guild major-guild signals — see :func:`external.guild_stats`.
     Addressing is by guild *name*; there's no prefix endpoint.
     """
 

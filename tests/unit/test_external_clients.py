@@ -353,7 +353,7 @@ async def test_guild_stats_skips_wynnpool_without_a_name(httpx_mock):
 
 async def test_guild_stats_propagates_a_wynncraft_ratelimit(httpx_mock):
     """A 429 must not read as 'no territories, no wars' — that would quietly
-    strip a guild of its notability on the next refresh."""
+    strip a guild of its major-guild status on the next refresh."""
     httpx_mock.add_response(url=WYNNPOOL_GUILD, status_code=404)
     httpx_mock.add_response(url=WYNNCRAFT_GUILD, status_code=429)
     with pytest.raises(httpx.HTTPStatusError):

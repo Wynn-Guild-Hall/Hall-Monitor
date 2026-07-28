@@ -19,7 +19,7 @@ Examples:
 
 - `fix: revoke stale invite on re-request`
 - `feat: add ~force observer subcommand`
-- `docs: explain notability aggregation`
+- `docs: explain major-guild status aggregation`
 
 ## Conventions
 
