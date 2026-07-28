@@ -20,10 +20,12 @@ import json
 from hall_monitor.db.models import NotabilityCache
 from hall_monitor.services import guild_tag as tags, notability
 
+# Derived from the bounds rather than written out, so a threshold change
+# can't leave the column headings claiming the old one.
 _HEADS = {
-    notability.SEASON_TOP3_LAST10: "top3/10",
-    notability.SEASON_TOP10_LAST5: "top10/5",
-    notability.SEASON_MEAN_LAST5: "mean/5",
+    notability.PEAK_LAST_10: f"<={notability.SEASON_PEAK_LAST_10}/10",
+    notability.PEAK_LAST_5: f"<={notability.SEASON_PEAK_LAST_5}/5",
+    notability.MEAN_LAST_5: f"mean<={notability.SEASON_MEAN_LAST_5}",
 }
 
 
@@ -59,7 +61,9 @@ async def main(ctx, *args: str) -> None:
     if not fired:
         await ctx.reply("no guild currently qualifies on season placement.")
         return
-    if not any(r[3] for r in fired):
+    # A rules dict from before a rename carries the old keys, which read
+    # as "no rule fired" rather than as a stale cache.
+    if not any(set(notability.SEASON_RULES) & set(r[3]) for r in fired):
         await ctx.reply(
             "the cache predates the per-rule breakdown — run "
             "`~script refresh_notability` to record it."

@@ -153,23 +153,26 @@ def test_signal_3_top_3_in_any_of_last_10_seasons():
     assert _signal_season_placement("VETS", "Returners", ctx) is True
 
 
-def test_signal_3_top_10_in_any_of_last_5_seasons():
+def test_signal_3_peak_in_any_of_last_5_seasons():
     seasons = tuple(
-        (_season_lb(rank=8),) if i == 2 else (_season_lb(rank=50),)
+        (_season_lb(rank=notability.SEASON_PEAK_LAST_5),)
+        if i == 2
+        else (_season_lb(rank=50),)
         for i in range(5)
     )
     ctx = _ctx(season_boards=seasons)
     assert _signal_season_placement("VETS", "Returners", ctx) is True
 
 
-def test_signal_3_mean_rank_across_last_5_below_25():
-    seasons = tuple((_season_lb(rank=r),) for r in (11, 15, 20, 25, 30))
+def test_signal_3_mean_rank_across_last_5_within_bound():
+    seasons = tuple((_season_lb(rank=r),) for r in (8, 12, 15, 17, 20))  # mean 14.4
     ctx = _ctx(season_boards=seasons)
     assert _signal_season_placement("VETS", "Returners", ctx) is True
 
 
-def test_signal_3_false_when_never_placed():
-    seasons = tuple((_season_lb(rank=100),) for _ in range(10))
+def test_signal_3_false_when_placing_but_never_well_enough():
+    """Placing every season isn't the same as placing well."""
+    seasons = tuple((_season_lb(rank=60),) for _ in range(10))
     ctx = _ctx(season_boards=seasons)
     assert _signal_season_placement("VETS", "Returners", ctx) is False
 

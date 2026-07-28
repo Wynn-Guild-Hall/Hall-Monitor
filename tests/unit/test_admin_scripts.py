@@ -557,19 +557,33 @@ async def _season_cached(tag, name, ranks, *, notable=True):
 
 
 async def test_season_script_separates_the_three_rules(db):
-    """One brilliant season years ago and a steady mid-table record both
-    read as `Y` in `notable_guilds`. They are not the same claim."""
+    """A great season years ago, a good one recently, and a steady record
+    all read as one `Y` in `notable_guilds`. They are not the same claim,
+    and the count of guilds resting on each *alone* is what says which
+    bound is doing the admitting."""
     from hall_monitor.discord_bot.cogs.admin.scripts import season
+    from hall_monitor.services import notability as _n
 
-    await _season_cached("ONCE", "One Good Season", [None, None, 9, None, None])
-    await _season_cached("STDY", "Steady", [19, 12, 13, 30, 12])
+    # Each guild is carried by exactly one rule, so the "alone" counts
+    # have a single unambiguous answer.
+    await _season_cached(
+        "OLDG", "Old Glory",
+        [None] * 5 + [_n.SEASON_PEAK_LAST_10] + [None] * 4,
+    )
+    await _season_cached(
+        "RCNT", "Recent Form",
+        [_n.SEASON_PEAK_LAST_5] + [None] * 4,
+    )
+    await _season_cached("STDY", "Steady", [16, 12, 13, 14, 12])  # mean 13.4
 
     ctx, _ = _fake_ctx()
     await season.main(ctx)
     body = ctx.reply.await_args.args[0]
 
-    assert "2 guilds qualify on season placement" in body
-    assert "top10/5` — 1" in body and "mean/5` — 1" in body
+    assert "3 guilds qualify on season placement" in body
+    assert f"<={_n.SEASON_PEAK_LAST_10}/10` — 1" in body
+    assert f"<={_n.SEASON_PEAK_LAST_5}/5` — 1" in body
+    assert f"mean<={_n.SEASON_MEAN_LAST_5}` — 1" in body
 
 
 async def test_season_script_shows_one_guilds_record(db):
@@ -591,8 +605,8 @@ async def test_the_mean_rule_needs_a_placement_in_every_one_of_five(db):
     over the season it attended, which isn't a steady record."""
     from hall_monitor.services import notability as _n
 
-    assert not _n.season_rules([2, None, None, None, None])[_n.SEASON_MEAN_LAST5]
-    assert _n.season_rules([2, 20, 30, 25, 20])[_n.SEASON_MEAN_LAST5]
+    assert not _n.season_rules([2, None, None, None, None])[_n.MEAN_LAST_5]
+    assert _n.season_rules([2, 12, 20, 18, 15])[_n.MEAN_LAST_5]  # mean 13.4
 
 
 async def test_a_dash_is_outside_the_top_100_not_a_bad_rank(db):

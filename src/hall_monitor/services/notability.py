@@ -5,9 +5,9 @@ Signals
 1. **Top-25 average online** on Wynnpool's ``guild-average-online``
    leaderboard (last 5 days).
 2. **Level 100+** on Wynnpool's ``guildLevel`` leaderboard.
-3. **Season placement** across recent seasons — any of:
-   top-3 in any of the last 10 seasons; top-10 in any of the last 5;
-   mean rank across the last 5 seasons ≤ 25.
+3. **Season placement** across recent seasons — any of: top-5 in any
+   of the last 10 seasons; top-6 in any of the last 5; mean rank across
+   the last 5 seasons ≤ 15. See ``SEASON_RULES``.
 4. **Territory ownership** — above 20 territories *sustained across five
    days* while a Wynncraft season is running. Counted from Wynncraft's
    live territory map, sampled each sweep and read back from
@@ -46,9 +46,13 @@ logger = logging.getLogger(__name__)
 
 _SIGNAL_1_TOP_N = 25
 _SIGNAL_2_MIN_LEVEL = 100
-_SIGNAL_3_TOP_3 = 3
-_SIGNAL_3_TOP_10 = 10
-_SIGNAL_3_MEAN_TOP = 25
+# Season placement bounds. Named for what they *are* rather than for
+# their current values — an earlier pair called TOP_3 and TOP_10 outlived
+# the numbers they were named after, which is a trap for whoever reads
+# them next.
+SEASON_PEAK_LAST_10 = 5   # best rank across the last 10 seasons
+SEASON_PEAK_LAST_5 = 6    # best rank across the last 5
+SEASON_MEAN_LAST_5 = 15   # mean rank across the last 5
 _SIGNAL_3_LAST_10 = 10
 _SIGNAL_3_LAST_5 = 5
 MIN_TERRITORIES = 20
@@ -713,18 +717,18 @@ def _signal_level_100_plus(tag: str, ctx: _BulkContext) -> bool:
 # outstanding season years ago versus a steady record — and collapsing
 # them into a single boolean hides the distinction exactly where someone
 # is deciding whether a threshold is right.
-SEASON_TOP3_LAST10 = "top3_last10"
-SEASON_TOP10_LAST5 = "top10_last5"
-SEASON_MEAN_LAST5 = "mean5_within_25"
+PEAK_LAST_10 = "peak_last10"
+PEAK_LAST_5 = "peak_last5"
+MEAN_LAST_5 = "mean_last5"
 
-SEASON_RULES = (SEASON_TOP3_LAST10, SEASON_TOP10_LAST5, SEASON_MEAN_LAST5)
+SEASON_RULES = (PEAK_LAST_10, PEAK_LAST_5, MEAN_LAST_5)
 
 SEASON_RULE_LABELS = {
-    SEASON_TOP3_LAST10: f"top {_SIGNAL_3_TOP_3} in any of the last {_SIGNAL_3_LAST_10}",
-    SEASON_TOP10_LAST5: f"top {_SIGNAL_3_TOP_10} in any of the last {_SIGNAL_3_LAST_5}",
-    SEASON_MEAN_LAST5: (
+    PEAK_LAST_10: f"top {SEASON_PEAK_LAST_10} in any of the last {_SIGNAL_3_LAST_10}",
+    PEAK_LAST_5: f"top {SEASON_PEAK_LAST_5} in any of the last {_SIGNAL_3_LAST_5}",
+    MEAN_LAST_5: (
         f"mean rank over the last {_SIGNAL_3_LAST_5} at or under "
-        f"{_SIGNAL_3_MEAN_TOP}"
+        f"{SEASON_MEAN_LAST_5}"
     ),
 }
 
@@ -770,14 +774,14 @@ def season_rules(ranks: list[int | None]) -> dict[str, bool]:
     complete = len(placed_5) == len(last_5) and bool(last_5)
 
     return {
-        SEASON_TOP3_LAST10: any(
-            rank is not None and rank <= _SIGNAL_3_TOP_3 for rank in last_10
+        PEAK_LAST_10: any(
+            rank is not None and rank <= SEASON_PEAK_LAST_10 for rank in last_10
         ),
-        SEASON_TOP10_LAST5: any(
-            rank is not None and rank <= _SIGNAL_3_TOP_10 for rank in last_5
+        PEAK_LAST_5: any(
+            rank is not None and rank <= SEASON_PEAK_LAST_5 for rank in last_5
         ),
-        SEASON_MEAN_LAST5: complete
-        and sum(placed_5) / len(placed_5) <= _SIGNAL_3_MEAN_TOP,
+        MEAN_LAST_5: complete
+        and sum(placed_5) / len(placed_5) <= SEASON_MEAN_LAST_5,
     }
 
 
