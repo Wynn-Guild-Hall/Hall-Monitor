@@ -10,9 +10,12 @@ suspended, pending or partially-expelled state. Lifting a ban is a delete,
 and the guild's former representatives verify again from scratch — which
 is the honest reading, since while the ban stood they held nothing.
 
-The ban bites in four places, and it has to be all four or a removed
+The ban bites in five places, and it has to be all five or a removed
 guild finds its own way back in:
 
+- **The `/join` lookup.** The Hallway page is where a chief starts, so a
+  ban that only bit later would walk them through picking roles and
+  generating a code before anything told them (``sidecar/routes/join.py``).
 - **The verify route.** A chief of a banned guild is answered in chat and
   no invite is minted (``sidecar/routes/verify.py``).
 - **The join listener.** An invite minted *before* the ban is still live
@@ -22,7 +25,7 @@ guild finds its own way back in:
   says — expulsion is about welcome, not about significance, and a guild
   can be both notable and unwelcome (``services/roster.py``).
 - **The hourly sweep**, via :func:`enforce`. That's the backstop for the
-  other three and for everything nobody thought of: a ``~force guild``
+  other four and for everything nobody thought of: a ``~force guild``
   pointed at a banned tag, a member who slipped in while the bot was
   down, a kick that 403'd the first time. Same reconcile shape as §12 and
   §14 — it reads the current state and makes the server match, so no

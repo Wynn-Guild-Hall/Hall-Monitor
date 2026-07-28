@@ -20,6 +20,7 @@ from fastapi import FastAPI
 
 from hall_monitor.db.models import (
     Delegate,
+    ExpelBan,
     ForceOverride,
     GuildContact,
     NotabilityCache,
@@ -393,6 +394,34 @@ async def test_join_lookup_guild_not_notable(db, client, httpx_mock):
     assert body["eligible"] is False
     assert body["reason"] == "guild not notable"
     assert body["guild_tag"] == "SMLL"
+
+
+async def test_join_lookup_says_expelled_rather_than_not_notable(
+    db, client, httpx_mock
+):
+    """The /join page is the fifth place a ban has to bite, and the one
+    that would otherwise walk an expelled chief all the way to a code
+    before anything told them. Checked before notability, because an
+    expelled guild can be perfectly notable and "not notable" would send
+    them off chasing leaderboards over a decision about them."""
+    httpx_mock.add_response(
+        url="https://api.mojang.com/users/profiles/minecraft/chief",
+        json={"id": "u1", "name": "chief"},
+    )
+    httpx_mock.add_response(
+        url="https://api.wynncraft.com/v3/player/u1",
+        json={"guild": {"name": "Others", "prefix": "OTHR", "rank": "CHIEF"}},
+    )
+    await NotabilityCache.create(
+        guild_tag="OTHR", is_notable=True, signals_json="{}"
+    )
+    await ExpelBan.create(guild_tag="OTHR", reason="voted out")
+
+    body = (await client.get("/api/join/lookup?username=chief")).json()
+
+    assert body["eligible"] is False
+    assert body["reason"] == "guild expelled"
+    assert body["guild_tag"] == "OTHR"
 
 
 async def test_join_lookup_happy_path(db, client, httpx_mock):

@@ -23,19 +23,25 @@ Ineligible::
 
     {
       "eligible": false,
-      "reason": "not chief or owner" | "guild not notable",
+      "reason": "not chief or owner" | "guild expelled" | "guild not notable",
       "mc_username": "Notch",
       "guild_tag": "OTHR" | null
     }
 
 Unknown username → HTTP 404.
+
+``reason`` is a **contract**, not a log line: Hallway's ``lookup.js``
+branches on the exact strings above to say something useful. A new one
+added here without a matching branch there falls through to the generic
+"not chief or owner of a notable guild", which for an expelled guild is
+both wrong and maddening — they *are* chief of a notable guild.
 """
 
 from fastapi import APIRouter, HTTPException, Request
 
 from hall_monitor.config import settings
 from hall_monitor.external import resolve_profile, wynncraft
-from hall_monitor.services import contacts, delegate_registry, notability
+from hall_monitor.services import contacts, delegate_registry, expel, notability
 
 router = APIRouter()
 
@@ -53,6 +59,18 @@ async def lookup(request: Request, username: str) -> dict:
             "reason": "not chief or owner",
             "mc_username": profile.username,
             "guild_tag": player_guild.prefix if player_guild else None,
+        }
+
+    # Before notability, for the same reason the verify route checks in
+    # this order (DESIGN.md §16.5): an expelled guild can be perfectly
+    # notable, and "not notable" would send a chief off chasing
+    # leaderboards over a decision the Hall made about them.
+    if await expel.is_banned(player_guild.prefix):
+        return {
+            "eligible": False,
+            "reason": "guild expelled",
+            "mc_username": profile.username,
+            "guild_tag": player_guild.prefix,
         }
 
     if not await notability.is_notable(player_guild.prefix):
