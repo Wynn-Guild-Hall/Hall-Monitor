@@ -532,3 +532,73 @@ async def test_standing_script_needs_a_member(db):
     ctx.guild = _guild_with(None)
     await standing.main(ctx, "<@404>")
     assert "isn't a member" in ctx.reply.await_args.args[0]
+
+
+# --------------------------------------------------------------------------
+# season — the placement criterion, split into its three rules
+# --------------------------------------------------------------------------
+
+
+async def _season_cached(tag, name, ranks, *, notable=True):
+    import json as _json
+
+    from hall_monitor.db.models import NotabilityCache
+    from hall_monitor.services import notability as _n
+
+    await NotabilityCache.create(
+        guild_tag=tag,
+        guild_name=name,
+        is_notable=notable,
+        signals_json=_json.dumps({"season_placement": notable}),
+        metrics_json=_json.dumps(
+            {"season_ranks": ranks, "season_rules": _n.season_rules(ranks)}
+        ),
+    )
+
+
+async def test_season_script_separates_the_three_rules(db):
+    """One brilliant season years ago and a steady mid-table record both
+    read as `Y` in `notable_guilds`. They are not the same claim."""
+    from hall_monitor.discord_bot.cogs.admin.scripts import season
+
+    await _season_cached("ONCE", "One Good Season", [None, None, 9, None, None])
+    await _season_cached("STDY", "Steady", [19, 12, 13, 30, 12])
+
+    ctx, _ = _fake_ctx()
+    await season.main(ctx)
+    body = ctx.reply.await_args.args[0]
+
+    assert "2 guilds qualify on season placement" in body
+    assert "top10/5` — 1" in body and "mean/5` — 1" in body
+
+
+async def test_season_script_shows_one_guilds_record(db):
+    from hall_monitor.discord_bot.cogs.admin.scripts import season
+
+    await _season_cached("Bav", "Adventure of the bear", [None, 41, 9, 37, None])
+
+    ctx, _ = _fake_ctx()
+    await season.main(ctx, "Bav")
+    body = ctx.reply.await_args.args[0]
+
+    assert "Adventure of the bear" in body
+    assert "—, 41, 9, 37, —" in body
+    assert "placed in 3 of the last 5" in body, "the mean rule needs all five"
+
+
+async def test_the_mean_rule_needs_a_placement_in_every_one_of_five(db):
+    """A guild that turned up once and came second has a brilliant average
+    over the season it attended, which isn't a steady record."""
+    from hall_monitor.services import notability as _n
+
+    assert not _n.season_rules([2, None, None, None, None])[_n.SEASON_MEAN_LAST5]
+    assert _n.season_rules([2, 20, 30, 25, 20])[_n.SEASON_MEAN_LAST5]
+
+
+async def test_a_dash_is_outside_the_top_100_not_a_bad_rank(db):
+    """The boards are top-100, so absence has to stay distinguishable
+    from a poor placement — averaging it as a number would be wrong."""
+    from hall_monitor.services import notability as _n
+
+    rules = _n.season_rules([None] * 10)
+    assert not any(rules.values())

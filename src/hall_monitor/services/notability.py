@@ -459,22 +459,17 @@ def _metrics(tag: str, context: _BulkContext) -> dict[str, float | None]:
     — but they're the only way to order guilds when there are more
     qualifying than there are emote slots (:func:`strength`).
     """
-    best_season = None
-    for board in context.season_boards[:_SIGNAL_3_LAST_10]:
-        rank = _board_rank(board, tag)
-        if rank is None:
-            name = context.name_for(tag)
-            folded = name.casefold() if name else None
-            for entry in board:
-                if folded and entry.name and entry.name.casefold() == folded:
-                    rank = entry.rank
-                    break
-        if rank is not None and (best_season is None or rank < best_season):
-            best_season = rank
+    ranks = season_ranks(tag, context.name_for(tag), context)
+    placed = [rank for rank in ranks if rank is not None]
     return {
         "average_online_rank": _board_rank(context.avg_online, tag),
         "guild_level": _board_value(context.guild_level, tag),
-        "best_season_rank": best_season,
+        "best_season_rank": min(placed) if placed else None,
+        # Kept so a report can say *which* placement rule carried a guild,
+        # and show the record it was read from, without refetching ten
+        # season boards to find out.
+        "season_ranks": ranks,
+        "season_rules": season_rules(ranks),
         "territories": _board_value(context.territories, tag),
         "wars": _board_value(context.wars, tag),
     }
@@ -670,20 +665,42 @@ def _signal_level_100_plus(tag: str, ctx: _BulkContext) -> bool:
     return False
 
 
-def _signal_season_placement(
+# The three ways a guild can place well enough, kept apart so a report
+# can say *which* one carried it. They're very different claims — one
+# outstanding season years ago versus a steady record — and collapsing
+# them into a single boolean hides the distinction exactly where someone
+# is deciding whether a threshold is right.
+SEASON_TOP3_LAST10 = "top3_last10"
+SEASON_TOP10_LAST5 = "top10_last5"
+SEASON_MEAN_LAST5 = "mean5_within_25"
+
+SEASON_RULES = (SEASON_TOP3_LAST10, SEASON_TOP10_LAST5, SEASON_MEAN_LAST5)
+
+SEASON_RULE_LABELS = {
+    SEASON_TOP3_LAST10: f"top {_SIGNAL_3_TOP_3} in any of the last {_SIGNAL_3_LAST_10}",
+    SEASON_TOP10_LAST5: f"top {_SIGNAL_3_TOP_10} in any of the last {_SIGNAL_3_LAST_5}",
+    SEASON_MEAN_LAST5: (
+        f"mean rank over the last {_SIGNAL_3_LAST_5} at or under "
+        f"{_SIGNAL_3_MEAN_TOP}"
+    ),
+}
+
+
+def season_ranks(
     tag: str, name: str | None, ctx: _BulkContext
-) -> bool:
-    """Whether ``tag`` placed well enough in recent seasons.
+) -> list[int | None]:
+    """Where ``tag`` placed in each of the last 10 seasons, newest first.
 
-    Season boards identify guilds by name only — Wynnpool's season-rating
-    payload has no prefix field — so a tag-only match silently never fires.
-    Names are compared case-insensitively; the tag is still checked first
-    in case the shape gains a prefix later.
+    ``None`` for a season it didn't place in — the boards are top-100, so
+    absence means "outside the top 100", which is a different thing from
+    a bad rank and has to stay distinguishable.
+
+    Season boards identify guilds by **name only** — Wynnpool's
+    season-rating payload has no prefix field — so a tag-only match
+    silently never fires, and a guild whose full name was never resolved
+    cannot place at all. The tag is still checked first in case the shape
+    ever gains a prefix.
     """
-    boards = ctx.season_boards  # newest first
-    if not boards:
-        return False
-
     folded = name.casefold() if name else None
 
     def rank_in(board: tuple[wynnpool.LeaderboardEntry, ...]) -> int | None:
@@ -694,28 +711,40 @@ def _signal_season_placement(
                 return e.rank
         return None
 
-    last_10 = boards[: _SIGNAL_3_LAST_10]
-    last_5 = boards[: _SIGNAL_3_LAST_5]
+    return [rank_in(board) for board in ctx.season_boards[:_SIGNAL_3_LAST_10]]
 
-    # Sub-condition A: top-3 in any of the last 10 seasons.
-    for board in last_10:
-        rank = rank_in(board)
-        if rank is not None and rank <= _SIGNAL_3_TOP_3:
-            return True
 
-    # Sub-condition B: top-10 in any of the last 5 seasons.
-    for board in last_5:
-        rank = rank_in(board)
-        if rank is not None and rank <= _SIGNAL_3_TOP_10:
-            return True
+def season_rules(ranks: list[int | None]) -> dict[str, bool]:
+    """Which of the three placement rules a rank history satisfies."""
+    last_10 = ranks[:_SIGNAL_3_LAST_10]
+    last_5 = ranks[:_SIGNAL_3_LAST_5]
+    placed_5 = [rank for rank in last_5 if rank is not None]
 
-    # Sub-condition C: mean rank across last 5 seasons ≤ 25.
-    ranks = [r for r in (rank_in(b) for b in last_5) if r is not None]
-    if ranks and len(ranks) == len(last_5):
-        if sum(ranks) / len(ranks) <= _SIGNAL_3_MEAN_TOP:
-            return True
+    # The mean rule needs a placement in *every* one of the last five: a
+    # guild that placed once at rank 2 and missed four seasons has a
+    # brilliant average over the season it turned up to, which is not
+    # what "steady record" is meant to mean.
+    complete = len(placed_5) == len(last_5) and bool(last_5)
 
-    return False
+    return {
+        SEASON_TOP3_LAST10: any(
+            rank is not None and rank <= _SIGNAL_3_TOP_3 for rank in last_10
+        ),
+        SEASON_TOP10_LAST5: any(
+            rank is not None and rank <= _SIGNAL_3_TOP_10 for rank in last_5
+        ),
+        SEASON_MEAN_LAST5: complete
+        and sum(placed_5) / len(placed_5) <= _SIGNAL_3_MEAN_TOP,
+    }
+
+
+def _signal_season_placement(
+    tag: str, name: str | None, ctx: _BulkContext
+) -> bool:
+    """Whether ``tag`` placed well enough in recent seasons — any one rule."""
+    if not ctx.season_boards:
+        return False
+    return any(season_rules(season_ranks(tag, name, ctx)).values())
 
 
 def _signal_territory_ownership(territories: float | None, season_active: bool) -> bool:
