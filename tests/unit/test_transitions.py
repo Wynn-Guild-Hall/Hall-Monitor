@@ -270,7 +270,10 @@ async def test_a_guildless_rep_is_left_alone(db, notable):
     member.remove_roles.assert_not_awaited()
 
 
-async def test_an_external_rep_loses_their_contact_roles(db, notable):
+async def test_an_external_rep_vacates_their_contact_slots(db, notable):
+    """Not withheld — given up. A slot held by somebody who has moved to
+    another guild is vacant in every sense that matters, and leaving the
+    row makes it read as claimed on one screen and free on another."""
     notable.add("VETS")
     role = _role(1, "VETS", members=[MagicMock()])
     guild = FakeGuild([role])
@@ -281,8 +284,8 @@ async def test_an_external_rep_loses_their_contact_roles(db, notable):
     await transitions.reconcile(guild)
 
     assert CONTACT_ROLE_IDS["events"] in _removed(member)
-    # The slot is still theirs on paper — nothing re-verifies to get it back.
-    assert await GuildContact.filter(guild_tag="VETS", role="events").count() == 1
+    assert await GuildContact.filter(guild_tag="VETS", role="events").count() == 0
+    member.kick.assert_not_awaited(), "they moved guilds; they didn't lose a fight"
 
 
 async def test_a_settled_member_costs_no_requests(db, notable):

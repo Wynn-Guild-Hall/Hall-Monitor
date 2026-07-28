@@ -263,8 +263,10 @@ async def test_assign_follows_a_repointed_representative(db):
     assert _added_role_ids(member) == {CONTACT_ROLE_IDS["ownership"]}
 
 
-async def test_sync_withholds_a_slot_from_someone_repointed_away(db):
-    """They keep the row, but the role goes to whoever speaks for VETS."""
+async def test_sync_vacates_a_slot_from_someone_repointed_away(db):
+    """The slot goes, not just the role. Holding a slot you can't use is
+    two answers to one question — the roster read it as unclaimed while
+    `~script standing` read it as theirs."""
     guild = FakeGuild()
     delegate = await _delegate("uuid-a", 1)
     member = guild.add_member(1, holding=("events",))
@@ -277,7 +279,41 @@ async def test_sync_withholds_a_slot_from_someone_repointed_away(db):
 
     assert changed == 1
     assert _removed_role_ids(member) == {CONTACT_ROLE_IDS["events"]}
+    assert await contacts.current_holder("VETS", "events") is None
+    member.kick.assert_not_awaited(), "moving guilds doesn't cost you the room"
+
+
+async def test_a_dormant_guild_keeps_its_slots(db):
+    """The other half of the rule. Nobody here stopped being who they
+    were — the guild had a quiet quarter — so the rows stay and the same
+    people get their roles back when it returns."""
+    guild = FakeGuild()
+    delegate = await _delegate("uuid-a", 1)
+    member = guild.add_member(1, holding=("events",))
+    await GuildContact.create(guild_tag="VETS", role="events", delegate=delegate)
+
+    await contacts.sync_contact_roles("VETS", discord_guild=guild, granted=False)
+
+    assert _removed_role_ids(member) == {CONTACT_ROLE_IDS["events"]}
     assert await contacts.current_holder("VETS", "events") is not None
+
+    returning = guild.add_member(1)
+    await contacts.sync_contact_roles("VETS", discord_guild=guild, granted=True)
+    assert _added_role_ids(returning) == {CONTACT_ROLE_IDS["events"]}
+
+
+async def test_vacating_is_quiet_the_second_time(db):
+    """It runs hourly, and the row is gone after the first pass."""
+    guild = FakeGuild()
+    delegate = await _delegate("uuid-a", 1)
+    guild.add_member(1, holding=("events",))
+    await GuildContact.create(guild_tag="VETS", role="events", delegate=delegate)
+    await delegate_registry.set_forced_guild(1, "ANO", None)
+
+    await contacts.sync_contact_roles("VETS", discord_guild=guild, granted=True)
+    again = await contacts.sync_contact_roles("VETS", discord_guild=guild, granted=True)
+
+    assert again == 0
 
 
 async def test_assign_allows_a_delegate_the_watch_hasnt_placed(db):

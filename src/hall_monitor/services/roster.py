@@ -261,10 +261,11 @@ def emote_for(discord_guild: discord.Guild, tag: str) -> str:
 async def _holder(delegate: Delegate | None, guild_tag: str) -> str:
     """How one contact slot prints — a mention and their Minecraft name.
 
-    A slot held by somebody who no longer speaks for the guild prints as
-    unclaimed. They keep the slot (§6) but they've lost the role, and the
-    roster's only job is to say who to ask: naming somebody who has moved
-    on sends the room to the wrong person.
+    A slot whose holder no longer speaks for the guild prints as
+    unclaimed. The reconcile vacates those rows outright, so this
+    normally has nothing to catch; it covers the seconds between somebody
+    changing sides and the pass that clears it, which is enough for the
+    roster to never name somebody it's about to stop naming.
     """
     if delegate is None or not await contacts.represents(delegate, guild_tag):
         return UNCLAIMED

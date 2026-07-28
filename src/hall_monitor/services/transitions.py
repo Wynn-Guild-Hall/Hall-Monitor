@@ -9,10 +9,10 @@ persisted "previous state" that could itself go stale.
 
 What it settles per guild:
 
-- **Contact roles.** The contact channels are for representatives of
-  guilds currently in the Hall, so a guild that stops being notable has
-  its contact roles withdrawn and gets them back — to the same people —
-  when it returns. The ``GuildContact`` rows never move; see
+- **Contact roles.** A guild that stops being notable has its contact
+  roles withdrawn and gets them back — to the same people — when it
+  returns, rows untouched. A *holder* who stops speaking for the guild
+  is a different case and gives the slot up entirely. See
   ``services/contacts.sync_contact_roles``.
 - **The aesthetic role.** Coloured while notable, greyed while not, and
   deleted outright once it holds nobody and the guild has no delegates

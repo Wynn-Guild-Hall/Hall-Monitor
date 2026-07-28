@@ -90,11 +90,12 @@ async def represents(delegate: Delegate, guild_tag: str) -> bool:
     ``~force guild`` can repoint), and they can't have drifted off to
     somewhere else on their own.
 
-    This is the condition the contact *role* is granted on, so anything
-    that shows a guild's contacts to other guilds — the roster, chiefly —
-    should ask it too rather than trusting the slot alone. A holder who
-    has wandered off keeps the slot and loses the role, and pointing the
-    room at them would be pointing it at somebody who has left.
+    This is the condition a contact slot is *kept* on: the reconcile
+    vacates any slot whose holder fails it (:func:`sync_contact_roles`).
+    Callers that display a guild's contacts — the roster, chiefly —
+    should still ask, because there are seconds between somebody changing
+    sides and the pass that clears the row, and naming a contact who has
+    left points the room at the wrong person.
     """
     represented = await delegate_registry.represented_guild(delegate)
     if not tags.matches(represented, guild_tag):
@@ -233,25 +234,27 @@ async def sync_contact_roles(
 ) -> int:
     """Hand out or take back the Discord contact roles for one guild's slots.
 
-    The contact channels are for representatives of guilds that are
-    currently in the Hall, so a guild that stops being notable has its
-    contact roles withdrawn — and gets them back, to the same people, when
-    it returns. A holder who no longer speaks for this guild is withheld
-    from either way: the role goes to whoever represents the guild, not to
-    whoever the row remembers.
+    Two different situations, resolved differently on purpose.
 
-    The ``GuildContact`` rows are left alone either way. Notability decides
-    who may *use* a contact role; the row decides who holds the slot.
-    Clearing the rows would make a guild's return cost four re-verifications
-    and lose the record of who to give them back to. Nobody is kicked here
-    for the same reason: the kick is what happens when you lose your slot to
-    someone else, not when your guild has a quiet quarter.
+    **The guild isn't notable.** It has dropped out of the Hall for now,
+    so its contact roles are withdrawn and handed back — to the same
+    people — when it returns. The ``GuildContact`` rows are left exactly
+    as they are: notability decides who may *use* a contact role, the row
+    decides who holds the slot, and clearing them would cost a returning
+    guild four re-verifications and lose the record of who to hand the
+    roles back to. Nobody is kicked for it either — the kick is what
+    happens when you lose your slot to someone else, not when your guild
+    has a quiet quarter.
 
-    Returns the number of members whose roles actually changed, so a
-    reconcile that has nothing to do says so.
+    **The holder no longer speaks for this guild**, having drifted
+    elsewhere or been repointed by ``~force guild``. Then the slot is
+    *vacated* — see :func:`_vacate`. Not withheld: a slot somebody holds
+    and cannot use is two answers to one question, and every screen that
+    shows it has to pick one.
+
+    Returns the number of slots that actually changed, so a reconcile with
+    nothing to do says so.
     """
-    if discord_guild is None:
-        return 0
     reason = reason or (
         f"hall-monitor: {guild_tag} is notable"
         if granted
@@ -265,17 +268,21 @@ async def sync_contact_roles(
     for row in rows:
         if row.role not in _CONTACT_ROLE_SETTINGS:
             continue
+        # Checked before anything Discord-side, because the row going is
+        # the point — a slot held by somebody who has stopped speaking for
+        # this guild is vacant, and should read that way everywhere.
+        if not await represents(row.delegate, guild_tag):
+            changed += await _vacate(row, discord_guild=discord_guild)
+            continue
+        if discord_guild is None:
+            continue  # rows are settled; there's no Discord side to settle
         member = _member_for(row.delegate, discord_guild)
         if member is None:
             continue
         discord_role = _discord_role(discord_guild, row.role)
         if discord_role is None:
             continue
-        # A holder keeps the slot but not the role once they stop speaking
-        # for this guild — whether they drifted off on their own or a
-        # janitor pointed them at a different one. Either way they aren't
-        # who to ask about this guild any more.
-        wanted = granted and await represents(row.delegate, guild_tag)
+        wanted = granted
         holds = any(existing.id == discord_role.id for existing in member.roles)
         if holds == wanted:
             continue  # already correct — an hourly pass must be quiet
@@ -335,6 +342,46 @@ async def _require_represents(delegate: Delegate, guild_tag: str) -> None:
         represents=await delegate_registry.represented_guild(delegate),
         playing_for=delegate.current_guild_tag,
     )
+
+
+async def _vacate(row: GuildContact, *, discord_guild: discord.Guild | None) -> int:
+    """Give a slot up entirely, because its holder no longer speaks for it.
+
+    The alternative — keeping the row and withholding the role — makes a
+    slot that is simultaneously held and unclaimed, and every screen then
+    has to pick an answer: the roster said unclaimed, the member list said
+    they didn't have the role, and ``~script standing`` said the slot was
+    theirs. Whoever reads two of those reasonably concludes one is broken.
+
+    So the row goes. Note what this deliberately isn't:
+
+    - **Not a kick.** The kick is for losing a slot to somebody else
+      (:func:`_release`). Moving guilds already costs a representative
+      their standing and their colour; it doesn't cost them the room.
+    - **Not the non-notable path.** A dormant guild keeps its rows, and
+      the same four people get their roles back when it returns — nobody
+      there has stopped being who they were.
+
+    Coming back re-earns the slot rather than restoring it, which is the
+    honest reading: while they were gone the slot was free for anyone.
+    """
+    delegate = row.delegate
+    await row.delete()
+    member = _member_for(delegate, discord_guild)
+    if member is not None:
+        await _remove_role(
+            member,
+            row.role,
+            reason=f"hall-monitor: {row.guild_tag} {row.role} vacated — "
+            "the holder no longer speaks for that guild",
+        )
+    logger.info(
+        "contacts: vacated %s's %s slot — %s doesn't speak for them any more",
+        row.guild_tag,
+        row.role,
+        delegate.discord_user_id,
+    )
+    return 1
 
 
 async def _slot(guild_tag: str, role: str) -> GuildContact | None:
