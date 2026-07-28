@@ -604,34 +604,56 @@ async def test_a_two_day_old_representative_invite_does_not_resolve(db, guild):
 
 
 # --------------------------------------------------------------------------
-# ~echo
+# ~echo — silent and noisy
 # --------------------------------------------------------------------------
 
 
-async def test_echo_posts_then_deletes(db, guild):
-    """Deleted only once the echo is out — the other order loses what
+async def _run(cog, command, ctx, content):
+    await getattr(cog, command).callback(cog, ctx, content=content)
+
+
+async def test_silent_echo_posts_then_deletes(db, guild):
+    """Deleted only once the post is out — the other order loses what
     somebody just wrote if the send fails."""
     cog = echo_cog.Echo(MagicMock())
     ctx = _ctx(guild)
 
-    await cog.echo.callback(cog, ctx, content="hello everyone")
+    await _run(cog, "silent_echo", ctx, "hello everyone")
 
     assert ctx.send.await_args.args[0] == "hello everyone"
     ctx.message.delete.assert_awaited()
 
 
-async def test_echo_cannot_ping_the_server(db, guild):
-    """This bot has exactly one deliberate ping, gated on three guilds
-    agreeing. A command that launders one past that makes the rule
-    meaningless."""
+async def test_silent_echo_rings_for_nobody(db, guild):
+    """Mentions still render — `@Guild Hall Delegate` looks like itself
+    and links through — they just don't notify."""
     cog = echo_cog.Echo(MagicMock())
     ctx = _ctx(guild)
 
-    await cog.echo.callback(cog, ctx, content="@everyone come here")
+    await _run(cog, "silent_echo", ctx, "@everyone @here <@1> <@&2>")
 
     mentions = ctx.send.await_args.kwargs["allowed_mentions"]
     assert mentions.everyone is False
-    assert mentions.roles is True, "@Guild Hall Delegate should still work"
+    assert mentions.users is False
+    assert mentions.roles is False
+
+
+async def test_noisy_echo_lets_everything_ring(db, guild):
+    cog = echo_cog.Echo(MagicMock())
+    ctx = _ctx(guild)
+
+    await _run(cog, "noisy_echo", ctx, "@everyone come here")
+
+    mentions = ctx.send.await_args.kwargs["allowed_mentions"]
+    assert mentions.everyone is True
+    assert mentions.users is True and mentions.roles is True
+
+
+def test_echo_aliases_the_silent_one():
+    """The short name anybody reaches for first must be the one that
+    can't wake the room."""
+    assert "echo" in echo_cog.Echo.silent_echo.aliases
+    assert echo_cog.Echo.noisy_echo.aliases == []
 
 
 async def test_echo_keeps_the_message_when_the_send_fails(db, guild):
@@ -639,7 +661,7 @@ async def test_echo_keeps_the_message_when_the_send_fails(db, guild):
     ctx = _ctx(guild)
     ctx.send.side_effect = discord.HTTPException(MagicMock(status=500), "no")
 
-    await cog.echo.callback(cog, ctx, content="hello")
+    await _run(cog, "silent_echo", ctx, "hello")
 
     ctx.message.delete.assert_not_awaited()
 
@@ -648,7 +670,7 @@ async def test_echo_with_nothing_to_say_asks_for_something(db, guild):
     cog = echo_cog.Echo(MagicMock())
     ctx = _ctx(guild)
 
-    await cog.echo.callback(cog, ctx, content="")
+    await _run(cog, "silent_echo", ctx, "")
 
     ctx.send.assert_not_awaited()
     assert "give me something to say" in ctx.reply.await_args.args[0]
@@ -662,7 +684,7 @@ async def test_echo_carries_attachments_across(db, guild):
     attachment.to_file = AsyncMock(return_value="FILE")
     ctx.message.attachments = [attachment]
 
-    await cog.echo.callback(cog, ctx, content="")
+    await _run(cog, "silent_echo", ctx, "")
 
     assert ctx.send.await_args.kwargs["files"] == ["FILE"]
 
@@ -672,21 +694,27 @@ async def test_an_attachment_that_fails_doesnt_lose_the_echo(db, guild):
     ctx = _ctx(guild)
     bad = MagicMock()
     bad.filename = "map.png"
-    bad.to_file = AsyncMock(side_effect=discord.HTTPException(MagicMock(status=500), "no"))
+    bad.to_file = AsyncMock(
+        side_effect=discord.HTTPException(MagicMock(status=500), "no")
+    )
     ctx.message.attachments = [bad]
 
-    await cog.echo.callback(cog, ctx, content="still says this")
+    await _run(cog, "silent_echo", ctx, "still says this")
 
     assert ctx.send.await_args.args[0] == "still says this"
 
 
 # --------------------------------------------------------------------------
-# ~embed
+# ~embed — silent and noisy
 # --------------------------------------------------------------------------
 
 
+def _embed(content, **kwargs):
+    return embed_cog.parse(content, **kwargs)[0]
+
+
 def test_embed_parses_quoted_fields():
-    built = embed_cog.parse(
+    built = _embed(
         'title="Verification" desc="Head to hall.wynnvets.org/join" colour=#5865F2'
     )
 
@@ -698,46 +726,83 @@ def test_embed_parses_quoted_fields():
 def test_embed_treats_bare_text_as_the_description():
     """Somebody's first use of this will not have the syntax in front of
     them, and an error would teach them nothing."""
-    assert embed_cog.parse("Just a sentence").description == "Just a sentence"
+    assert _embed("Just a sentence").description == "Just a sentence"
 
 
 def test_embed_accepts_colour_by_name_and_the_american_spelling():
-    assert embed_cog.parse("color=red desc=x").colour == discord.Colour.red()
+    assert _embed("color=red desc=x").colour == discord.Colour.red()
 
 
 def test_embed_accepts_description_as_an_alias():
-    assert embed_cog.parse('description="hello"').description == "hello"
+    assert _embed('description="hello"').description == "hello"
 
 
 def test_embed_rejects_an_unknown_colour_by_name():
     with pytest.raises(embed_cog.BadEmbed, match="isn't a colour"):
-        embed_cog.parse("colour=chartreuse desc=x")
+        _embed("colour=chartreuse desc=x")
 
 
 def test_embed_with_nothing_in_it_is_refused():
     with pytest.raises(embed_cog.BadEmbed, match="something to show"):
-        embed_cog.parse("   ")
+        _embed("   ")
 
 
 def test_embed_keeps_newlines_in_a_quoted_value():
-    built = embed_cog.parse('desc="line one\nline two"')
-    assert built.description == "line one\nline two"
+    assert _embed('desc="line one\nline two"').description == "line one\nline two"
 
 
 def test_embed_leaves_an_unrecognised_key_in_the_prose():
     """`foo=bar` isn't a field, so it belongs in what the panel says
     rather than being silently dropped."""
-    assert "foo=bar" in embed_cog.parse("foo=bar and some words").description
+    assert "foo=bar" in _embed("foo=bar and some words").description
 
 
-async def test_embed_posts_then_deletes(db, guild):
+def test_ping_goes_in_the_content_because_embeds_never_notify():
+    """Discord raises notifications from a message's *content*; an embed's
+    body is not content, so a `@here` in a description rings for nobody
+    whatever `allowed_mentions` says. `ping=` is the only mechanism that
+    works, which is why `~noisy_embed` has one."""
+    built, ping = embed_cog.parse(
+        'ping="@here" title="Maintenance" desc="Back in an hour."',
+        allow_ping=True,
+    )
+
+    assert ping == "@here"
+    assert "@here" not in (built.description or "")
+    assert built.title == "Maintenance"
+
+
+def test_a_silent_embed_refuses_ping_rather_than_dropping_it():
+    """Ignoring it would leave a janitor believing they'd notified the
+    room — the exact shape of failure §12.3 is a list of."""
+    with pytest.raises(embed_cog.BadEmbed, match="monitor-only"):
+        embed_cog.parse('ping="@here" desc="x"', allow_ping=False)
+
+
+def test_embed_aliases_the_silent_one():
+    assert "embed" in embed_cog.Embed.silent_embed.aliases
+    assert embed_cog.Embed.noisy_embed.aliases == []
+
+
+async def test_silent_embed_posts_then_deletes(db, guild):
     cog = embed_cog.Embed(MagicMock())
     ctx = _ctx(guild)
 
-    await cog.embed.callback(cog, ctx, content='title="Notice" desc="hello"')
+    await _run(cog, "silent_embed", ctx, 'title="Notice" desc="hello"')
 
     assert ctx.send.await_args.kwargs["embed"].title == "Notice"
+    assert ctx.send.await_args.kwargs["allowed_mentions"].everyone is False
     ctx.message.delete.assert_awaited()
+
+
+async def test_noisy_embed_sends_the_ping_as_content(db, guild):
+    cog = embed_cog.Embed(MagicMock())
+    ctx = _ctx(guild)
+
+    await _run(cog, "noisy_embed", ctx, 'ping="@here" desc="hello"')
+
+    assert ctx.send.await_args.args[0] == "@here"
+    assert ctx.send.await_args.kwargs["allowed_mentions"].everyone is True
 
 
 async def test_embed_relays_discords_own_complaint(db, guild):
@@ -749,7 +814,7 @@ async def test_embed_relays_discords_own_complaint(db, guild):
     failure.text = "Not a well formed URL"
     ctx.send.side_effect = failure
 
-    await cog.embed.callback(cog, ctx, content='desc="x" url=notaurl')
+    await _run(cog, "silent_embed", ctx, 'desc="x" url=notaurl')
 
     assert "Not a well formed URL" in ctx.reply.await_args.args[0]
     ctx.message.delete.assert_not_awaited()
