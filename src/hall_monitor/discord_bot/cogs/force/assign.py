@@ -110,13 +110,24 @@ def register(cog: commands.Cog) -> None:
             await ctx.reply(str(exc))
             return
 
-        displaced = await contacts.assign_contact(
-            target.guild_tag,
-            role,
-            target.delegate,
-            discord_guild=ctx.guild,
-            reason=f"hall-monitor: ~force assign by {ctx.author}",
-        )
+        try:
+            displaced = await contacts.assign_contact(
+                target.guild_tag,
+                role,
+                target.delegate,
+                discord_guild=ctx.guild,
+                reason=f"hall-monitor: ~force assign by {ctx.author}",
+            )
+        except contacts.ExternalDelegate as exc:
+            # Granting it anyway would look like it worked until the next
+            # reconcile stripped it — which is exactly how this was found.
+            where = f"`{exc.playing_for}`" if exc.playing_for else "another guild"
+            await ctx.reply(
+                f"{user.mention} is playing for {where}, so they can't be a "
+                f"`{target.guild_tag}` contact. If that's wrong, "
+                f"`~force guild {user.mention} {target.guild_tag} 3mo` first."
+            )
+            return
         await ctx.reply(
             f"{user.mention} is now the `{role}` contact for "
             f"`{target.guild_tag}`.{displacement_note(displaced)}"

@@ -170,3 +170,22 @@ async def test_a_rename_we_arent_allowed_to_make_is_reported_not_raised(db):
     )
 
     assert await nicknames.enforce(member) is False
+
+
+async def test_an_impossible_rename_is_only_reported_once(db, caplog):
+    """The owner testing the bot is also a delegate, so every role change
+    would otherwise log the same refusal forever."""
+    nicknames.reset_unrenameable()
+    await _delegate(1)
+    member = _member(1, nick="Bob")
+    member.edit = AsyncMock(
+        side_effect=discord.Forbidden(MagicMock(status=403), "cannot rename owner")
+    )
+
+    with caplog.at_level("WARNING"):
+        for _ in range(5):
+            await nicknames.enforce(member)
+
+    assert caplog.text.count("not allowed to rename") == 1
+    assert member.edit.await_count == 5, "still tried — only the logging is throttled"
+    nicknames.reset_unrenameable()

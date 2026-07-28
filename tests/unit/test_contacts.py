@@ -218,6 +218,37 @@ async def test_guild_tag_matching_folds_case(db):
     assert (await contacts.current_holder("VETS", "events")).id == new.id
 
 
+async def test_assign_refuses_a_delegate_playing_elsewhere(db):
+    """Found in production: `~force assign` granted the role, reported
+    success, and the next reconcile stripped it — because the two paths
+    disagreed about whether an external rep may hold a contact role. The
+    grant is the one that was wrong."""
+    guild = FakeGuild()
+    delegate = await _delegate("uuid-a", 1)
+    delegate.current_guild_tag = "OTHR"
+    await delegate.save()
+    member = guild.add_member(1)
+
+    with pytest.raises(contacts.ExternalDelegate) as caught:
+        await contacts.assign_contact("VETS", "events", delegate, discord_guild=guild)
+
+    assert caught.value.playing_for == "OTHR"
+    member.add_roles.assert_not_awaited()
+    assert await contacts.current_holder("VETS", "events") is None, "no half-claim"
+
+
+async def test_assign_allows_a_delegate_the_watch_hasnt_placed(db):
+    """A NULL current guild means guildless or never polled, and neither
+    is being external."""
+    guild = FakeGuild()
+    delegate = await _delegate("uuid-a", 1)
+    guild.add_member(1)
+
+    await contacts.assign_contact("VETS", "events", delegate, discord_guild=guild)
+
+    assert (await contacts.current_holder("VETS", "events")).id == delegate.id
+
+
 async def test_assign_rejects_an_unknown_role(db):
     delegate = await _delegate("uuid-a", 1)
     with pytest.raises(contacts.UnknownContactRole):

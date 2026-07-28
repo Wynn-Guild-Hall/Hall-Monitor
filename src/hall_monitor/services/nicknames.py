@@ -40,6 +40,16 @@ EXTERNAL_TAG = "EXT"
 # keeps it, and gets the guild tag appended after it.
 _TRAILING_TAG = re.compile(r"\s*\[[^\[\]]*\]\s*$")
 
+# Members Discord won't let us rename, so we complain once rather than on
+# every role change. Process-local on purpose: a restart is also how an
+# operator retries after fixing the role order.
+_unrenameable: set[int] = set()
+
+
+def reset_unrenameable() -> None:
+    """Forget who couldn't be renamed. For tests, and for a reload."""
+    _unrenameable.clear()
+
 
 def visible_part(nick: str) -> str:
     """``nick`` with a trailing ``[TAG]`` removed, if it has one."""
@@ -97,16 +107,23 @@ async def enforce(member: discord.Member, *, reason: str | None = None) -> bool:
         await member.edit(nick=wanted, reason=reason or "hall-monitor: guild tag")
     except discord.Forbidden:
         # Server owners can't be renamed by anyone, and neither can anyone
-        # above the bot in the role list. Both are configuration, not bugs.
-        logger.warning(
-            "nickname: not allowed to rename %s (owner, or above me in the "
-            "role list) — wanted %r",
-            member.id,
-            wanted,
-        )
+        # above the bot in the role list. Both are configuration, not bugs,
+        # and neither resolves on its own — so say it once per member and
+        # then keep quiet. `on_member_update` fires on every role change,
+        # and an owner who is also a delegate would otherwise fill the log
+        # with the same line forever.
+        if member.id not in _unrenameable:
+            _unrenameable.add(member.id)
+            logger.warning(
+                "nickname: not allowed to rename %s (owner, or above me in "
+                "the role list) — wanted %r. Not repeating this for them.",
+                member.id,
+                wanted,
+            )
         return False
     except discord.HTTPException:
         logger.exception("nickname: couldn't rename %s to %r", member.id, wanted)
         return False
+    _unrenameable.discard(member.id)
     logger.info("nickname: %s is now %r", member.id, wanted)
     return True

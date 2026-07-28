@@ -40,6 +40,19 @@ class UnknownContactRole(KeyError):
     """Raised for a role name outside :data:`CONTACT_ROLES`."""
 
 
+class ExternalDelegate(Exception):
+    """Raised when a slot is claimed for someone playing for another guild.
+
+    Carries the guild they're currently seen in, so the caller can say
+    which one and point at ``~force guild``.
+    """
+
+    def __init__(self, delegate: "Delegate", playing_for: str | None) -> None:
+        super().__init__(playing_for)
+        self.delegate = delegate
+        self.playing_for = playing_for
+
+
 @dataclass(frozen=True)
 class Displacement:
     """A delegate who lost a contact role, and what it cost them."""
@@ -120,8 +133,18 @@ async def assign_contact(
     themselves: the join listener adds a member's whole role set in one
     request, and re-adding it here would just spend rate limit. The DB
     move and the displacement happen either way.
+
+    Raises :class:`ExternalDelegate` for someone playing for a different
+    guild. They can't be this guild's contact — the reconcile withholds
+    contact roles from external representatives (see
+    :func:`sync_contact_roles`), so granting one here would look like it
+    worked and then be stripped within the hour.
     """
     _require_known(role)
+    if await delegate_registry.is_external(delegate):
+        raise ExternalDelegate(
+            delegate, await delegate_registry.current_guild(delegate)
+        )
     reason = reason or f"hall-monitor: {guild_tag} {role} contact reassigned"
 
     row = await _slot(guild_tag, role)

@@ -159,14 +159,27 @@ class OnJoin(commands.Cog):
         # member is already a delegate by this point, so a displacement
         # that half-fails is a contact-roster problem, not a reason to
         # unwind a verification that otherwise worked.
-        displaced = await contacts.resolve_conflicts_and_kick_if_empty(
-            guild_tag,
-            role_bits.decode(roles_bits),
-            delegate,
-            discord_guild=member.guild,
-            grant=False,  # add_roles above already applied the whole set
-            reason=f"hall-monitor: {guild_tag} contact reassigned on verification",
-        )
+        try:
+            displaced = await contacts.resolve_conflicts_and_kick_if_empty(
+                guild_tag,
+                role_bits.decode(roles_bits),
+                delegate,
+                discord_guild=member.guild,
+                grant=False,  # add_roles above already applied the whole set
+                reason=f"hall-monitor: {guild_tag} contact reassigned on verification",
+            )
+        except contacts.ExternalDelegate as exc:
+            # Only reachable with a `~force guild` override written before
+            # they verified — the registration seeds them into their own
+            # guild. They're a delegate either way; the slots wait.
+            logger.warning(
+                "join: %s verified for %s but is forced to %s, so no contact "
+                "slots were claimed",
+                member.id,
+                guild_tag,
+                exc.playing_for,
+            )
+            displaced = []
         for loss in displaced:
             logger.info(
                 "join: %s took the %s %s slot from %s (kicked=%s)",
