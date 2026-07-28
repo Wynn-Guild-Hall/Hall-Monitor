@@ -1054,3 +1054,45 @@ async def test_the_sweep_records_which_raids_a_guild_placed_on(db, httpx_mock, m
     assert metrics["total_raids_rank"] == 3
     assert metrics["raid_ranks"] == {"orphionSrGuilds": 2}
     assert metrics["best_raid_rank"] == 2
+
+
+async def test_a_guild_that_falls_off_every_board_is_re_evaluated(db, httpx_mock, monkeypatch):
+    """Two guilds stayed notable on territory they no longer held: the
+    signal was fixed, but nothing recomputed a guild that had dropped out
+    of the candidate set, so its row kept the old verdict for good."""
+    monkeypatch.setattr(
+        "hall_monitor.external.wynncraft.settings.wynncraft_api_token", ""
+    )
+    await NotabilityCache.create(
+        guild_tag="GONE",
+        guild_name="Fallen Off",
+        is_notable=True,
+        signals_json=json.dumps({"territory_ownership": True}),
+    )
+    _boards(httpx_mock)  # GONE is on no board and holds no territory
+
+    await refresh_all()
+
+    cached = await NotabilityCache.get(guild_tag="GONE")
+    assert cached.is_notable is False
+    signals = json.loads(cached.signals_json)
+    assert signals["territory_ownership"] is False
+    assert "guild_raids" in signals, "and every signal is present, not just the old ones"
+
+
+async def test_a_re_evaluated_guild_keeps_its_name(db, httpx_mock, monkeypatch):
+    """Its name came from a board it's no longer on, and forgetting it
+    would leave the roster printing a tag twice. No lookup is registered
+    here, so re-fetching it would fail the test — the cached name has to
+    be reused."""
+    monkeypatch.setattr(
+        "hall_monitor.external.wynncraft.settings.wynncraft_api_token", ""
+    )
+    await NotabilityCache.create(
+        guild_tag="GONE", guild_name="Fallen Off", is_notable=True, signals_json="{}"
+    )
+    _boards(httpx_mock)
+
+    await refresh_all()
+
+    assert (await NotabilityCache.get(guild_tag="GONE")).guild_name == "Fallen Off"

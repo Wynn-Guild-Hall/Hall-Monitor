@@ -216,7 +216,20 @@ async def _refresh_all(on_progress: "ProgressCallback | None" = None) -> Refresh
         row["subject"]
         for row in await ForceOverride.filter(kind="notable").values("subject")
     }
-    tags = set(context.tag_to_name) | delegate_tags | override_tags
+    # Everything we've ever cached is a candidate, not just what's on a
+    # board today. A guild that falls off every board — loses its last
+    # territory, drops out of the raid top 100 — would otherwise never be
+    # re-evaluated, and its row would keep whatever verdict it last had
+    # for good. That is how two guilds stayed notable on territory they
+    # no longer held: the signal was fixed, and nothing recomputed them.
+    #
+    # It costs nothing. Every signal is answered from bulk data already
+    # loaded, so a guild that's dropped off is a few dictionary lookups
+    # that all come back false.
+    cached_tags = {
+        row["guild_tag"] for row in await NotabilityCache.all().values("guild_tag")
+    }
+    tags = set(context.tag_to_name) | delegate_tags | override_tags | cached_tags
 
     ordered = sorted(tags)
     await _learn_missing_names(context, ordered)
