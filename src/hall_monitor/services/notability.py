@@ -92,6 +92,16 @@ class _BulkContext:
     def name_for(self, tag: str) -> str | None:
         return self.folded_to_name.get(tags.normalise(tag))
 
+    def learn(self, tag: str, name: str) -> None:
+        """Record a name the leaderboards didn't carry.
+
+        The dataclass is frozen so the *shape* can't change mid-sweep;
+        the maps inside it are a cache being filled in, which is a
+        different thing. See :func:`_learn_missing_names`.
+        """
+        self.tag_to_name.setdefault(tag, name)
+        self.folded_to_name.setdefault(tags.normalise(tag), name)
+
 
 async def is_notable(guild_tag: str) -> bool:
     """Fast cache read; falls through to an inline single-guild evaluation
@@ -171,6 +181,7 @@ async def _refresh_all(on_progress: "ProgressCallback | None" = None) -> Refresh
     tags = set(context.tag_to_name) | delegate_tags | override_tags
 
     ordered = sorted(tags)
+    await _learn_missing_names(context, ordered)
     notable = 0
     failed = 0
     for index, tag in enumerate(ordered, start=1):
@@ -258,6 +269,53 @@ async def _load_context() -> _BulkContext:
             territories, _SIGNAL_4_MIN_TERRITORIES, "guildTerritories"
         ),
     )
+
+
+async def _learn_missing_names(context: _BulkContext, candidates: list[str]) -> None:
+    """Fill in the names the leaderboards didn't carry.
+
+    Names normally arrive free with the boards, but a guild can be a
+    candidate without appearing on one: delegate guilds and forced tags
+    join the set on their own, and season boards publish no prefix at
+    all. ``VETS`` is that case — it had no name anywhere, so the roster
+    printed it as ``**VETS** (`VETS`)``.
+
+    Cheap by construction. A name already in the cache is reused rather
+    than re-fetched, so a guild costs one Wynncraft prefix lookup *ever*,
+    and the candidates that need one are only the handful not on any of
+    the ten boards. The exception is a tag nothing knows — an invented
+    one somebody forced — which is asked again each sweep; one request an
+    hour, and it starts working the day the guild becomes real.
+
+    Worth knowing this also feeds signal 3: season boards identify guilds
+    by name, so a guild whose name we never learned could not match one.
+    """
+    unknown = [tag for tag in candidates if context.name_for(tag) is None]
+    if not unknown:
+        return
+
+    remembered = {
+        tags.normalise(row["guild_tag"]): row["guild_name"]
+        for row in await NotabilityCache.filter(guild_name__isnull=False).values(
+            "guild_tag", "guild_name"
+        )
+    }
+    asked = learned = 0
+    for tag in unknown:
+        if name := remembered.get(tags.normalise(tag)):
+            context.learn(tag, name)
+            continue
+        asked += 1
+        if name := await external.guild_name_for(tag):
+            context.learn(tag, name)
+            learned += 1
+    if asked:
+        logger.info(
+            "notability: %d candidate(s) off every board; asked Wynncraft, "
+            "learned %d name(s)",
+            asked,
+            learned,
+        )
 
 
 def _board_decides(

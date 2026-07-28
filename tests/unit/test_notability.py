@@ -282,7 +282,7 @@ async def test_refresh_all_writes_cache_for_all_candidates(db, httpx_mock, monke
             "1": {"name": "Aequitas", "prefix": "Aeq", "territories": 97},
             "2": {"name": "Bottom", "prefix": "BTMT", "territories": 0},
         },
-    })
+    }, names={"DELEG": "Delegated", "OVRD": None})
     await Delegate.create(mc_uuid="u", discord_user_id=1, guild_tag="DELEG")
     await ForceOverride.create(kind="notable", subject="OVRD", expires_at=None)
 
@@ -309,6 +309,52 @@ async def test_refresh_all_writes_cache_for_all_candidates(db, httpx_mock, monke
     assert ovrd.is_notable is True
     deleg = await NotabilityCache.get(guild_tag="DELEG")
     assert deleg.is_notable is False
+
+
+async def test_a_guild_off_every_board_still_learns_its_name(db, httpx_mock, monkeypatch):
+    """The roster prints the name, and `VETS` is on no board carrying a
+    prefix — so it read as `**VETS** (`VETS`)` until this was asked for."""
+    monkeypatch.setattr(
+        "hall_monitor.external.wynncraft.settings.wynncraft_api_token", ""
+    )
+    _empty_boards(httpx_mock, names={"VETS": "Returners"})
+    await ForceOverride.create(kind="notable", subject="VETS", expires_at=None)
+
+    await refresh_all()
+
+    assert (await NotabilityCache.get(guild_tag="VETS")).guild_name == "Returners"
+
+
+async def test_a_name_already_known_is_never_re_fetched(db, httpx_mock, monkeypatch):
+    """One prefix lookup per guild ever. `names={}` registers no response,
+    so any request at all fails the test."""
+    monkeypatch.setattr(
+        "hall_monitor.external.wynncraft.settings.wynncraft_api_token", ""
+    )
+    _empty_boards(httpx_mock)
+    await ForceOverride.create(kind="notable", subject="VETS", expires_at=None)
+    await NotabilityCache.create(
+        guild_tag="VETS", is_notable=True, signals_json="{}", guild_name="Returners"
+    )
+
+    await refresh_all()
+
+    assert (await NotabilityCache.get(guild_tag="VETS")).guild_name == "Returners"
+
+
+async def test_a_tag_nothing_knows_keeps_its_tag_as_a_name(db, httpx_mock, monkeypatch):
+    """An invented tag somebody forced. It costs one request a sweep and
+    must not stop the guild being evaluated."""
+    monkeypatch.setattr(
+        "hall_monitor.external.wynncraft.settings.wynncraft_api_token", ""
+    )
+    _empty_boards(httpx_mock, names={"ZZZZ": None})
+    await ForceOverride.create(kind="notable", subject="ZZZZ", expires_at=None)
+
+    await refresh_all()
+
+    cached = await NotabilityCache.get(guild_tag="ZZZZ")
+    assert cached.guild_name is None and cached.is_notable is True
 
 
 async def test_refresh_falls_back_per_guild_when_a_board_stops_covering(
@@ -422,18 +468,37 @@ def _boards(httpx_mock, **overrides):
             url=f"https://api.wynnpool.com/leaderboard/season-rating/{number}",
             json=payload,
         )
+    # A candidate off every board has no name, so the sweep asks Wynncraft
+    # for one. Map the tag to a name, or to `None` for a tag nothing knows.
+    for tag, name in (overrides.pop("names", {}) or {}).items():
+        if name is None:
+            httpx_mock.add_response(
+                url=f"https://api.wynncraft.com/v3/guild/prefix/{tag}", status_code=404
+            )
+            continue
+        httpx_mock.add_response(
+            url=f"https://api.wynncraft.com/v3/guild/prefix/{tag}",
+            json={
+                "uuid": f"uuid-{tag}",
+                "name": name,
+                "prefix": tag,
+                "level": 1,
+                "territories": 0,
+                "members": {},
+            },
+        )
     assert not overrides, f"unused: {sorted(overrides)}"
 
 
-def _empty_boards(httpx_mock):
-    _boards(httpx_mock)
+def _empty_boards(httpx_mock, **overrides):
+    _boards(httpx_mock, **overrides)
 
 
 async def test_refresh_reports_progress_and_a_summary(db, httpx_mock, monkeypatch):
     monkeypatch.setattr(
         "hall_monitor.external.wynncraft.settings.wynncraft_api_token", ""
     )
-    _empty_boards(httpx_mock)
+    _empty_boards(httpx_mock, names={"WYNN": "Wynn Admins", "VETS": "Returners"})
     await ForceOverride.create(kind="notable", subject="WYNN", expires_at=None)
     await ForceOverride.create(kind="notable", subject="VETS", expires_at=None)
 
@@ -473,7 +538,7 @@ async def test_refresh_survives_a_broken_progress_callback(db, httpx_mock, monke
     monkeypatch.setattr(
         "hall_monitor.external.wynncraft.settings.wynncraft_api_token", ""
     )
-    _empty_boards(httpx_mock)
+    _empty_boards(httpx_mock, names={"WYNN": "Wynn Admins"})
     await ForceOverride.create(kind="notable", subject="WYNN", expires_at=None)
 
     async def on_progress(done, total):
@@ -488,7 +553,7 @@ async def test_refresh_counts_a_failure_without_aborting(db, httpx_mock, monkeyp
     monkeypatch.setattr(
         "hall_monitor.external.wynncraft.settings.wynncraft_api_token", ""
     )
-    _empty_boards(httpx_mock)
+    _empty_boards(httpx_mock, names={"WYNN": "Wynn Admins", "VETS": "Returners"})
     await ForceOverride.create(kind="notable", subject="WYNN", expires_at=None)
     await ForceOverride.create(kind="notable", subject="VETS", expires_at=None)
 

@@ -38,6 +38,31 @@ async def resolve_username_to_uuid(
     return profile.uuid if profile else None
 
 
+async def guild_name_for(tag: str, *, urgent: bool = False) -> str | None:
+    """A guild's full name from its tag, or ``None`` if nothing knows it.
+
+    **Wynncraft only**, unlike :func:`guild_stats`. Wynnpool addresses
+    guilds by name and publishes no prefix route, so it can't answer the
+    one question being asked here — the tag is all we have.
+
+    Needed because the leaderboards are where names normally come from,
+    and a guild can be notable without being on one of them: season
+    boards carry no prefix, and a force override carries nothing at all.
+    ``VETS`` is exactly that case, which is why the roster printed it as
+    ``**VETS** (`VETS`)``.
+
+    Errors are swallowed rather than raised. A name is decoration — the
+    tag reads fine without it — and a 429 here must not cost a guild its
+    notability evaluation.
+    """
+    try:
+        guild = await wynncraft.get_guild_by_prefix(tag, urgent=urgent)
+    except (httpx.HTTPStatusError, httpx.RequestError) as e:
+        logger.debug("wynncraft prefix lookup failed for %s (%s)", tag, e)
+        return None
+    return guild.name if guild else None
+
+
 @dataclass(frozen=True)
 class GuildStats:
     """Per-guild numbers the notability signals need, plus who answered."""
