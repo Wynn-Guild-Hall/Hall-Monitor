@@ -7,8 +7,9 @@ hold, and whose notability decides their standing.
 """
 
 from datetime import datetime, timedelta, timezone
+from unittest.mock import AsyncMock, MagicMock
 
-from hall_monitor.db.models import Delegate, ForceOverride
+from hall_monitor.db.models import Delegate, ForceOverride, GuildRole
 from hall_monitor.services import delegate_registry
 
 
@@ -137,3 +138,94 @@ async def test_the_forced_tag_folds_case(db):
     await delegate_registry.set_forced_guild(1, "vets", None)
 
     assert await delegate_registry.is_external(delegate) is False
+
+
+# --------------------------------------------------------------------------
+# Applying it on the spot — `apply_now`
+# --------------------------------------------------------------------------
+
+
+def _role(role_id, name):
+    role = MagicMock()
+    role.id = role_id
+    role.name = name
+    role.colour = MagicMock()
+    role.mentionable = True
+    role.members = []
+    role.edit = AsyncMock()
+    role.delete = AsyncMock()
+    return role
+
+
+class _Guild:
+    def __init__(self, roles):
+        self.roles = list(roles)
+        self.members = {}
+        self.create_role = AsyncMock(side_effect=self._create)
+
+    async def _create(self, *, name, colour, mentionable, hoist, reason):
+        role = _role(900 + len(self.roles), name)
+        self.roles.append(role)
+        return role
+
+    def get_role(self, role_id):
+        return next((r for r in self.roles if r.id == role_id), None)
+
+    def get_member(self, user_id):
+        return self.members.get(user_id)
+
+
+def _member(guild, user_id, *, holding=()):
+    member = MagicMock()
+    member.id = user_id
+    member.guild = guild
+    member.nick = None
+    member.name = "Tester"
+    member.roles = list(holding)
+    member.add_roles = AsyncMock()
+    member.remove_roles = AsyncMock()
+    member.edit = AsyncMock()
+    guild.members[user_id] = member
+    return member
+
+
+async def test_apply_now_settles_the_guild_they_moved_to(db, monkeypatch):
+    """The bug the walkthrough caught: `apply_now` settled the row's guild,
+    which after the repoint is the one pass that no longer contains them —
+    so a member forced to ANO got no ANO role and no error either."""
+    from hall_monitor.discord_bot.cogs.force import guild as force_guild
+    from hall_monitor.services import athena_colour, guild_roles, notability
+
+    monkeypatch.setattr(
+        "hall_monitor.services.guild_roles.settings.delegate_role_id", 100
+    )
+    athena_colour.reset_cache()
+
+    async def unknown(guild_tag, *, urgent=False):
+        return None
+
+    async def notable(tag):
+        return True
+
+    monkeypatch.setattr(athena_colour, "lookup", unknown)
+    monkeypatch.setattr(notability, "is_notable", notable)
+
+    vets = _role(1, "VETS")
+    delegate_role = _role(100, "Guild Hall Delegate")
+    guild = _Guild([vets, delegate_role])
+    await GuildRole.create(guild_tag="VETS", discord_role_id=1)
+    await _delegate(1, tag="VETS", currently="VETS")
+    member = _member(guild, 1, holding=[vets])
+    await delegate_registry.set_forced_guild(1, "ANO", None)
+
+    ctx = MagicMock()
+    ctx.guild = guild
+    ctx.author = "janitor"
+    await force_guild.apply_now(ctx, member)
+
+    assert guild.create_role.await_args.kwargs["name"] == "ANO", "minted on demand"
+    added = {r.id for call in member.add_roles.await_args_list for r in call.args}
+    removed = {r.id for call in member.remove_roles.await_args_list for r in call.args}
+    assert any(guild.get_role(rid).name == "ANO" for rid in added)
+    assert vets.id in removed, "the colour moves rather than doubling up"
+    assert await guild_roles.resolve_role(guild, "ANO") is not None

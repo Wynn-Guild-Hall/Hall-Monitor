@@ -31,6 +31,7 @@ from hall_monitor.discord_bot.permissions import has_any_role, is_janitor
 from hall_monitor.services import (
     contacts,
     delegate_registry,
+    guild_tag as tags,
     nicknames,
     notability,
     transitions,
@@ -45,22 +46,38 @@ from hall_monitor.services.time_parse import (
 async def apply_now(ctx: commands.Context, user: discord.Member) -> None:
     """Settle the target's standing, roles and nickname immediately.
 
-    The hourly reconcile would get there anyway; waiting an hour to find
-    out whether a command did what you meant is what makes an override
-    feel broken. Everything the reconcile would do to their guild is done
-    here — including the contact roles, which are settled per *guild*
-    rather than per member, so leaving them out would strip someone's
-    standing while leaving them in the contact channels.
+    **Both guilds, and in this order.** A repoint is a move: the guild
+    they came from has to give up its contact roles, and the one they've
+    gone to has to mint its role and hand over the colour and standing.
+    Settling only the row's guild does nothing at all once the reconcile
+    groups members by who they represent — that pass no longer contains
+    them — which is exactly how the first version left someone forced to
+    `ANO` with no ANO role and the log showing nothing wrong.
+
+    The hourly reconcile would reach the same state on its own. Waiting an
+    hour to find out whether a command did what you meant is what makes an
+    override feel broken.
     """
     delegate = await delegate_registry.get_by_discord_user_id(user.id)
     if delegate is None or ctx.guild is None:
         return
-    notable = await notability.is_notable(delegate.guild_tag)
-    await contacts.sync_contact_roles(
-        delegate.guild_tag, discord_guild=ctx.guild, granted=notable
-    )
-    await transitions.settle_members(ctx.guild, delegate.guild_tag, notable=notable)
+
+    represents = await delegate_registry.represented_guild(delegate)
+    for tag in _affected(delegate.guild_tag, represents):
+        notable = await notability.is_notable(tag)
+        await contacts.sync_contact_roles(
+            tag, discord_guild=ctx.guild, granted=notable
+        )
+        await transitions.settle_members(ctx.guild, tag, notable=notable)
     await nicknames.enforce(user, reason=f"hall-monitor: ~force guild by {ctx.author}")
+
+
+def _affected(*tags_in_order: str) -> list[str]:
+    """The guilds to settle, deduplicated, oldest allegiance first."""
+    seen: dict[str, str] = {}
+    for tag in tags_in_order:
+        seen.setdefault(tags.normalise(tag), tag)
+    return list(seen.values())
 
 
 def register(cog: commands.Cog) -> None:
@@ -69,7 +86,7 @@ def register(cog: commands.Cog) -> None:
     async def force_guild(
         ctx: commands.Context, user: discord.Member, guild_tag: str, duration: str
     ) -> None:
-        """treat a member as playing for a guild, whatever Wynncraft says"""
+        """say which guild a member represents, whatever Wynncraft says"""
         try:
             delta = parse_duration(duration)
         except InvalidDuration:
