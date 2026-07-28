@@ -13,6 +13,7 @@ import logging
 from unittest.mock import AsyncMock, MagicMock
 
 import discord
+import httpx
 import pytest
 from PIL import Image
 
@@ -23,7 +24,7 @@ from hall_monitor.db.models import (
     NotabilityCache,
 )
 from hall_monitor.external import wynnpool
-from hall_monitor.services import banner_render, emote_slots, guild_roles
+from hall_monitor.services import banner_render, emote_slots, guild_roles, roster
 
 # A solid full-field shape. Everything it covers takes the layer colour.
 SOLID_SVG = (
@@ -284,6 +285,15 @@ def banners(monkeypatch):
     monkeypatch.setattr(emote_slots, "rendered_banner", fake)
 
 
+async def _make_stale(tag):
+    """Age a banner past its re-check window."""
+    from datetime import datetime, timezone
+
+    row = await GuildEmote.get(guild_tag=tag)
+    row.checked_at = datetime.now(timezone.utc) - emote_slots.RECHECK_AFTER * 2
+    await row.save()
+
+
 async def _notable(tag, name, rank, *, signals=None, metrics=None):
     """A cached guild. `signals`/`metrics` decide how strongly it counts,
     which is what the emote budget is handed out on."""
@@ -523,7 +533,10 @@ async def test_a_changed_banner_is_replaced(db, monkeypatch):
     await emote_slots.reconcile(guild)
     original = guild.emojis[-1]
 
+    # A changed banner is noticed at the weekly re-check, not on the next
+    # pass — the skip is what keeps a settled server off Wynnpool.
     version[0] = "second"
+    await _make_stale("VETS")
     summary = await emote_slots.reconcile(guild)
 
     assert summary.refreshed == 1
@@ -786,3 +799,118 @@ async def test_losing_the_role_icon_feature_alone_is_a_relevant_change(db, banne
     after = FakeDiscordGuild(emoji_limit=50)
 
     assert on_boost._relevant_change(before, after) is not None
+
+
+async def test_the_placeholder_is_named_for_the_reserved_guild(db):
+    """`NONE` is Wynncraft's own reserved tag, so no real guild can ever
+    collide with it — unlike a name that was only unique by convention."""
+    assert emote_slots.PLACEHOLDER_NAME == "NONE"
+    assert roster.PLACEHOLDER_EMOTE_NAME == emote_slots.PLACEHOLDER_NAME
+
+
+async def test_an_older_placeholder_is_renamed_not_replaced(db, banners):
+    """A new emote is a new ID, and every message carrying the old one
+    would break. Renaming keeps it."""
+    guild = FakeDiscordGuild(emoji_limit=4, placeholder=False)
+    old = FakeEmoji(1, "Empty_Banner")
+    old.edit = AsyncMock(side_effect=lambda **kw: setattr(old, "name", kw["name"]))
+    guild.emojis.append(old)
+
+    summary = await emote_slots.reconcile(guild)
+
+    assert summary.placeholder is False, "nothing new was uploaded"
+    assert old.name == "NONE" and old.id == 1, "same emote, same ID"
+
+
+async def test_a_settled_server_makes_no_upstream_requests(db, monkeypatch):
+    """The whole point of the skip: fifty guilds, zero Wynnpool calls,
+    once everything is minted and recently checked."""
+    fetches = []
+
+    async def counting(guild_tag, guild_name):
+        fetches.append(guild_tag)
+        return f"png-for-{guild_tag}".encode()
+
+    monkeypatch.setattr(emote_slots, "rendered_banner", counting)
+    for i, tag in enumerate(("AAA", "BBB"), start=1):
+        await _notable(tag, f"Guild {tag}", i)
+    guild = FakeDiscordGuild(emoji_limit=3)
+    await emote_slots.reconcile(guild)
+    assert len(fetches) == 2
+
+    fetches.clear()
+    await emote_slots.reconcile(guild)
+
+    assert fetches == [], "nothing changed, so nothing was asked"
+
+
+async def test_a_stale_banner_is_looked_at_again(db, banners):
+    from datetime import datetime, timedelta, timezone
+
+    await _notable("VETS", "Returners", 1)
+    guild = FakeDiscordGuild(emoji_limit=2)
+    await emote_slots.reconcile(guild)
+
+    row = await GuildEmote.get(guild_tag="VETS")
+    row.checked_at = datetime.now(timezone.utc) - emote_slots.RECHECK_AFTER * 2
+    await row.save()
+
+    assert emote_slots._is_stale(await GuildEmote.get(guild_tag="VETS"))
+
+
+async def test_a_pass_stops_at_its_fetch_cap_and_says_so(db, banners, monkeypatch):
+    """Wynnpool rate-limits at around a dozen; a roster is fifty guilds.
+    A pass that stopped early must not look like a finished one."""
+    monkeypatch.setattr(emote_slots, "FETCHES_PER_PASS", 2)
+    for i, tag in enumerate(("AAA", "BBB", "CCC", "DDD"), start=1):
+        await _notable(tag, f"Guild {tag}", i)
+    guild = FakeDiscordGuild(emoji_limit=10)
+
+    summary = await emote_slots.reconcile(guild)
+
+    assert summary.minted == 2 and summary.pending == 2
+    assert "2 still to fetch" in summary.line()
+
+
+async def test_one_guilds_rate_limit_doesnt_cost_the_rest(db, monkeypatch):
+    """The failure that took `~script emotes` down: a 429 on the twelfth
+    guild threw away the eleven banners already uploaded."""
+    async def limited(guild_tag, guild_name):
+        if guild_tag == "BBB":
+            request = MagicMock()
+            response = MagicMock()
+            response.status_code = 429
+            raise httpx.HTTPStatusError("429", request=request, response=response)
+        return f"png-for-{guild_tag}".encode()
+
+    monkeypatch.setattr(emote_slots, "rendered_banner", limited)
+    for i, tag in enumerate(("AAA", "BBB", "CCC"), start=1):
+        await _notable(tag, f"Guild {tag}", i)
+    guild = FakeDiscordGuild(emoji_limit=10)
+
+    summary = await emote_slots.reconcile(guild)
+
+    assert summary.minted == 1, "AAA survived"
+    assert summary.failed == 1
+    assert _banners(guild) == ["AAA"]
+
+
+async def test_a_rate_limit_stops_the_pass_rather_than_grinding(db, monkeypatch):
+    """Forty more guilds would collect forty more 429s and no banners."""
+    attempted = []
+
+    async def limited(guild_tag, guild_name):
+        attempted.append(guild_tag)
+        response = MagicMock()
+        response.status_code = 429
+        raise httpx.HTTPStatusError("429", request=MagicMock(), response=response)
+
+    monkeypatch.setattr(emote_slots, "rendered_banner", limited)
+    for i, tag in enumerate(("AAA", "BBB", "CCC", "DDD"), start=1):
+        await _notable(tag, f"Guild {tag}", i)
+    guild = FakeDiscordGuild(emoji_limit=10)
+
+    summary = await emote_slots.reconcile(guild)
+
+    assert attempted == ["AAA"], "stopped at the first 429"
+    assert summary.pending == 3

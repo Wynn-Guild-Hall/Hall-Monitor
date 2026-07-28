@@ -171,6 +171,29 @@ async def reconcile_role(
     return RECOLOURED if notable else GREYED
 
 
+async def forget_role_icons() -> int:
+    """Drop every recorded icon hash. Returns how many were cleared.
+
+    For a server that has fallen below boost level 2: Discord strips the
+    icons from every role and says nothing, so the records have to catch
+    up or they'd read as "already set" forever and the roles would stay
+    bare through the next boost.
+
+    A pure database operation — there is nothing to write to Discord
+    below the threshold — which is what lets it run on a pass that
+    fetches no banners at all.
+    """
+    stale = await GuildRole.filter(icon_hash__not_isnull=True).count()
+    if stale:
+        await GuildRole.filter(icon_hash__not_isnull=True).update(icon_hash=None)
+        logger.info(
+            "guild roles: forgot %d role icon(s) — the server is below the "
+            "boost level that allows them",
+            stale,
+        )
+    return stale
+
+
 async def sync_role_icon(
     discord_guild: discord.Guild,
     role: discord.Role,

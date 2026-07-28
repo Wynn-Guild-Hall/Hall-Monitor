@@ -78,10 +78,11 @@ BANNER_SIZE = (160, 320)
 # the entire point.
 EMOTE_SIZE = 128
 
-# The blank banner guilds wear until one of the emote slots is theirs.
-# Silver rather than white or black: it's the one neutral that reads on
-# both Discord themes, the same problem §11's contrast clamp solves for
-# role colours. White vanishes on the light theme, black on the dark one.
+# Wynncraft's reserved `NONE` guild ("Nobody") carries an empty banner —
+# no layers, no dyeing. An undyed banner is white, but white is invisible
+# against Discord's light theme, so it renders as silver: the same
+# contrast concession §11 makes for guild role colours, and one that
+# matters here because most of the roster wears this.
 PLACEHOLDER_BASE = "SILVER"
 
 
@@ -111,6 +112,18 @@ async def render_banner(banner: wynnpool.Banner) -> bytes:
 
 async def render_placeholder() -> bytes:
     """A blank banner, for guilds that don't have a slot of their own.
+
+    This *is* the banner of Wynncraft's reserved ``NONE`` guild
+    ("Nobody"), which is an empty one — no patterns, no dyeing. Nothing
+    publishes it (Nobody 404s on Wynnpool and on Wynncraft by both name
+    and prefix, and never appears in the territory list), and nothing
+    needs to: an empty banner is fully described by having no layers.
+
+    The one liberty taken is the colour. An undyed banner is white, and
+    white is invisible against Discord's light theme — so it renders as
+    the silver dye instead, which reads on both. That's the same
+    concession §11 makes when it clamps guild colours for contrast, and
+    it matters here because most of the roster wears this.
 
     Rendered rather than uploaded by hand so a fresh deploy has one
     without anybody remembering to make it, and rendered through the same

@@ -39,6 +39,15 @@ one render: the custom emote, and the guild role's `display_icon`
 mechanism). Rendering separately for each would double the work per
 guild per hour for no gain.
 
+Upstream work is bounded in two ways, because Wynnpool rate-limits its
+guild endpoint at around a dozen requests and a full roster is fifty
+guilds. **An unchanged banner is never re-fetched** — a guild whose emote
+is up and was checked inside `RECHECK_AFTER` costs nothing at all, so a
+settled server makes no requests — and a pass fetches at most
+`FETCHES_PER_PASS` of whatever is left, reporting how many are still
+outstanding. One guild's failure never costs the rest, and a 429 stops
+the pass rather than collecting forty more of them.
+
 Guilds that miss out wear a shared blank banner, and the bot **mints
 that itself** on the first pass — rendered through the same pipeline, so
 it matches the real ones in size and proportion, and from no layers at
@@ -51,16 +60,42 @@ banner for the guild, then the placeholder, then a plain unicode flag.
 """
 
 import logging
+from datetime import datetime, timedelta, timezone
 
 import discord
+import httpx
 
 from hall_monitor.config import settings
-from hall_monitor.db.models import GuildEmote
+from hall_monitor.db.models import GuildEmote, GuildRole
 
-# The shared blank banner every guild outside the budget wears. Held by
-# name rather than by a recorded ID, which is what lets the bot adopt one
-# an operator made by hand instead of uploading a second.
-PLACEHOLDER_NAME = "Empty_Banner"
+# The shared blank banner every guild outside the budget wears, named
+# for Wynncraft's reserved `NONE` guild ("Nobody"). That name is the
+# point: `NONE` is reserved by the server and no real guild can ever
+# hold it, so the placeholder slots into the same tag-named scheme as
+# every other banner with no chance of collision — where a name like
+# `Empty_Banner` was only ever unique by convention.
+#
+# Held by name rather than by a recorded ID, which is what lets the bot
+# adopt one an operator made by hand instead of uploading a second.
+PLACEHOLDER_NAME = "NONE"
+
+# What the placeholder used to be called. Renamed in place rather than
+# re-uploaded, because a new emote is a new ID and every message already
+# carrying the old one would break.
+_FORMER_PLACEHOLDER_NAMES = ("Empty_Banner",)
+
+# Wynnpool's guild endpoint rate-limits at roughly a dozen requests
+# before it starts answering 429, and a full roster is fifty guilds. So a
+# pass fetches at most this many banners and leaves the rest for the next
+# one — the hourly job fills a fresh server in over a few hours, and
+# steady state is zero fetches because an unchanged banner is never
+# re-fetched at all.
+FETCHES_PER_PASS = 10
+
+# How long a banner is trusted before it's fetched again. Guilds change
+# them very rarely, and the cost of being a week late to notice is a
+# slightly stale emote.
+RECHECK_AFTER = timedelta(days=7)
 from hall_monitor.services import (
     banner_render,
     guild_roles,
@@ -78,13 +113,14 @@ class Reconciled:
 
     __slots__ = (
         "minted", "refreshed", "evicted", "failed", "icons", "placeholder",
-        "budget", "wanted",
+        "pending", "budget", "wanted",
     )
 
     def __init__(self) -> None:
         self.minted = self.refreshed = self.evicted = self.failed = 0
         self.icons = 0
         self.placeholder = False
+        self.pending = 0
         self.budget = 0
         self.wanted = 0
 
@@ -101,9 +137,17 @@ class Reconciled:
             )
             if count
         )
+        # Saying how many are left is the difference between "it worked"
+        # and "it worked so far" — a pass that stopped at its fetch cap
+        # looks identical to a finished one otherwise.
+        tail = (
+            f"; {self.pending} still to fetch (next pass, or run it again)"
+            if self.pending
+            else ""
+        )
         return (
             f"{self.wanted} guild(s) inside a budget of {self.budget}; "
-            f"{work or 'nothing to do'}"
+            f"{work or 'nothing to do'}{tail}"
         )
 
 
@@ -127,23 +171,56 @@ async def reconcile(discord_guild: discord.Guild) -> Reconciled:
     # server whose list is already full of last hour's banners.
     await _evict_all_but(discord_guild, wanted, summary)
     summary.placeholder = await ensure_placeholder(discord_guild)
+
+    # Losing role icons needs no banner bytes, so it can't wait on the
+    # per-guild loop below — that loop skips any guild whose banner is
+    # already current, which on a settled server is all of them.
+    if not guild_roles.has_role_icons(discord_guild):
+        await guild_roles.forget_role_icons()
+
+    fetches = FETCHES_PER_PASS
     for tag in wanted:
-        await _ensure(discord_guild, tag, summary)
+        try:
+            fetches -= await _ensure(
+                discord_guild, tag, summary, may_fetch=fetches > 0
+            )
+        except httpx.HTTPStatusError as exc:
+            summary.failed += 1
+            if exc.response.status_code == 429:
+                # The bucket is already paused; grinding through forty
+                # more guilds would just collect forty more 429s. Stop
+                # fetching and let the next pass carry on.
+                logger.warning(
+                    "emotes: Wynnpool is rate-limiting; stopping after %s and "
+                    "picking up where we left off next pass",
+                    tag,
+                )
+                fetches = 0
+            else:
+                logger.exception("emotes: %s failed", tag)
+        except Exception:  # noqa: BLE001 — one guild must not cost the rest
+            summary.failed += 1
+            logger.exception("emotes: %s failed", tag)
     return summary
 
 
 async def ensure_placeholder(discord_guild: discord.Guild) -> bool:
     """Make sure the shared blank banner exists. Returns whether we made it.
 
-    Found by name, so an `Empty_Banner` somebody uploaded by hand is
-    adopted rather than duplicated — and, unlike the per-guild banners,
+    Found by name, so a `NONE` emote somebody uploaded by hand is
+    adopted rather than duplicated, and an older `Empty_Banner` of ours
+    is renamed in place rather than replaced — and, unlike the per-guild banners,
     never deleted: it belongs to no guild, so nothing can evict it, and
     the roster's whole fallback chain rests on it.
 
     A failure here is not worth a fuss. The roster falls back to a plain
     unicode flag, which is exactly what it did before this existed.
     """
-    if not settings.roster_emotes_enabled or _placeholder(discord_guild) is not None:
+    if not settings.roster_emotes_enabled:
+        return False
+    if _placeholder(discord_guild) is not None:
+        return False
+    if await _rename_former_placeholder(discord_guild):
         return False
     try:
         png = await banner_render.render_placeholder()
@@ -165,10 +242,41 @@ async def ensure_placeholder(discord_guild: discord.Guild) -> bool:
 
 
 def _placeholder(discord_guild: discord.Guild) -> discord.Emoji | None:
+    return _named(discord_guild, PLACEHOLDER_NAME)
+
+
+def _named(discord_guild: discord.Guild, name: str) -> discord.Emoji | None:
     for emoji in discord_guild.emojis:
-        if emoji.name.casefold() == PLACEHOLDER_NAME.casefold():
+        if emoji.name.casefold() == name.casefold():
             return emoji
     return None
+
+
+async def _rename_former_placeholder(discord_guild: discord.Guild) -> bool:
+    """Carry an older placeholder over to the current name, in place.
+
+    Renaming keeps the emote's ID, so every message already using it
+    still renders. Uploading a fresh one and deleting the old would break
+    all of them and spend a slot doing it.
+    """
+    for name in _FORMER_PLACEHOLDER_NAMES:
+        emoji = _named(discord_guild, name)
+        if emoji is None:
+            continue
+        try:
+            await emoji.edit(
+                name=PLACEHOLDER_NAME,
+                reason=f"hall-monitor: {name} is now {PLACEHOLDER_NAME}",
+            )
+        except discord.HTTPException:
+            logger.warning(
+                "emotes: couldn't rename :%s: to :%s:", name, PLACEHOLDER_NAME,
+                exc_info=True,
+            )
+            return False
+        logger.info("emotes: renamed :%s: to :%s:", name, PLACEHOLDER_NAME)
+        return True
+    return False
 
 
 async def ensure_emote_for_guild(
@@ -181,7 +289,9 @@ async def ensure_emote_for_guild(
     can drift from it.
     """
     summary = Reconciled()
-    return await _ensure(discord_guild, guild_tag, summary)
+    await _ensure(discord_guild, guild_tag, summary)
+    row = await GuildEmote.filter(guild_tag__iexact=guild_tag).first()
+    return _find(discord_guild, row)
 
 
 async def rendered_banner(guild_tag: str, guild_name: str | None) -> bytes | None:
@@ -278,8 +388,19 @@ async def budget(discord_guild: discord.Guild) -> int:
 
 
 async def _ensure(
-    discord_guild: discord.Guild, guild_tag: str, summary: Reconciled
-) -> discord.Emoji | None:
+    discord_guild: discord.Guild,
+    guild_tag: str,
+    summary: Reconciled,
+    *,
+    may_fetch: bool = True,
+) -> int:
+    """Settle one guild's banner. Returns how many upstream fetches it cost.
+
+    Returning the cost is what lets :func:`reconcile` bound a pass: a
+    guild whose banner is already up and recently checked costs nothing,
+    so a settled server does no upstream work at all and only a genuinely
+    new or stale one spends from the budget.
+    """
     existing = await GuildEmote.filter(guild_tag__iexact=guild_tag).first()
     emoji = _find(discord_guild, existing)
     if existing is not None and emoji is None:
@@ -287,26 +408,89 @@ async def _ensure(
         await existing.delete()
         existing = None
 
+    if (
+        existing is not None
+        and emoji is not None
+        and not _is_stale(existing)
+        and not await _icon_out_of_sync(discord_guild, guild_tag, existing)
+    ):
+        return 0  # already up and recently checked — nothing to ask anyone
+
+    if not may_fetch:
+        # Out of fetches for this pass. Counted rather than dropped, so
+        # the reply says how much is left instead of implying it's done.
+        summary.pending += 1
+        return 0
+
     name = await _guild_name(guild_tag)
     png = await rendered_banner(guild_tag, name)
     if png is None:
-        return emoji  # keep whatever is already there; a miss isn't a reason to lose it
+        # Nothing upstream knows this guild's banner. Keep whatever is
+        # already there — a miss isn't a reason to lose a good emote — but
+        # mark it checked so the next pass spends its budget elsewhere.
+        await _mark_checked(existing)
+        return 1
     digest = banner_render.image_hash(png)
     await _push_role_icon(discord_guild, guild_tag, png, summary)
 
     if existing is not None and emoji is not None:
+        await _mark_checked(existing)
         if existing.image_hash == digest:
-            return emoji  # unchanged — an hourly pass must be quiet
+            return 1  # unchanged — an hourly pass must be quiet
         # The banner really changed. Discord has no "replace an emote's
         # image", so this is a delete and a re-upload, and the ID moves.
         if not await _delete(emoji, guild_tag):
             summary.failed += 1
-            return emoji
+            return 1
         await existing.delete()
         summary.refreshed += 1
-        return await _upload(discord_guild, guild_tag, png, digest, summary, minted=False)
+        await _upload(discord_guild, guild_tag, png, digest, summary, minted=False)
+        return 1
 
-    return await _upload(discord_guild, guild_tag, png, digest, summary, minted=True)
+    await _upload(discord_guild, guild_tag, png, digest, summary, minted=True)
+    return 1
+
+
+async def _icon_out_of_sync(
+    discord_guild: discord.Guild, guild_tag: str, row: GuildEmote
+) -> bool:
+    """Whether the role's icon needs the banner bytes we'd otherwise skip.
+
+    Skipping the fetch for an unchanged banner is what keeps a settled
+    server quiet, but the role icon rides on those same bytes — so a
+    server that has just regained boost level 2 would sit iconless until
+    the weekly re-check came round. The two hashes disagreeing is exactly
+    that situation, and it resolves itself in one pass.
+
+    False when the server can't have role icons at all, or the role isn't
+    one of ours: below boost level 2 the recorded hash is deliberately
+    cleared (`guild_roles.sync_role_icon`), and treating that as
+    out-of-sync would have an unboosted server re-fetching every banner
+    it has, every hour, forever.
+    """
+    if not guild_roles.has_role_icons(discord_guild):
+        return False
+    role = await guild_roles.resolve_role(discord_guild, guild_tag)
+    if role is None:
+        return False
+    owned = await GuildRole.filter(
+        guild_tag__iexact=guild_tag, discord_role_id=role.id
+    ).first()
+    return owned is not None and owned.icon_hash != row.image_hash
+
+
+def _is_stale(row: GuildEmote) -> bool:
+    """Whether a banner is due another look."""
+    if row.checked_at is None:
+        return True  # minted before this was recorded
+    return datetime.now(timezone.utc) - row.checked_at > RECHECK_AFTER
+
+
+async def _mark_checked(row: GuildEmote | None) -> None:
+    if row is None:
+        return
+    row.checked_at = datetime.now(timezone.utc)
+    await row.save(update_fields=["checked_at"])
 
 
 async def _upload(
@@ -334,7 +518,14 @@ async def _upload(
         return None
     await GuildEmote.update_or_create(
         guild_tag=guild_tag,
-        defaults={"discord_emoji_id": emoji.id, "image_hash": digest},
+        defaults={
+            "discord_emoji_id": emoji.id,
+            "image_hash": digest,
+            # Uploading *is* a check. Without this a freshly minted
+            # banner reads as never-checked and gets re-fetched on every
+            # pass — which is most of what the skip exists to avoid.
+            "checked_at": datetime.now(timezone.utc),
+        },
     )
     if minted:
         summary.minted += 1

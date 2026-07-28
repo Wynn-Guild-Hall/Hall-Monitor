@@ -67,10 +67,12 @@ MESSAGE_LIMIT = 2000
 HISTORY_LIMIT = 200
 
 # The blank banner a guild wears when it hasn't earned one of the emote
-# slots. `services/emote_slots.py` mints it; a server where that failed
-# falls through to a unicode flag, because a missing emote must never be
-# the thing that stops the roster.
-PLACEHOLDER_EMOTE_NAME = "Empty_Banner"
+# slots, named for Wynncraft's reserved `NONE` guild — a tag no real
+# guild can ever hold, so it can't collide with a banner of ours.
+# `services/emote_slots.py` mints it; a server where that failed falls
+# through to a unicode flag, because a missing emote must never be the
+# thing that stops the roster.
+PLACEHOLDER_EMOTE_NAME = "NONE"
 FALLBACK_EMOTE = "\N{WAVING WHITE FLAG}"
 
 UNCLAIMED = "`unclaimed`"

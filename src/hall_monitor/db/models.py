@@ -155,6 +155,11 @@ class GuildEmote(Model):
     guild_tag = fields.CharField(max_length=8, unique=True)
     discord_emoji_id = fields.BigIntField(unique=True)
     image_hash = fields.CharField(max_length=64)
+    # When the banner was last fetched and compared, as distinct from
+    # when it was last *uploaded* (`created_at`). A banner that never
+    # changes never moves `created_at`, so without this the re-check
+    # would come due once and then fire on every pass forever.
+    checked_at = fields.DatetimeField(null=True)
     created_at = fields.DatetimeField(auto_now_add=True)
 
     class Meta:

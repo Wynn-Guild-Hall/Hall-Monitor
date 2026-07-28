@@ -329,6 +329,17 @@ Note this is deliberately a *different* order from §14.1's. The roster is sorte
 
 Guilds above the line get their banner minted; guilds that fall below it are evicted, and **eviction runs before minting** so the freed slots are available to the guilds that displaced them — otherwise a full list makes every mint fail and the boundary never moves. A boost change doesn't wait for the hourly pass: `cogs/listeners/on_boost.py` reconciles on `GUILD_UPDATE`, filtered to changes that actually moved the slot count or the role-icon feature, since that event also fires for the server's name and icon.
 
+#### Staying inside Wynnpool's rate limit
+
+A banner costs one call to Wynnpool's guild endpoint, that endpoint starts answering 429 at around a dozen requests, and a roster is fifty guilds. Two things keep a pass inside it:
+
+- **An unchanged banner is never re-fetched.** `GuildEmote.checked_at` records when a banner was last *looked at*, as distinct from `created_at`, which records when it last *changed* — a banner that never changes never moves `created_at`, so using that would bring the re-check due once and then fire every pass forever. A guild whose emote is up and was checked inside `RECHECK_AFTER` (a week) costs nothing, so a settled server makes **no upstream requests at all** and only a new or genuinely stale guild spends anything. The cost of being a week late to notice a redesigned banner is a slightly stale emote.
+- **A pass fetches at most `FETCHES_PER_PASS`** of whatever is left and reports how many are outstanding. A fresh server fills in over a few hours of the hourly job, or as fast as an operator re-runs `~script emotes`. Saying what's left matters: a pass that stopped at its cap otherwise looks exactly like a finished one.
+
+One guild's failure never costs the rest — that's the same rule as every other sweep here (§12, §4) and it was learned the hard way, when a 429 on the twelfth guild threw away the eleven banners already uploaded and answered the operator with "that broke on my end". A 429 additionally **stops** the pass rather than grinding through forty more guilds to collect forty more of them; the bucket is already paused, and the next pass picks up where this one left off.
+
+The skip has one exception worth naming. Role icons ride on the same bytes, so a server that has just regained boost level 2 would sit iconless until the weekly re-check — `_icon_out_of_sync` spots exactly that (the role's recorded hash disagreeing with the emote's) and spends a fetch on it. Losing the feature needs no bytes at all, so `guild_roles.forget_role_icons` clears the records once per pass rather than per guild; otherwise a settled server, which skips every guild, would never clear them.
+
 Two invariants, both the same shape as §11's rules for roles:
 
 - **Only emotes we created are ever deleted.** `GuildEmote` records the ones we minted and they're resolved by **ID, never by name**. An emote that happens to share a guild's tag might be somebody's own from years ago, and deleting it breaks every message that used it, irreversibly.
@@ -340,9 +351,11 @@ The roster picks them up on its own: `roster.emote_for` tries our recorded emote
 
 Guilds outside the budget wear a shared placeholder, and **the bot mints it itself** on the first pass rather than waiting for someone to upload one. It goes through the same pipeline as the real banners, so it matches them in size and proportion instead of sitting beside them as a differently-shaped emoji — and it has no layers, so it needs no pattern art and no network. A fallback that depends on Wynnpool being up isn't much of a fallback.
 
-It's silver. White disappears on Discord's light theme and black on the dark one; silver is the one neutral that reads on both, which is the same problem §11's contrast clamp solves for role colours.
+It's named **`NONE`**, after Wynncraft's reserved guild "Nobody", and that name is load-bearing: `NONE` is reserved by the server and no real guild can ever hold it, so the placeholder sits in the same tag-named scheme as every other banner with no possibility of collision. A name like `Empty_Banner` was only unique by convention. An older placeholder under that name is **renamed in place** rather than replaced, because a new emote is a new ID and every message already carrying the old one would break.
 
-Unlike the per-guild banners it's found by **name** (`Empty_Banner`), which is what lets an operator's own hand-made one be adopted rather than duplicated, and it is **never deleted** — it belongs to no guild, so nothing can evict it, and the roster's entire fallback chain rests on it. It costs a slot like anything else, and `budget` holds one back for it before it exists: otherwise the last guild in the budget would be minted into the space the placeholder is about to need, and fail. If the upload fails there's no fuss — the roster drops to a plain unicode flag, which is exactly what it did before this existed.
+Nobody's banner genuinely is an empty one — no patterns, no dyeing — so rendering it from no layers isn't an approximation. Nothing publishes it (Nobody 404s on Wynnpool and on Wynncraft by both name and prefix, and never appears in the territory list) and nothing needs to. The one liberty is the colour: an undyed banner is white, white is invisible against Discord's light theme, so it renders as the silver dye. That's the same concession §11 makes when it clamps guild colours for contrast, and it matters here because most of the roster wears this.
+
+It's found by **name**, which is what lets an operator's own hand-made one be adopted rather than duplicated, and it is **never deleted** — it belongs to no guild, so nothing can evict it, and the roster's entire fallback chain rests on it. It costs a slot like anything else, and `budget` holds one back for it before it exists: otherwise the last guild in the budget would be minted into the space the placeholder is about to need, and fail. If the upload fails there's no fuss — the roster drops to a plain unicode flag, which is exactly what it did before this existed.
 
 ### 15.3 The same image on the role
 
