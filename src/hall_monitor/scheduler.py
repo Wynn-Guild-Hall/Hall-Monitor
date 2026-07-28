@@ -7,7 +7,12 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from discord.ext import commands
 
 from hall_monitor.config import settings
-from hall_monitor.services import discord_invites, notability, transitions
+from hall_monitor.services import (
+    delegate_registry,
+    discord_invites,
+    notability,
+    transitions,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -32,13 +37,20 @@ def build_scheduler(bot: commands.Bot) -> AsyncIOScheduler:
 
 
 async def refresh_and_reconcile(bot: commands.Bot) -> None:
-    """Re-evaluate notability, then make Discord match the new answer.
+    """Re-gather the facts, then make Discord match them.
 
-    One job rather than two intervals: the reconcile reads the cache the
-    refresh just wrote, and running them independently would spend an hour
-    of every change acting on the previous sweep's numbers.
+    One job rather than three intervals, in this order deliberately: the
+    reconcile reads both the notability cache and each delegate's current
+    guild, so gathering them separately would spend an hour of every
+    change acting on the previous sweep's numbers.
     """
     await notability.refresh_all()
+    checked, external = await delegate_registry.refresh_current_guilds()
+    logger.info(
+        "guild watch: %d delegate(s) checked, %d representing a guild they've left",
+        checked,
+        external,
+    )
 
     guild = (
         bot.get_guild(settings.discord_guild_id) if settings.discord_guild_id else None

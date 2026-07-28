@@ -22,8 +22,9 @@ import logging
 
 import discord
 
+from hall_monitor.config import settings
 from hall_monitor.db.models import Delegate, GuildRole, PendingInvite
-from hall_monitor.services import athena_colour, guild_tag as tags
+from hall_monitor.services import athena_colour, delegate_registry, guild_tag as tags
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +34,13 @@ GREYED = "greyed"
 DELETED = "deleted"
 UNCHANGED = "unchanged"
 ABSENT = "absent"
+
+# The three mutually-exclusive standing roles, and where their IDs live.
+_STANDING_SETTINGS = {
+    delegate_registry.DELEGATE: "delegate_role_id",
+    delegate_registry.RELEGATE: "relegate_role_id",
+    delegate_registry.EXTERNAL: "external_relegate_role_id",
+}
 
 
 def find_guild_role(
@@ -147,12 +155,71 @@ async def reconcile_role(
     return RECOLOURED if notable else GREYED
 
 
-async def set_delegate(member) -> None:
-    raise NotImplementedError
+async def sync_standing(
+    member: discord.Member, standing: str, *, reason: str | None = None
+) -> bool:
+    """Give ``member`` the one standing role they should have, and no other.
+
+    Delegate, Relegate and External Relegate are mutually exclusive, so
+    this both adds the wanted one and strips the other two — a member
+    holding two of them reads as two different answers to the same
+    question. Returns whether anything changed, so an hourly pass with
+    nothing to do makes no requests.
+    """
+    wanted_id = getattr(settings, _STANDING_SETTINGS[standing])
+    if not wanted_id:
+        logger.warning(
+            "guild roles: the %s role ID is unset; standing not applied", standing
+        )
+        return False
+    wanted = member.guild.get_role(wanted_id)
+    if wanted is None:
+        logger.warning(
+            "guild roles: %s role %s is not in the guild", standing, wanted_id
+        )
+        return False
+
+    held = {role.id for role in member.roles}
+    stale = [
+        role
+        for name, attribute in _STANDING_SETTINGS.items()
+        if name != standing
+        and (role_id := getattr(settings, attribute))
+        and role_id in held
+        and (role := member.guild.get_role(role_id)) is not None
+    ]
+    reason = reason or f"hall-monitor: standing is now {standing}"
+
+    changed = False
+    if wanted.id not in held:
+        changed |= await _add(member, wanted, reason=reason)
+    if stale:
+        changed |= await _remove(member, stale, reason=reason)
+    return changed
 
 
-async def set_relegate(member) -> None:
-    raise NotImplementedError
+async def sync_guild_role_membership(
+    member: discord.Member,
+    role: discord.Role | None,
+    *,
+    wanted: bool,
+    reason: str | None = None,
+) -> bool:
+    """Put ``member`` in (or out of) their guild's aesthetic role.
+
+    Out is for a representative who has moved guilds: wearing ``VETS``
+    while playing for someone else misinforms every other guild in the
+    room, which is the one thing the colour exists to get right.
+    """
+    if role is None:
+        return False
+    holds = any(existing.id == role.id for existing in member.roles)
+    if holds == wanted:
+        return False
+    reason = reason or f"hall-monitor: {role.name} membership"
+    if wanted:
+        return await _add(member, role, reason=reason)
+    return await _remove(member, [role], reason=reason)
 
 
 # --------------------------------------------------------------------------
@@ -225,6 +292,32 @@ async def _recycle(role: discord.Role, owned: GuildRole, guild_tag: str) -> str:
         "guild roles: recycled the %s role — no members, no delegates", guild_tag
     )
     return DELETED
+
+
+async def _add(member: discord.Member, role: discord.Role, *, reason: str) -> bool:
+    try:
+        await member.add_roles(role, reason=reason)
+    except discord.HTTPException:
+        logger.exception(
+            "guild roles: couldn't give %s to %s", role.name, member.id
+        )
+        return False
+    return True
+
+
+async def _remove(
+    member: discord.Member, roles: list[discord.Role], *, reason: str
+) -> bool:
+    try:
+        await member.remove_roles(*roles, reason=reason)
+    except discord.HTTPException:
+        logger.exception(
+            "guild roles: couldn't take %s off %s",
+            ", ".join(role.name for role in roles),
+            member.id,
+        )
+        return False
+    return True
 
 
 async def _in_use(guild_tag: str) -> bool:

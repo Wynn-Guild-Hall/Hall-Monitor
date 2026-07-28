@@ -75,7 +75,7 @@ Candidates are drawn from **every** board Wynnpool publishes — the four signal
 
 `~force notable <tag> <time>` writes a `ForceOverride` row. Janitors are capped at three months — long enough to carry a guild through a quiet patch, short enough that nobody parks a guild in the Hall indefinitely. There's no floor. Monitors have no ceiling and can pass `0` for a permanent override (`services/time_parse.py` owns the parsing). `~unforce notable <tag>` deletes the row.
 
-Transitions (delegate ↔ relegate role swaps on notability change) land in Stage 9.
+What a change in notability *does* to a guild's representatives — the delegate ↔ relegate swap, the contact roles, the guild colour — is §12. Nothing here dispatches on the change itself; the reconcile reads the cache and makes Discord match.
 
 ### Guild tags
 
@@ -178,13 +178,43 @@ New roles land at the bottom of the hierarchy, which is where `create_role` puts
 
 ## 12. Reconciling against notability
 
-**Status:** implemented (Stage 8)
+**Status:** implemented (Stage 8; standing roles and the guild watch in Stage 9)
 
 `services/transitions.py` holds a **reconcile**, not a set of edge-triggered transition handlers: it reads what's notable now and makes Discord match, rather than diffing against a remembered previous state. That makes the pass safe to run repeatedly, lets it heal a server that drifted while the bot was down or while an edit 403'd, and means there's no "previous state" record that can itself go stale. It runs after each notability sweep (one scheduler job, so the reconcile reads the numbers the sweep just wrote) and on demand via `~script reconcile`.
 
 Only guilds with a *presence* are visited — a role we created, a live delegate, or a claimed contact slot. The cache knows a couple of hundred guilds and all but a handful have nothing here to reconcile; iterating the cache would mint a role for every guild in Wynncraft. Tags are deduplicated case-insensitively, or two spellings of one guild would take turns undoing each other. One guild's failure is logged and skipped rather than ending the pass.
 
-Per guild it settles the contact roles (§6) and the aesthetic role, the latter with three outcomes:
+Per guild it settles three things: each representative's standing, the contact roles (§6), and the aesthetic role.
+
+### 12.1 Standing
+
+Every representative wears exactly one of three roles, and the reconcile both grants the right one and strips the other two — a member holding two of them reads as two different answers to the same question.
+
+| Standing | When |
+|---|---|
+| **Delegate** | their guild is notable and they're still in it |
+| **Relegate** | their guild isn't notable |
+| **External Relegate** | they've moved to a *different* guild |
+
+Moving guilds outranks notability: a representative who has left can't be promoted back by their old guild having a good month. An external representative also comes out of the guild's aesthetic role and loses their contact roles — wearing `VETS` while playing for someone else misinforms every other guild in the room, which is the one thing the colour exists to get right. Their `GuildContact` rows stay, on the same reasoning as §6.
+
+**Nobody is kicked and no row is deleted for any of this.** Guilds are expected to move in and out of the Hall, and the point of keeping the `Delegate` row is that coming back costs nothing — no re-verification, and the same people get their slots back.
+
+Note the asymmetry the design brief asks for: being *guildless* is not being external. Someone between guilds is still the person their guild sent, and the alternative relegates anyone who leaves for an afternoon. Only actively sitting in a different guild counts.
+
+### 12.2 The guild watch
+
+Wynncraft pushes nothing, so guild membership is polled: `delegate_registry.refresh_current_guilds` asks for each live delegate's current guild once an hour (one request each, serialised on the player bucket) and writes it to `Delegate.current_guild_tag`. `guild_tag` — the guild they verified as a representative of — never changes; the two differing is the whole definition of external.
+
+The poll only gathers facts; the reconcile that follows in the same job acts on them. That split is what keeps the standing decision in one place and lets `~script guild_watch` + `~script reconcile` reproduce an hour's work by hand. A lookup that fails leaves the stored value alone rather than resetting it: a 429 recorded as "no guild" would read back as the delegate having *rejoined* their guild, quietly promoting someone the last sweep relegated.
+
+A brand-new delegate gets `current_guild_tag` seeded at registration — verification proves they're a chief of that guild right then, so starting them as unknown would only invite a wrong answer until the first poll.
+
+**Known gap:** an external representative who becomes a chief of their *new* guild can't verify for it — `mint_invite` refuses while their `Delegate` row is live (§3). Re-representing a different guild needs a deliberate path; nothing today provides one.
+
+### 12.3 The aesthetic role
+
+Three outcomes:
 
 - **Recoloured** — notable, so it carries the Athena hue.
 - **Greyed** — not notable, but people still wear it. Deleting it would rewrite every past `@TAG` in the channel history to `@deleted-role`; the colour going away says the same thing reversibly.

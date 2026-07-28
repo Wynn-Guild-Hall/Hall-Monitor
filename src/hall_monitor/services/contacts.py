@@ -190,7 +190,8 @@ async def sync_contact_roles(
     The contact channels are for representatives of guilds that are
     currently in the Hall, so a guild that stops being notable has its
     contact roles withdrawn — and gets them back, to the same people, when
-    it returns.
+    it returns. A holder who has since moved to a different guild is
+    withheld from either way (``delegate_registry.is_external``).
 
     The ``GuildContact`` rows are left alone either way. Notability decides
     who may *use* a contact role; the row decides who holds the slot.
@@ -223,10 +224,13 @@ async def sync_contact_roles(
         discord_role = _discord_role(discord_guild, row.role)
         if discord_role is None:
             continue
+        # A holder who has moved guilds keeps the slot but not the role:
+        # they aren't who to ask about this guild any more.
+        wanted = granted and not delegate_registry.is_external(row.delegate)
         holds = any(existing.id == discord_role.id for existing in member.roles)
-        if holds == granted:
+        if holds == wanted:
             continue  # already correct — an hourly pass must be quiet
-        if granted:
+        if wanted:
             await _add_role(member, discord_role, role=row.role, reason=reason)
         else:
             await _remove_role(member, row.role, reason=reason)

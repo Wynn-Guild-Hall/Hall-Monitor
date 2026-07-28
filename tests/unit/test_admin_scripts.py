@@ -409,6 +409,24 @@ async def test_guild_role_script_flags_the_fallback_colour(db, monkeypatch):
     assert "Athena doesn't know this guild" in ctx.reply.await_args.args[0]
 
 
+async def test_guild_watch_script_reports_what_it_found(db, monkeypatch):
+    from hall_monitor.discord_bot.cogs.admin.scripts import guild_watch
+
+    async def fake_watch():
+        return 4, 1
+
+    monkeypatch.setattr(
+        "hall_monitor.services.delegate_registry.refresh_current_guilds", fake_watch
+    )
+    ctx, message = _fake_ctx()
+
+    await guild_watch.main(ctx)
+
+    body = _edits(message)[-1]
+    assert "4 delegate(s) checked, 1 representing a guild they've left" in body
+    assert "reconcile" in body, "the poll changes no roles on its own"
+
+
 async def test_guild_role_script_wants_a_tag(db):
     from hall_monitor.discord_bot.cogs.admin.scripts import guild_role
 

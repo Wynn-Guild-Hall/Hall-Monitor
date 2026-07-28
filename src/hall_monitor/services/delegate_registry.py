@@ -8,14 +8,32 @@
 ``is_current_member`` cross-checks against Discord when a bot guild is
 available, so the DB not being caught up yet doesn't produce a false
 positive between the leave event and the listener firing.
+
+Two guild tags, deliberately: ``guild_tag`` is the guild they verified as
+a representative of and never changes, while ``current_guild_tag`` is
+where Wynncraft last saw them and is refreshed by
+:func:`refresh_current_guilds`. A representative who moves guilds stops
+representing the old one — see :data:`EXTERNAL` — but they don't start
+representing the new one, which would need them to be a chief of it and
+to verify again.
 """
 
+import logging
 from datetime import datetime, timezone
 
 import discord
+import httpx
 
 from hall_monitor.db.models import Delegate
 from hall_monitor.external import wynncraft
+from hall_monitor.services import guild_tag as tags
+
+logger = logging.getLogger(__name__)
+
+# What a member's standing role should be. Three states, one role each.
+DELEGATE = "delegate"
+RELEGATE = "relegate"
+EXTERNAL = "external"
 
 
 async def get_by_mc_uuid(mc_uuid: str) -> Delegate | None:
@@ -37,10 +55,16 @@ async def register(
     Reactivation clears ``left_at`` so a returning delegate isn't confused
     with a stale one. A ``None`` username leaves any stored one alone —
     forgetting a name we already had would be a downgrade.
+
+    ``current_guild_tag`` is seeded from the same value: verification
+    proves they're a chief of that guild right now, so starting them as
+    "unknown" until the next hourly poll would only invite a wrong answer
+    in between.
     """
     defaults = {
         "discord_user_id": discord_user_id,
         "guild_tag": guild_tag,
+        "current_guild_tag": guild_tag,
         "left_at": None,
     }
     if mc_username:
@@ -64,6 +88,69 @@ async def display_name(delegate: Delegate) -> str:
     delegate.mc_username = player.username
     await delegate.save(update_fields=["mc_username"])
     return player.username
+
+
+def is_external(delegate: Delegate) -> bool:
+    """Whether this representative has moved to a different guild.
+
+    Being *guildless* doesn't count, per the design brief: someone between
+    guilds is still the person their guild sent, and the alternative is
+    relegating anyone who leaves for an afternoon. Only actively
+    representing one guild while sitting in another does.
+    """
+    if not delegate.current_guild_tag:
+        return False
+    return not tags.matches(delegate.current_guild_tag, delegate.guild_tag)
+
+
+def standing(delegate: Delegate, *, notable: bool) -> str:
+    """Which of the three standing roles this delegate should be wearing.
+
+    Moving guilds outranks the guild's own notability: a rep who's left
+    can't be promoted back by their old guild having a good month.
+    """
+    if is_external(delegate):
+        return EXTERNAL
+    return DELEGATE if notable else RELEGATE
+
+
+async def refresh_current_guilds() -> tuple[int, int]:
+    """Ask Wynncraft where every live delegate currently is.
+
+    Wynncraft pushes nothing, so this is a poll: one request per delegate,
+    hourly, serialised on the player bucket. Returns
+    ``(checked, external)`` for the log.
+
+    A lookup that fails leaves the stored value alone rather than
+    resetting it — a 429 recorded as "no guild" would read back as the
+    delegate having *rejoined* their guild, quietly promoting someone the
+    last sweep had relegated.
+    """
+    checked = external = 0
+    for delegate in await Delegate.filter(left_at=None):
+        try:
+            guild = await wynncraft.get_player_guild(delegate.mc_uuid)
+        except (httpx.HTTPError, KeyError, ValueError):
+            logger.warning(
+                "guild watch: couldn't look up %s; keeping %r",
+                delegate.mc_uuid,
+                delegate.current_guild_tag,
+                exc_info=True,
+            )
+            continue
+        checked += 1
+        tag = guild.prefix if guild else None
+        if delegate.current_guild_tag != tag:
+            delegate.current_guild_tag = tag
+            await delegate.save(update_fields=["current_guild_tag"])
+            logger.info(
+                "guild watch: %s is now in %s (represents %s)",
+                delegate.mc_uuid,
+                tag or "no guild",
+                delegate.guild_tag,
+            )
+        external += is_external(delegate)
+    return checked, external
 
 
 async def mark_left(discord_user_id: int) -> None:

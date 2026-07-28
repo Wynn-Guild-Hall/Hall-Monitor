@@ -28,7 +28,12 @@ class Delegate(Model):
     mc_uuid = fields.CharField(max_length=36, unique=True)
     mc_username = fields.CharField(max_length=16, null=True)
     discord_user_id = fields.BigIntField(unique=True)
+    # The guild they represent, fixed at verification.
     guild_tag = fields.CharField(max_length=8)
+    # The guild Wynncraft last reported them in, refreshed by the hourly
+    # watch. Differing from `guild_tag` is what makes someone external;
+    # NULL means guildless or never polled, neither of which is.
+    current_guild_tag = fields.CharField(max_length=8, null=True)
     joined_at = fields.DatetimeField(auto_now_add=True)
     left_at = fields.DatetimeField(null=True)
 
