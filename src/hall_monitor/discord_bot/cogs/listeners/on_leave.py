@@ -24,6 +24,7 @@ import discord
 from discord.ext import commands
 
 from hall_monitor.config import settings
+from hall_monitor.db.models import Observer
 from hall_monitor.services import delegate_registry, roster
 
 logger = logging.getLogger(__name__)
@@ -38,6 +39,15 @@ class OnLeave(commands.Cog):
         if settings.discord_guild_id and member.guild.id != settings.discord_guild_id:
             return
         if member.bot:
+            return
+
+        # An observer's record goes outright rather than being marked
+        # left. It exists to bind a Discord account to a Minecraft one,
+        # and once the account is gone the binding is about nobody —
+        # unlike a `Delegate` row, which the Hall keeps so a return costs
+        # no re-verification and so the history stays readable.
+        if await Observer.filter(discord_user_id=member.id).delete():
+            logger.info("leave: %s left the server; observer record dropped", member.id)
             return
 
         delegate = await delegate_registry.get_by_discord_user_id(member.id)

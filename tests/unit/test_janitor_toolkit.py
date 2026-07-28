@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock, MagicMock
 import discord
 import pytest
 
-from hall_monitor.db.models import Delegate, PendingInvite
+from hall_monitor.db.models import Delegate, Observer, PendingInvite
 from hall_monitor.discord_bot.cogs.force import observer as force_observer
 from hall_monitor.discord_bot.cogs.listeners import on_join
 from hall_monitor.discord_bot.cogs.moderation import echo as echo_cog, embed as embed_cog
@@ -309,6 +309,192 @@ async def test_an_expelled_none_cannot_lock_observers_out(db, guild):
 
     added = [r.id for call in member.add_roles.await_args_list for r in call.args]
     assert added == [OBSERVER_ROLE_ID], "still let in"
+
+
+# --------------------------------------------------------------------------
+# An observer who becomes a chief
+# --------------------------------------------------------------------------
+
+
+@pytest.fixture
+def wynncraft_says(monkeypatch):
+    answer = {}
+
+    async def fake(mc_uuid, *, urgent=False):
+        return answer.get(mc_uuid)
+
+    monkeypatch.setattr("hall_monitor.external.wynncraft.get_player_guild", fake)
+    return answer
+
+
+class _WynnGuild:
+    def __init__(self, prefix, rank="CHIEF"):
+        self.prefix = prefix
+        self.rank = rank
+        self.name = prefix
+
+
+async def test_joining_records_the_binding(db, guild):
+    """It has to outlive the invite: without it the bot can't say who an
+    observer is, and can't tell that one who becomes a chief is already
+    in the room."""
+    pending = await PendingInvite.create(
+        mc_uuid="uuid-alice",
+        mc_username="Alice",
+        guild_tag=force_observer.OBSERVER_TAG,
+        roles_bits=role_bits.OBSERVER,
+        discord_invite_code="obs123",
+        invited_by_discord_user_id=999,
+    )
+
+    await _redeem(guild, pending)
+
+    row = await Observer.get(mc_uuid="uuid-alice")
+    assert row.discord_user_id == 7
+    assert row.mc_username == "Alice"
+    assert row.invited_by_discord_user_id == 999
+
+
+async def test_an_observer_verifying_gets_told_rather_than_a_dead_invite(
+    db, guild
+):
+    """The bug this record exists for. They pass the delegate guard,
+    having no `Delegate` row, and the invite they'd be handed does
+    nothing when clicked — an existing member joining fires no join
+    event, so nothing consumes the `PendingInvite`."""
+    await Observer.create(
+        mc_uuid="uuid-alice", mc_username="Alice", discord_user_id=7
+    )
+    guild.add_member(7)
+
+    with pytest.raises(discord_invites.AlreadyObserving) as caught:
+        await discord_invites.mint_invite(
+            "uuid-alice",
+            "VETS",
+            5,
+            channel=guild.channel,
+            discord_guild=guild,
+        )
+
+    assert caught.value.discord_user_id == 7
+    guild.channel.create_invite.assert_not_awaited(), "no dead invite minted"
+
+
+async def test_minting_an_observer_invite_is_not_blocked_by_the_guard(
+    db, guild, mojang
+):
+    """`~force observer` mints *for* them, so the guard must not fire on
+    its own command."""
+    mojang["alice"] = _profile("Alice", "uuid-alice")
+    await Observer.create(
+        mc_uuid="uuid-alice", mc_username="Alice", discord_user_id=7
+    )
+
+    assert "obs123" in await force_observer.invite(_ctx(guild), "alice")
+
+
+async def test_force_rep_promotes_an_observer(db, guild, wynncraft_says, monkeypatch):
+    from hall_monitor.discord_bot.cogs.force import rep as force_rep
+    from hall_monitor.services import major_guilds, transitions
+
+    async def major(tag):
+        return True
+
+    monkeypatch.setattr(major_guilds, "is_major", major)
+    monkeypatch.setattr(
+        "hall_monitor.discord_bot.cogs.force.rep.settings.observer_role_id",
+        OBSERVER_ROLE_ID,
+    )
+
+    async def settled(discord_guild, delegate):
+        return transitions.Settlement(standing="delegate", guild_role="VETS", changes=2)
+
+    monkeypatch.setattr(transitions, "settle_representative", settled)
+
+    await Observer.create(
+        mc_uuid="uuid-alice", mc_username="Alice", discord_user_id=7
+    )
+    member = guild.add_member(7, holding=[_role(OBSERVER_ROLE_ID, "Observer")])
+    member.remove_roles = AsyncMock()
+    wynncraft_says["uuid-alice"] = _WynnGuild("VETS")
+
+    reply = await force_rep.repoint(_ctx(guild), member, "VETS")
+
+    delegate = await Delegate.get(mc_uuid="uuid-alice")
+    assert delegate.discord_user_id == 7 and delegate.guild_tag == "VETS"
+    assert not await Observer.exists(), "the two states are exclusive"
+    removed = [r.id for call in member.remove_roles.await_args_list for r in call.args]
+    assert OBSERVER_ROLE_ID in removed
+    assert "was an observer and now represents `VETS`" in reply
+
+
+async def test_promotion_refuses_when_wynncraft_disagrees(db, guild, wynncraft_says):
+    """Same authority as the re-point: the game, not the operator."""
+    from hall_monitor.discord_bot.cogs.force import rep as force_rep
+
+    await Observer.create(
+        mc_uuid="uuid-alice", mc_username="Alice", discord_user_id=7
+    )
+    member = guild.add_member(7)
+    wynncraft_says["uuid-alice"] = _WynnGuild("VETS", rank="RECRUITER")
+
+    reply = await force_rep.repoint(_ctx(guild), member, "VETS")
+
+    assert not await Delegate.exists()
+    assert await Observer.exists(), "left exactly as they were"
+    assert "chief or owner of any guild" in reply
+
+
+async def test_standing_down_an_observer_who_already_joined(db, guild, mojang):
+    """`~unforce observer` after they've used the invite means "stop being
+    an observer", not "nothing to do"."""
+    mojang["alice"] = _profile("Alice", "uuid-alice")
+    await Observer.create(
+        mc_uuid="uuid-alice", mc_username="Alice", discord_user_id=7
+    )
+    member = guild.add_member(7, holding=[_role(OBSERVER_ROLE_ID, "Observer")])
+    member.remove_roles = AsyncMock()
+    member.kick = AsyncMock()
+
+    reply = await force_observer.revoke(_ctx(guild), "alice")
+
+    assert not await Observer.exists()
+    member.kick.assert_not_awaited(), "removing what they were given isn't removing them"
+    assert "no longer an observer" in reply
+
+
+async def test_leaving_drops_the_observer_record(db, guild):
+    """Unlike a `Delegate` row, which the Hall keeps so a return costs no
+    re-verification — the binding is about nobody once the account goes."""
+    from hall_monitor.discord_bot.cogs.listeners import on_leave
+
+    await Observer.create(
+        mc_uuid="uuid-alice", mc_username="Alice", discord_user_id=7
+    )
+    member = guild.add_member(7)
+
+    await on_leave.OnLeave(MagicMock()).on_member_remove(member)
+
+    assert not await Observer.exists()
+
+
+async def test_script_standing_names_an_observer(db, guild):
+    from hall_monitor.discord_bot.cogs.admin.scripts import standing
+
+    await Observer.create(
+        mc_uuid="uuid-alice",
+        mc_username="Alice",
+        discord_user_id=7,
+        invited_by_discord_user_id=999,
+    )
+    guild.add_member(7)
+    ctx = _ctx(guild)
+
+    await standing.main(ctx, "<@7>")
+
+    body = ctx.reply.await_args.args[0]
+    assert "observer" in body and "Alice" in body
+    assert "`~force rep` promotes them" in body
 
 
 async def test_nickname_enforcement_skips_an_observer(db, guild):

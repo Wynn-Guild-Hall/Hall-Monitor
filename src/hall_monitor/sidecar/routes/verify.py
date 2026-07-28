@@ -185,6 +185,18 @@ async def _decide(request: Request, uuid: str, msg: str) -> tuple[dict, str]:
             ),
             "chat: already a live delegate",
         )
+    except discord_invites.AlreadyObserving:
+        # An invite would be worse than useless here: they're already in
+        # the server, so clicking it fires no join event and nothing at
+        # all happens. Say what to ask for instead.
+        return (
+            _chat(
+                f"You're already in the Guild Hall as an observer. Ask a "
+                f"janitor to make you {player_guild.prefix}'s representative "
+                "— they'll need to run `~force rep` for you."
+            ),
+            "chat: observer asking to represent",
+        )
     except Exception:
         logger.exception("verify: mint_invite failed for %s", uuid)
         return (

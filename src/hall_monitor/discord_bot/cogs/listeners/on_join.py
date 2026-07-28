@@ -21,6 +21,7 @@ import discord
 from discord.ext import commands
 
 from hall_monitor.config import settings
+from hall_monitor.db.models import Observer
 from hall_monitor.services import (
     contacts,
     delegate_registry,
@@ -76,6 +77,19 @@ async def _welcome_observer(member: discord.Member, pending) -> None:
         )
         return
 
+    # The binding has to outlive the invite. Throwing it away here left
+    # the bot unable to say who an observer is — and, worse, unable to
+    # tell that one who later becomes a chief is *already in the room*,
+    # so it minted them an invite that does nothing when clicked. See
+    # `db.models.Observer`.
+    await Observer.update_or_create(
+        mc_uuid=pending.mc_uuid,
+        defaults={
+            "mc_username": pending.mc_username,
+            "discord_user_id": member.id,
+            "invited_by_discord_user_id": pending.invited_by_discord_user_id,
+        },
+    )
     await pending.delete()
     logger.info("join: %s is now an observer (%s)", member.id, pending.mc_username)
 

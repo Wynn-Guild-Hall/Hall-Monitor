@@ -27,6 +27,12 @@ class PendingInvite(Model):
     # can't resolve, and a matcher that ignores it reads a live invite as
     # an expired one.
     expires_at = fields.DatetimeField(null=True)
+    # Who minted it, when that wasn't the player themselves. NULL for
+    # every MC-time invite — the player typed their own code — and the
+    # janitor for an observer, which is the one class of member admitted
+    # purely on somebody's word. "Whose guest is this?" is a question the
+    # Hall will eventually ask.
+    invited_by_discord_user_id = fields.BigIntField(null=True)
     created_at = fields.DatetimeField(auto_now_add=True)
 
     class Meta:
@@ -209,6 +215,37 @@ class TerritorySample(Model):
         # Every read is "this guild, inside the window", and the prune is
         # "everything before a cutoff".
         indexes = (("guild_tag", "sampled_at"),)
+
+
+class Observer(Model):
+    """Somebody in the Hall who represents no guild.
+
+    Deliberately **not** a :class:`Delegate` with a flag. Every hourly
+    pass — the guild watch, the reconcile, the roster, the nickname
+    enforcer — keys on a ``Delegate`` row, and a flagged row would mean
+    each of them growing an "unless they're an observer" branch that
+    somebody eventually forgets. A separate table makes them invisible by
+    construction (DESIGN.md §18.1).
+
+    It exists at all because the binding has to outlive the invite. The
+    whole point of the invite dance is to prove that *this* Discord
+    account belongs to *that* Minecraft player; throwing the answer away
+    once they're in leaves two things impossible. The bot can't say who
+    an observer is a year later — and, worse, when one becomes a chief
+    and types a ``HALL<NN>`` code it can't tell they're already in the
+    room, so it mints an invite that does nothing when clicked, because
+    an existing member joining fires no ``GUILD_MEMBER_ADD``.
+    """
+
+    id = fields.IntField(pk=True)
+    mc_uuid = fields.CharField(max_length=36, unique=True)
+    mc_username = fields.CharField(max_length=16, null=True)
+    discord_user_id = fields.BigIntField(unique=True)
+    invited_by_discord_user_id = fields.BigIntField(null=True)
+    joined_at = fields.DatetimeField(auto_now_add=True)
+
+    class Meta:
+        table = "observer"
 
 
 class ExpelMotion(Model):

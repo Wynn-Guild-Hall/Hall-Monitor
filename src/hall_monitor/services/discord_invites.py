@@ -28,8 +28,8 @@ from datetime import datetime, timedelta, timezone
 import discord
 
 from hall_monitor.config import settings
-from hall_monitor.db.models import PendingInvite
-from hall_monitor.services import delegate_registry
+from hall_monitor.db.models import Observer, PendingInvite
+from hall_monitor.services import delegate_registry, role_bits
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +51,24 @@ INVITE_USE_GRACE_SECONDS = 60
 class AlreadyLiveDelegate(Exception):
     """Signals that mint_invite was called for a MC UUID whose Discord
     user is already in the server as a delegate."""
+
+
+class AlreadyObserving(Exception):
+    """The UUID belongs to an observer who is already in the server.
+
+    Distinct from :class:`AlreadyLiveDelegate` because the answer is
+    different: a live delegate is *done*, whereas an observer has just
+    become a chief and is trying to do something perfectly reasonable
+    that the invite flow cannot deliver. Minting for them would produce a
+    link that does nothing when clicked — an existing member joining
+    fires no ``GUILD_MEMBER_ADD``, so the ``PendingInvite`` is never
+    consumed — and they'd be left staring at a code that silently did
+    nothing. See ``~force rep`` (DESIGN.md §18.1).
+    """
+
+    def __init__(self, discord_user_id: int) -> None:
+        super().__init__(discord_user_id)
+        self.discord_user_id = discord_user_id
 
 
 # --------------------------------------------------------------------------
@@ -124,6 +142,7 @@ async def mint_invite(
     discord_guild: discord.Guild | None = None,
     mc_username: str | None = None,
     max_age: int = INVITE_MAX_AGE_SECONDS,
+    invited_by: int | None = None,
 ) -> PendingInvite:
     """Mint a single-use Discord invite bound to a UUID and return the row.
 
@@ -137,6 +156,17 @@ async def mint_invite(
     """
     if await delegate_registry.is_current_member(mc_uuid, discord_guild=discord_guild):
         raise AlreadyLiveDelegate(mc_uuid)
+
+    # An observer is already in the server, so an invite is exactly the
+    # wrong answer for them — see `AlreadyObserving`. Skipped when the
+    # caller is `~force observer` itself, which is minting *for* them.
+    if roles_bits != role_bits.OBSERVER:
+        observing = await Observer.get_or_none(mc_uuid=mc_uuid)
+        if observing is not None and (
+            discord_guild is None
+            or discord_guild.get_member(observing.discord_user_id) is not None
+        ):
+            raise AlreadyObserving(observing.discord_user_id)
 
     prior = await PendingInvite.get_or_none(mc_uuid=mc_uuid)
     if prior is not None:
@@ -161,6 +191,7 @@ async def mint_invite(
             if max_age == INVITE_MAX_AGE_SECONDS
             else datetime.now(timezone.utc) + timedelta(seconds=max_age)
         ),
+        invited_by_discord_user_id=invited_by,
     )
 
 

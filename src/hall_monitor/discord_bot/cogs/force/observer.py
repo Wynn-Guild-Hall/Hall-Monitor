@@ -15,22 +15,32 @@ invisible to every hourly pass rather than being a special case inside
 each one.
 
 The invite is still minted against a **Minecraft** account, because
-that's what ``PendingInvite`` is keyed on and what makes "who was this?"
-answerable a year later. It proves nothing about them — no chief check,
-no guild — the janitor's word is the whole of the authority, which is
-why this is janitor-gated and logged at warning level.
+that's what ``PendingInvite`` is keyed on. It proves nothing about them —
+no chief check, no guild — the janitor's word is the whole of the
+authority, which is why this is janitor-gated and logged at warning
+level.
 
-It lives a **week** rather than the MC flow's ten minutes: a janitor has
-to paste it to a human and then wait for them
+That binding is then **kept**, in an ``Observer`` row, rather than dying
+with the invite. Two things depend on it: the bot being able to say who
+an observer is a year later, and — the one that was an outright bug —
+recognising an observer who *becomes a chief* and tries to verify. They
+pass ``mint_invite``'s delegate guard, having no ``Delegate`` row, and
+the invite they'd be handed does nothing when clicked, because an
+existing member joining fires no ``GUILD_MEMBER_ADD``. ``~force rep``
+promotes them instead; the MC-time reply says so.
+
+The invite lives a **week** rather than the MC flow's ten minutes: a
+janitor has to paste it to a human and then wait for them
 (``discord_invites.OBSERVER_INVITE_MAX_AGE_SECONDS``).
 """
 
 import logging
 
+import discord
 from discord.ext import commands
 
 from hall_monitor.config import settings
-from hall_monitor.db.models import PendingInvite
+from hall_monitor.db.models import Observer, PendingInvite
 from hall_monitor.discord_bot.permissions import is_janitor
 from hall_monitor.external import resolve_profile
 from hall_monitor.services import delegate_registry, discord_invites, role_bits
@@ -79,6 +89,7 @@ async def invite(ctx: commands.Context, username: str) -> str:
             discord_guild=ctx.guild,
             mc_username=profile.username,
             max_age=discord_invites.OBSERVER_INVITE_MAX_AGE_SECONDS,
+            invited_by=getattr(ctx.author, "id", None),
         )
     except discord_invites.AlreadyLiveDelegate:
         return f"`{profile.username}` is already in the Hall."
@@ -105,6 +116,12 @@ async def revoke(ctx: commands.Context, username: str) -> str:
 
     row = await PendingInvite.get_or_none(mc_uuid=profile.uuid)
     if row is None:
+        # No invite outstanding, but they may have already used one. The
+        # honest reading of "unforce observer" is then "stop them being
+        # an observer" rather than "nothing to do".
+        observing = await Observer.get_or_none(mc_uuid=profile.uuid)
+        if observing is not None:
+            return await _stand_down(ctx, observing)
         return f"there's no outstanding invite for `{profile.username}`."
     if not role_bits.is_observer(row.roles_bits):
         # Refused rather than revoked. That's somebody's verification in
@@ -125,6 +142,49 @@ async def revoke(ctx: commands.Context, username: str) -> str:
         profile.username,
     )
     return f"revoked the observer invite for `{profile.username}`."
+
+
+async def _stand_down(ctx: commands.Context, observing) -> str:
+    """Take the observer role back off somebody who already used theirs.
+
+    Deliberately **not a kick**, on the same reasoning as vacating a
+    contact slot (§6): removing what somebody was given isn't the same as
+    removing them. A janitor who wants them gone can kick them, which is
+    a separate and visible act.
+    """
+    role = (
+        ctx.guild.get_role(settings.observer_role_id)
+        if ctx.guild is not None and settings.observer_role_id
+        else None
+    )
+    member = (
+        ctx.guild.get_member(observing.discord_user_id)
+        if ctx.guild is not None
+        else None
+    )
+    stripped = True
+    if member is not None and role is not None:
+        try:
+            await member.remove_roles(role, reason=f"hall-monitor: ~unforce observer by {ctx.author}")
+        except discord.HTTPException:
+            logger.exception(
+                "observer: couldn't take the observer role off %s",
+                observing.discord_user_id,
+            )
+            stripped = False
+    await observing.delete()
+    logger.warning(
+        "observer: %s (%s) stood down observer %s",
+        ctx.author,
+        getattr(ctx.author, "id", None),
+        observing.discord_user_id,
+    )
+    tail = "" if stripped else " I couldn't take the role off them, though."
+    return (
+        f"<@{observing.discord_user_id}> is no longer an observer. They're "
+        f"still in the server — kick them separately if that's what you "
+        f"meant.{tail}"
+    )
 
 
 def register(cog: commands.Cog) -> None:

@@ -28,6 +28,8 @@ import logging
 import discord
 from discord.ext import commands
 
+from hall_monitor.config import settings
+from hall_monitor.db.models import Observer
 from hall_monitor.discord_bot.permissions import is_monitor
 from hall_monitor.services import (
     contacts,
@@ -53,6 +55,13 @@ async def repoint(
 
     delegate = await delegate_registry.get_by_discord_user_id(user.id)
     if delegate is None:
+        # An observer becoming a chief is the one case the join flow
+        # genuinely cannot serve: they're already in the server, so the
+        # invite they'd be handed does nothing when clicked. This command
+        # is that path (DESIGN.md §18.1).
+        observing = await Observer.get_or_none(discord_user_id=user.id)
+        if observing is not None:
+            return await _promote_observer(ctx, user, observing, guild_tag)
         return (
             f"{user.mention} isn't a registered representative, so there's "
             "nothing to re-point. They verify through the join flow."
@@ -111,6 +120,76 @@ def register(cog: commands.Cog) -> None:
     ) -> None:
         """re-point a representative at the guild they've actually joined"""
         await ctx.reply(await repoint(ctx, user, guild_tag))
+
+
+async def _promote_observer(
+    ctx: commands.Context,
+    user: discord.Member,
+    observing: Observer,
+    guild_tag: str,
+) -> str:
+    """Turn an observer into ``guild_tag``'s representative.
+
+    Same authority as the re-point above — Wynncraft, not the operator —
+    against the Minecraft account we recorded when they were invited.
+    That record is the only reason this is possible at all: without it
+    there'd be no way to know which MC account this Discord member is,
+    and ``Delegate.mc_uuid`` is not optional.
+
+    The observer role comes off and the record goes, because the two
+    states are exclusive: somebody holding both would be counted by the
+    reconcile *and* skipped by the nickname enforcer, which is two
+    answers to one question.
+    """
+    if await expel.is_banned(guild_tag):
+        return f"`{guild_tag}` is barred from the Hall."
+
+    confirmed = await delegate_registry.eligible_guild(observing.mc_uuid)
+    if confirmed is None or not tags.matches(confirmed.prefix, guild_tag):
+        return _refusal(user, guild_tag, confirmed)
+
+    delegate = await delegate_registry.register(
+        observing.mc_uuid,
+        user.id,
+        confirmed.prefix,
+        observing.mc_username,
+    )
+    dropped = await _drop_observer_role(ctx, user)
+    await observing.delete()
+
+    logger.warning(
+        "rep: %s (%s) promoted observer %s to represent %s",
+        ctx.author,
+        getattr(ctx.author, "id", None),
+        user.id,
+        confirmed.prefix,
+    )
+
+    settlement = await transitions.settle_representative(ctx.guild, delegate)
+    tail = "" if dropped else " (I couldn't take the observer role off them.)"
+    where = f"Now {settlement.line()}." if settlement else "They aren't in the server."
+    return (
+        f"{user.mention} was an observer and now represents `{confirmed.prefix}`, "
+        f"confirmed against Wynncraft as `{observing.mc_username or observing.mc_uuid}`. "
+        f"{where}{tail} They'll need their contact slots assigning with "
+        "`~force assign`."
+    )
+
+
+async def _drop_observer_role(ctx: commands.Context, user: discord.Member) -> bool:
+    role = (
+        ctx.guild.get_role(settings.observer_role_id)
+        if settings.observer_role_id
+        else None
+    )
+    if role is None or not any(held.id == role.id for held in user.roles):
+        return True
+    try:
+        await user.remove_roles(role, reason="hall-monitor: promoted to representative")
+    except discord.HTTPException:
+        logger.exception("rep: couldn't take the observer role off %s", user.id)
+        return False
+    return True
 
 
 def _refusal(user: discord.Member, guild_tag: str, confirmed) -> str:

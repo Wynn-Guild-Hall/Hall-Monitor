@@ -10,7 +10,7 @@ outside — Administrator doesn't waive it.
 
 import re
 
-from hall_monitor.db.models import GuildContact
+from hall_monitor.db.models import GuildContact, Observer
 from hall_monitor.services import contacts, delegate_registry, guild_roles, major_guilds
 
 _MENTION = re.compile(r"[<@!&>]")
@@ -58,6 +58,24 @@ async def main(ctx, *args: str) -> None:
 
     delegate = await delegate_registry.get_by_discord_user_id(member.id)
     if delegate is None:
+        # An observer *is* the answer here rather than an absence of one,
+        # and saying only "no delegate row" reads as the bot having lost
+        # track of somebody it deliberately doesn't track.
+        observing = await Observer.get_or_none(discord_user_id=member.id)
+        if observing is not None:
+            invited = (
+                f"<@{observing.invited_by_discord_user_id}>"
+                if observing.invited_by_discord_user_id
+                else "unrecorded"
+            )
+            await ctx.reply(
+                f"{member.mention} is an **observer** — `"
+                f"{observing.mc_username or observing.mc_uuid}` in Minecraft, "
+                f"invited by {invited}. They represent no guild, so there's "
+                "no standing, no colour and no tag to settle. "
+                "`~force rep` promotes them if they've become a chief."
+            )
+            return
         await ctx.reply(f"{member.mention} has no delegate row — nothing to settle.")
         return
 
