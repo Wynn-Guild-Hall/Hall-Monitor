@@ -545,6 +545,16 @@ The invite is still keyed to a Minecraft account, because that's what `PendingIn
 
 `~unforce observer` cancels an unused one. It **refuses** to touch a representative's invite: that's somebody's verification in flight, and letting a typo here cost them a re-verification — for a reason they'd have no way to see — is exactly the failure shape §12.3 is a list of.
 
+### 18.3 Announcing an arrival
+
+`services/announce.py` posts one line to the delegate channel whenever the bot admits somebody: *"@them joined as the **events** representative of **Corrosion** (`Crrs`)."* Without it a new name appears in the member list wearing a tag nobody watched them earn, and the only record is a log line on the VPS.
+
+It **notifies nobody**. The new member is named with a real `<@id>` so the line links through, but it's sent with `AllowedMentions.none()` — this channel's one deliberate ping is the expel call (§16.4), gated on three guilds agreeing, and an arrival is not that. Pinging the newcomer would be the worst version: their first experience of the Hall would be a notification about themselves.
+
+Only arrivals the bot **actually processed** are announced. A join matching no pending invite is already logged and is nothing a delegate can act on; "somebody joined and I don't know who" is the kind of noise that trains people to stop reading a channel. Observers get their own sentence rather than the representative one, or the room goes looking for a guild they don't have.
+
+The guild's full name comes from `MajorGuildCache`, which the hourly sweep already fills, so the line costs a query rather than a third-party request — and a guild never swept still reads correctly, just more tersely. It runs **last** in the join, after the roles, slots and nickname have settled, so it describes what happened rather than what was asked for. Best-effort throughout: a channel that can't be written to must not undo a verification that worked.
+
 ### 18.2 Speaking as the bot
 
 Four commands, in two pairs. All of them say something as the bot and delete the invoking message; the reason is the room, since an announcement in a person's name carries their guild's weight with it, and in a hall of rival guilds that's often not what's wanted.

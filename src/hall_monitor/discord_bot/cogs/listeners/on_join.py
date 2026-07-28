@@ -23,6 +23,7 @@ from discord.ext import commands
 from hall_monitor.config import settings
 from hall_monitor.db.models import Observer
 from hall_monitor.services import (
+    announce,
     contacts,
     delegate_registry,
     discord_invites,
@@ -92,6 +93,7 @@ async def _welcome_observer(member: discord.Member, pending) -> None:
     )
     await pending.delete()
     logger.info("join: %s is now an observer (%s)", member.id, pending.mc_username)
+    await announce.joined_as_observer(member)
 
 
 async def _turn_away(member: discord.Member, pending) -> None:
@@ -308,6 +310,11 @@ class OnJoin(commands.Cog):
         # The roster now names a contact it didn't before. Debounced, so a
         # verification that claims four slots redraws the channel once.
         roster.request_sync(member.guild)
+
+        # Last, so the line describes what actually settled rather than
+        # what was asked for. Best-effort: a channel that can't be written
+        # to must not undo a verification that worked.
+        await announce.joined(member, guild_tag, role_bits.decode(roles_bits))
 
 
 async def setup(bot: commands.Bot) -> None:
