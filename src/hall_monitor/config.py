@@ -15,6 +15,9 @@ class Settings(BaseSettings):
     # The Current Guilds channel. Unset means the roster is never posted;
     # everything else still works.
     roster_channel_id: int = 0
+    # Where an expel motion is put to the Hall. Unset means `~expel_motion`
+    # refuses rather than posting somewhere only the mover can see it.
+    notifications_channel_id: int = 0
 
     delegate_role_id: int = 0
     relegate_role_id: int = 0
@@ -42,6 +45,12 @@ class Settings(BaseSettings):
     pending_invite_ttl_minutes: int = 45
     pending_invite_sweep_seconds: int = 60
     notability_refresh_seconds: int = 3600
+
+    # How long an expel motion stays open before it lapses. Long enough
+    # that a representative away for a weekend still gets a vote, short
+    # enough that a motion nobody is voting on doesn't sit in the channel
+    # for a month with live buttons.
+    expel_motion_days: int = 7
 
     # Guild banners fill every emote slot the server isn't otherwise
     # using. Members can't add emotes, so the list is the bot's to manage

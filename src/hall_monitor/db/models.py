@@ -193,6 +193,92 @@ class TerritorySample(Model):
         indexes = (("guild_tag", "sampled_at"),)
 
 
+class ExpelMotion(Model):
+    """A delegate's motion to remove a guild from the Hall, and its vote.
+
+    One open motion per target guild at a time — two would split the vote
+    between them and neither would reach the bar.
+
+    The Discord message is what the ballot buttons are attached to, so
+    ``discord_message_id`` is how an interaction finds its motion: the
+    buttons carry a fixed ``custom_id`` and the message identifies which
+    vote it is. That's what makes one registered view serve every motion,
+    including ones opened before the last restart.
+    """
+
+    id = fields.IntField(pk=True)
+    guild_tag = fields.CharField(max_length=8)
+    opened_by_discord_user_id = fields.BigIntField()
+    opened_by_guild_tag = fields.CharField(max_length=8)
+    discord_channel_id = fields.BigIntField(null=True)
+    discord_message_id = fields.BigIntField(null=True, unique=True)
+    # OPEN / PASSED / LAPSED — see `services/expel_motion.py`.
+    state = fields.CharField(max_length=16, default="open")
+    # The split as it stood at resolution. Recorded rather than recomputed
+    # because the electorate moves: a motion that passed with 12 of 20 is
+    # a fact about that moment, and re-deriving it a week later would
+    # answer with today's guilds.
+    tally_json = fields.TextField(default="{}")
+    created_at = fields.DatetimeField(auto_now_add=True)
+    resolved_at = fields.DatetimeField(null=True)
+
+    class Meta:
+        table = "expel_motion"
+
+
+class ExpelVote(Model):
+    """One guild's vote on one motion.
+
+    Keyed by guild, not by voter: the Hall is a body of guilds, and a
+    guild with three representatives doesn't get three votes. A later vote
+    from any of its representatives replaces the earlier one, which the
+    ballot says out loud so nobody discovers it by watching the turnout.
+
+    ``guild_tag`` holds the **comparison key** (``guild_tag.normalise``)
+    rather than the display spelling — it's never shown, and it's the
+    column the one-vote-per-guild constraint rests on, so ``VETS`` and
+    ``vets`` must not be able to become two rows.
+
+    ``discord_user_id`` is kept for the audit trail. Anonymity here is a
+    property of what the bot *says*, not of what it stores: nothing ever
+    renders a per-user or per-guild vote.
+    """
+
+    id = fields.IntField(pk=True)
+    motion = fields.ForeignKeyField("models.ExpelMotion", related_name="votes")
+    guild_tag = fields.CharField(max_length=8)
+    discord_user_id = fields.BigIntField()
+    yay = fields.BooleanField()
+    cast_at = fields.DatetimeField(auto_now=True)
+
+    class Meta:
+        table = "expel_vote"
+        unique_together = (("motion", "guild_tag"),)
+
+
+class ExpelBan(Model):
+    """A guild barred from the Hall.
+
+    Written when a motion passes, and by a monitor's ``~force expel``. The
+    row is the whole of the ban: lifting it is a delete, and the guild's
+    former representatives verify again from scratch. Nothing is kept
+    "suspended" — a ban that half-persists is a state nobody can read off
+    a screen.
+    """
+
+    id = fields.IntField(pk=True)
+    guild_tag = fields.CharField(max_length=8, unique=True)
+    reason = fields.TextField(default="")
+    motion = fields.ForeignKeyField(
+        "models.ExpelMotion", related_name="ban", null=True
+    )
+    created_by_discord_user_id = fields.BigIntField(null=True)
+    created_at = fields.DatetimeField(auto_now_add=True)
+
+    class Meta:
+        table = "expel_ban"
+
+
 class GuildContact(Model):
     """Which delegate currently holds each contact role for a guild."""
 
