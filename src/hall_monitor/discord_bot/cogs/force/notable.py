@@ -7,36 +7,18 @@ override. There's no floor — a janitor who wants to grant a week has a
 reason, and a short override expires on its own anyway.
 """
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 from discord.ext import commands
 
 from hall_monitor.config import settings
 from hall_monitor.db.models import ForceOverride
 from hall_monitor.discord_bot.permissions import is_janitor
-from hall_monitor.services.time_parse import InvalidDuration, parse as parse_duration
-
-_JANITOR_MAX = timedelta(days=90)
-
-
-def gating_rejection(delta: timedelta | None, is_monitor: bool) -> str | None:
-    """Pure permissions check for the parsed duration.
-
-    Returns a user-facing rejection message when the caller isn't allowed to
-    use this duration, or ``None`` when the request should proceed.
-    Extracted from the command handler so it's unit-testable without
-    faking a Discord context.
-    """
-    if is_monitor:
-        return None
-    if delta is None:
-        return "permanent overrides are monitor-only; try `3mo` or shorter."
-    if delta > _JANITOR_MAX:
-        return (
-            "janitor overrides can't run past three months (`3mo`); "
-            "ask a monitor for anything longer."
-        )
-    return None
+from hall_monitor.services.time_parse import (
+    InvalidDuration,
+    gating_rejection,
+    parse as parse_duration,
+)
 
 
 def _is_monitor(ctx: commands.Context) -> bool:

@@ -226,7 +226,7 @@ async def sync_contact_roles(
             continue
         # A holder who has moved guilds keeps the slot but not the role:
         # they aren't who to ask about this guild any more.
-        wanted = granted and not delegate_registry.is_external(row.delegate)
+        wanted = granted and not await delegate_registry.is_external(row.delegate)
         holds = any(existing.id == discord_role.id for existing in member.roles)
         if holds == wanted:
             continue  # already correct — an hourly pass must be quiet

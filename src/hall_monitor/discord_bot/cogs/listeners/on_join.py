@@ -11,8 +11,8 @@ retry.
 Claiming the contact slots comes last, once the delegate row exists —
 see ``services/contacts.py`` for what displacing a prior holder costs
 them, and ``services/guild_roles.py`` for the guild colour that follows.
-Nickname enforcement is still absent here; a later stage hangs off the
-same listener.
+The nickname is written after all of it: a join is the one time the
+visible part is ours to pick rather than preserve.
 """
 
 import logging
@@ -26,6 +26,7 @@ from hall_monitor.services import (
     delegate_registry,
     discord_invites,
     guild_roles,
+    nicknames,
     role_bits,
 )
 
@@ -175,6 +176,13 @@ class OnJoin(commands.Cog):
                 loss.delegate.discord_user_id,
                 loss.kicked,
             )
+
+        # Last, and separately: a join is the one time we pick the visible
+        # part of a nickname rather than preserving one, and it needs the
+        # Delegate row above to know which tag to write.
+        await nicknames.enforce(
+            member, reason=f"hall-monitor: {guild_tag} delegate verification"
+        )
 
 
 async def setup(bot: commands.Bot) -> None:

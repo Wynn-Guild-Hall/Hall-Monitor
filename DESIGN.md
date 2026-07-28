@@ -13,7 +13,7 @@ Entry point: [`src/hall_monitor/__main__.py`](src/hall_monitor/__main__.py).
 
 ## 2. End-to-end join flow
 
-**Status:** implemented end to end (Stages 3–8). The nickname in step 8 lands in Stage 10.
+**Status:** implemented end to end (Stages 3–10).
 
 1. A representative visits `hall.wynnvets.org/join`, enters their Minecraft username.
 2. Hallway's JS calls `GET /api/join/lookup?username=X`. Hall-Monitor resolves the UUID (Mojang, PlayerDB fallback), asks Wynncraft's API whether they're a chief/owner of a notable guild, and returns `{eligible, guild_tag, mc_username, current_contacts_per_role}` for the UI to render. On failure the response carries a `reason` field (`"not chief or owner"` / `"guild not notable"`); unknown username → HTTP 404.
@@ -22,7 +22,7 @@ Entry point: [`src/hall_monitor/__main__.py`](src/hall_monitor/__main__.py).
 5. Picolimbo matches the `hall` route prefix, strips it, and forwards `GET /api/verify/{uuid}/14` to Hall-Monitor over the `verify` Docker network. That route is deliberately not web-reachable — Hallway's nginx proxies only `/api/join/` — because its sole proof that the requester owns the Minecraft account is that they connected to the limbo server as it.
 6. Hall-Monitor parses the code, re-runs the Wynncraft eligibility check (authoritative), mints a single-use Discord invite, and returns it as a `kick_message`. Every *rejection* comes back as a `chat_message` instead, leaving the player connected — being disconnected for a mistyped code means reconnecting just to retry. Success is the one case that disconnects, because the invite has to be readable after the session ends, and nothing on a Minecraft disconnect screen is clickable: the message leads with the bare invite code to type into Discord's join dialog, with the `discord.gg` URL after it for anyone who'd rather paste a link. Picolimbo renders kick reasons as MiniMessage (auth-stack patch `0005`), so the code is coloured apart from the instructions around it — only the vanilla colour names and formatting tags parse, and a test pins the message to that set.
 7. Picolimbo disconnects the player with that message. The player clicks the invite in their MC client's kick screen.
-8. On `on_member_join`, Hall-Monitor resolves which invite was used (see §3.1), ensures the guild's aesthetic role exists (§11), applies it alongside the delegate role and the encoded contact roles (kicking prior conflicting holders — see §6), promotes the `PendingInvite` to a `Delegate`, and sets the nickname.
+8. On `on_member_join`, Hall-Monitor resolves which invite was used (see §3.1), ensures the guild's aesthetic role exists (§11), applies it alongside the delegate role and the encoded contact roles (kicking prior conflicting holders — see §6), promotes the `PendingInvite` to a `Delegate`, and sets the nickname to `Username [TAG]` (§13).
 
 ## 3. PendingInvite lifecycle invariants
 
@@ -214,7 +214,15 @@ A brand-new delegate gets `current_guild_tag` seeded at registration — verific
 
 This is accepted rather than solved. These are major guilds, so someone becoming a *new* guild's representative within a day or two of switching is rare, and the hourly watch means the switch itself is always noticed. The fix is a monitor command (`~force rep`, Stage 15) that re-points the row, vacates the old guild's contact slots without a kick, and verifies chief-hood of the new guild itself rather than trusting the operator.
 
-### 12.3 The aesthetic role
+### 12.3 Overriding the watch — `~force guild`
+
+Wynncraft is the authority on who's in which guild, and mostly that's what we want, but it can be wrong *for us* in both directions: a representative mid-transfer flickers, an alt account shows the wrong guild, a shared account shows whoever logged in last. `~force guild <user> <TAG> <time>` lets a janitor say otherwise, and the most useful case is forcing the guild someone already represents — that's how an incorrect External Relegate gets undone.
+
+The override sits **in front of** `current_guild_tag`, never in it: the watch rewrites that column every hour, so a forced value stored there would survive exactly until the next sweep. `delegate_registry.current_guild` prefers a live `ForceOverride(kind="guild", subject=<discord user id>)` and falls back to the column. Expired rows read as absent but are left in place, so a janitor can still see what was forced and when it ran out. Duration gating is the shared one (`time_parse.gating_rejection`): janitors capped at three months, monitors unbounded and allowed `0`.
+
+This is deliberately *not* the same as re-representing a different guild, which changes who someone speaks for — that's `~force rep`, and the gap it fills is in §12.2.
+
+### 12.4 The aesthetic role
 
 Three outcomes:
 
@@ -223,3 +231,15 @@ Three outcomes:
 - **Deleted** — a role *we* created, holding nobody, for a guild with no live delegate and no verification in flight. It has no members to lose and no history worth keeping, and the next join recreates it, so leaving it would spend one of Discord's 250 role slots on nothing.
 
 Two guards on that deletion, because it's the irreversible one. **A role we didn't create is never deleted** — one adopted by name might be somebody's own, and by the time you find out, the mentions are already broken; `GuildRole` records the ones we minted precisely so the sweep can tell. And **a pending invite counts as in use**: the join listener creates the role and then applies it, so a sweep landing between the two would delete the role out from under an `add_roles` already in flight and fail a verification. A `PendingInvite` row exists for the whole of that window — it's only deleted once the `Delegate` row is written, and the `Delegate` row is what the first guard sees.
+
+## 13. Nicknames
+
+**Status:** implemented (Stage 10)
+
+Every representative wears their guild's tag in the member list — `Holidaze [VETS]` — so a conversation in the Hall carries who someone speaks for without anyone checking a roster. The tag follows the same rule as the standing role (§12.1): their guild's, or `[EXT]` once they've moved elsewhere.
+
+**Only the suffix is ours.** `services/nicknames.py` re-attaches the tag to whatever the member set rather than replacing it, so renaming yourself is fine — you just can't drop the tag while doing it. On a join, where there's no nickname to preserve, the visible part is seeded from their Minecraft username, which is the name the Hall knows them by. When the pair won't fit Discord's 32 characters the *visible* part is truncated, never the tag.
+
+Enforcement runs on `on_member_update` and once at the end of the join. Two things keep that affordable: the listener returns immediately unless the nickname or the roles changed, and `enforce` makes no Discord request when the nickname is already right. That second check is also what stops the loop — our own rename arrives back as another update, and it has to be the *content* that settles it rather than any in-memory flag, which wouldn't survive a restart or a second shard.
+
+Nobody without a `Delegate` row is touched, and observers are excluded outright. Staff, guests and bots keep whatever they set: renaming a member the Hall knows nothing about is a bot reaching well past what it was invited to do. Two rename failures are expected rather than exceptional — Discord lets nobody rename a server owner, and role position governs the rest — so both are logged and skipped rather than raised.

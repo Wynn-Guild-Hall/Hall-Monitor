@@ -27,8 +27,9 @@ The verify flow mints single-use invites and hands out roles when they're redeem
 - **Manage Server** — to revoke the prior outstanding invite when a UUID re-requests before TTL, for the sweep job, and to read the guild's invite list. That last one is what tells `on_member_join` which invite a member came through; Manage Channel on the welcome channel alone is *not* enough for it (see DESIGN.md §3.1).
 - **Manage Roles** — to apply the delegate and contact roles on join, to strip a contact role from whoever a new verification displaces, and to create/recolour the per-guild aesthetic role (see DESIGN.md §11).
 - **Kick Members** — a displaced contact left holding no contact roles is removed from the server (see DESIGN.md §6).
+- **Manage Nicknames** — every representative's nickname carries their guild tag (see DESIGN.md §13). Note that *nobody* can rename a server owner, Administrator included.
 
-Administrator covers all four (and overrides channel overwrites), which is how the bot is set up in production — it holds the monitor role. What Administrator does **not** waive is role position: only the guild owner can assign a role above their own highest one, and the same rule decides who the bot may kick. The bot's role has to sit above Guild Hall Delegate and the four contact roles, or `add_roles` comes back 403 and the join lands in the failed-role-application path.
+Administrator covers all five (and overrides channel overwrites), which is how the bot is set up in production — it holds the monitor role. What Administrator does **not** waive is role position: only the guild owner can assign a role above their own highest one, and the same rule decides who the bot may kick. The bot's role has to sit above Guild Hall Delegate and the four contact roles, or `add_roles` comes back 403 and the join lands in the failed-role-application path.
 
 ## Test guilds
 

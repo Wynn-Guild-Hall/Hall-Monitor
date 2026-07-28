@@ -250,7 +250,7 @@ async def test_moving_guilds_outranks_the_guild_being_notable(db, notable):
     notable.add("VETS")
     delegate = await _delegate("uuid-a", 1, "VETS", currently="OTHR")
     assert (
-        delegate_registry.standing(delegate, notable=True)
+        await delegate_registry.standing(delegate, notable=True)
         == delegate_registry.EXTERNAL
     )
 
@@ -420,7 +420,9 @@ async def test_returning_to_their_own_guild_clears_external_standing(db, monkeyp
     _, external = await delegate_registry.refresh_current_guilds()
 
     assert external == 0
-    assert not delegate_registry.is_external(await Delegate.get(mc_uuid="uuid-a"))
+    assert not await delegate_registry.is_external(
+        await Delegate.get(mc_uuid="uuid-a")
+    )
 
 
 async def test_the_watch_folds_case_on_the_tag(db, monkeypatch):

@@ -120,7 +120,11 @@ def _fake_member(guild, user_id: int = 555, *, bot: bool = False):
     member.id = user_id
     member.bot = bot
     member.guild = guild
+    member.name = "Tester"
+    member.nick = None  # fresh join: the nickname is ours to pick
+    member.roles = []
     member.add_roles = AsyncMock()
+    member.edit = AsyncMock()
     return member
 
 
@@ -522,6 +526,19 @@ async def test_join_mints_the_guild_role_in_the_same_request(db, configured_role
     assert guild.create_role.await_args.kwargs["name"] == "VETS"
     member.add_roles.assert_awaited_once()
     assert GUILD_TAG_ROLE_ID in {role.id for role in member.add_roles.await_args.args}
+
+
+async def test_join_names_them_after_their_minecraft_account(db, configured_roles):
+    """A join is the one time the visible part is ours to pick."""
+    await _pending("used-code", mc_uuid="uuid-chief", bits=0b0001, tag="VETS")
+    pending = await PendingInvite.get(discord_invite_code="used-code")
+    pending.mc_username = "Holidaze"
+    await pending.save()
+    member = _fake_member(_fake_guild(), user_id=555)
+
+    await on_join.OnJoin(MagicMock()).on_member_join(member)
+
+    assert member.edit.await_args.kwargs["nick"] == "Holidaze [VETS]"
 
 
 async def test_join_survives_a_guild_role_it_cant_create(db, configured_roles):

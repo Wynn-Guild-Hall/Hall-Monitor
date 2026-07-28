@@ -18,13 +18,14 @@ representing the new one, which would need them to be a chief of it and
 to verify again.
 """
 
+import json
 import logging
 from datetime import datetime, timezone
 
 import discord
 import httpx
 
-from hall_monitor.db.models import Delegate
+from hall_monitor.db.models import Delegate, ForceOverride
 from hall_monitor.external import wynncraft
 from hall_monitor.services import guild_tag as tags
 
@@ -34,6 +35,9 @@ logger = logging.getLogger(__name__)
 DELEGATE = "delegate"
 RELEGATE = "relegate"
 EXTERNAL = "external"
+
+# `ForceOverride.kind` for `~force guild`.
+FORCE_GUILD = "guild"
 
 
 async def get_by_mc_uuid(mc_uuid: str) -> Delegate | None:
@@ -90,7 +94,60 @@ async def display_name(delegate: Delegate) -> str:
     return player.username
 
 
-def is_external(delegate: Delegate) -> bool:
+async def forced_guild(discord_user_id: int) -> str | None:
+    """A live ``~force guild`` override for this member, if there is one.
+
+    Expired rows read as absent; they're left in place rather than swept,
+    so a janitor can see what was forced and when it ran out.
+    """
+    override = await ForceOverride.filter(
+        kind=FORCE_GUILD, subject=str(discord_user_id)
+    ).first()
+    if override is None:
+        return None
+    if override.expires_at is not None and override.expires_at <= datetime.now(
+        timezone.utc
+    ):
+        return None
+    return json.loads(override.payload_json or "{}").get("guild_tag") or None
+
+
+async def set_forced_guild(
+    discord_user_id: int, guild_tag: str, expires_at: datetime | None
+) -> None:
+    """Record where a member is to be treated as playing, until ``expires_at``.
+
+    One row per member — re-forcing replaces, because two rows would mean
+    the second `~force guild` silently did nothing.
+    """
+    payload = json.dumps({"guild_tag": guild_tag})
+    await ForceOverride.update_or_create(
+        kind=FORCE_GUILD,
+        subject=str(discord_user_id),
+        defaults={"payload_json": payload, "expires_at": expires_at},
+    )
+
+
+async def clear_forced_guild(discord_user_id: int) -> int:
+    """Drop the override; returns how many rows went."""
+    return await ForceOverride.filter(
+        kind=FORCE_GUILD, subject=str(discord_user_id)
+    ).delete()
+
+
+async def current_guild(delegate: Delegate) -> str | None:
+    """Where the Hall treats this representative as playing.
+
+    A live ``~force guild`` wins over the watch. It has to: the watch
+    rewrites ``current_guild_tag`` every hour from Wynncraft, so an
+    override stored in that column would last exactly until the next
+    sweep quietly reverted it.
+    """
+    forced = await forced_guild(delegate.discord_user_id)
+    return forced if forced is not None else delegate.current_guild_tag
+
+
+async def is_external(delegate: Delegate) -> bool:
     """Whether this representative has moved to a different guild.
 
     Being *guildless* doesn't count, per the design brief: someone between
@@ -98,18 +155,19 @@ def is_external(delegate: Delegate) -> bool:
     relegating anyone who leaves for an afternoon. Only actively
     representing one guild while sitting in another does.
     """
-    if not delegate.current_guild_tag:
+    current = await current_guild(delegate)
+    if not current:
         return False
-    return not tags.matches(delegate.current_guild_tag, delegate.guild_tag)
+    return not tags.matches(current, delegate.guild_tag)
 
 
-def standing(delegate: Delegate, *, notable: bool) -> str:
+async def standing(delegate: Delegate, *, notable: bool) -> str:
     """Which of the three standing roles this delegate should be wearing.
 
     Moving guilds outranks the guild's own notability: a rep who's left
     can't be promoted back by their old guild having a good month.
     """
-    if is_external(delegate):
+    if await is_external(delegate):
         return EXTERNAL
     return DELEGATE if notable else RELEGATE
 
@@ -149,7 +207,7 @@ async def refresh_current_guilds() -> tuple[int, int]:
                 tag or "no guild",
                 delegate.guild_tag,
             )
-        external += is_external(delegate)
+        external += await is_external(delegate)
     return checked, external
 
 

@@ -1,8 +1,8 @@
-"""Duration gating for ``~force notable``: janitor ceiling + monitor-only permanent."""
+"""Duration gating shared by every ``~force``: janitor ceiling, monitor-only permanent."""
 
 from datetime import timedelta
 
-from hall_monitor.discord_bot.cogs.force.notable import gating_rejection
+from hall_monitor.services.time_parse import gating_rejection
 
 
 def test_permanent_rejected_for_janitor():

@@ -132,7 +132,7 @@ async def settle_members(
         member = discord_guild.get_member(delegate.discord_user_id)
         if member is None:
             continue  # left the server; the leave path owns that, not this
-        standing = delegate_registry.standing(delegate, notable=notable)
+        standing = await delegate_registry.standing(delegate, notable=notable)
         changed += await guild_roles.sync_standing(member, standing)
         changed += await guild_roles.sync_guild_role_membership(
             member, role, wanted=standing != delegate_registry.EXTERNAL
