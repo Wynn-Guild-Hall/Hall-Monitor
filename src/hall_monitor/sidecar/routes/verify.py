@@ -27,6 +27,7 @@ from hall_monitor.config import settings
 from hall_monitor.external import wynncraft
 from hall_monitor.services import (
     discord_invites,
+    expel,
     mc_command,
     notability,
     role_bits,
@@ -131,6 +132,19 @@ async def _decide(request: Request, uuid: str, msg: str) -> tuple[dict, str]:
         return (
             _chat("You aren't chief or owner of a notable guild."),
             f"chat: not eligible (rank={player_guild.rank if player_guild else None})",
+        )
+
+    # Before notability, deliberately. An expelled guild can be perfectly
+    # notable — expulsion is about welcome, not significance — and telling
+    # a chief their guild "isn't notable" when the Hall voted it out sends
+    # them off chasing leaderboards.
+    if await expel.is_banned(player_guild.prefix):
+        return (
+            _chat(
+                f"{player_guild.prefix} is barred from the Guild Hall. "
+                "Speak to a Hall monitor."
+            ),
+            f"chat: {player_guild.prefix} expelled",
         )
 
     if not await notability.is_notable(player_guild.prefix):

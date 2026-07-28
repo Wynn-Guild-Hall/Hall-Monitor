@@ -25,6 +25,7 @@ from hall_monitor.services import (
     contacts,
     delegate_registry,
     discord_invites,
+    expel,
     guild_roles,
     nicknames,
     role_bits,
@@ -36,6 +37,33 @@ logger = logging.getLogger(__name__)
 
 class RoleResolutionError(RuntimeError):
     """A role we need is unconfigured, or configured but absent from the guild."""
+
+
+async def _turn_away(member: discord.Member, pending) -> None:
+    """Remove someone who arrived on an invite their guild has since lost.
+
+    The ``PendingInvite`` goes with them rather than being left for the
+    sweep: unlike a failed role application, this isn't a state a retry
+    could improve, and leaving the row would have the sweep revoke an
+    invite that has already been consumed.
+    """
+    await pending.delete()
+    try:
+        await member.kick(
+            reason=f"hall-monitor: {pending.guild_tag} is expelled from the Guild Hall"
+        )
+    except discord.HTTPException:
+        logger.exception(
+            "join: %s joined for expelled guild %s and couldn't be removed",
+            member.id,
+            pending.guild_tag,
+        )
+        return
+    logger.warning(
+        "join: %s arrived on a %s invite minted before the expulsion; removed",
+        member.id,
+        pending.guild_tag,
+    )
 
 
 def resolve_roles(guild: discord.Guild, roles_bits: int) -> list[discord.Role]:
@@ -102,6 +130,14 @@ class OnJoin(commands.Cog):
                 member,
                 member.id,
             )
+            return
+
+        # An invite lives ten minutes, so one minted just before the Hall
+        # voted the guild out is still redeemable. The verify route can't
+        # know that yet and the ban has to be checked again here, at the
+        # only other point where a banned guild gets through the door.
+        if await expel.is_banned(pending.guild_tag):
+            await _turn_away(member, pending)
             return
 
         try:

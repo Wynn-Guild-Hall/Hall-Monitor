@@ -49,6 +49,7 @@ from hall_monitor.db.models import (
 from hall_monitor.services import (
     contacts,
     delegate_registry,
+    expel,
     guild_tag as tags,
     notability,
 )
@@ -160,6 +161,11 @@ async def listed_guilds() -> list[ListedGuild]:
     falls through to a live evaluation on a cache miss, and a roster
     render is not the place to discover a guild needs twenty leaderboard
     fetches. Two queries settle the lot.
+
+    Expelled guilds are then removed, whatever their notability says. The
+    two are different questions — a guild the Hall voted out can be as
+    significant as it ever was — and this channel is a list of who's *in*
+    the Hall, not of who matters in Wynncraft (DESIGN.md §16).
     """
     # Keyed by comparison key throughout: `VETS` and `vets` are one guild,
     # and listing both would print it twice. The first spelling seen wins
@@ -171,11 +177,14 @@ async def listed_guilds() -> list[ListedGuild]:
     ):
         cached.setdefault(tags.normalise(row["guild_tag"]), row)
     forced = await notability.active_notable_overrides()
+    banned = await expel.banned_tags()
 
     listed = []
     for folded in {**forced, **cached}:
         row = cached.get(folded)
         if not (folded in forced or (row and row["is_notable"])):
+            continue
+        if folded in banned:
             continue
         tag = row["guild_tag"] if row else forced[folded]
         listed.append(

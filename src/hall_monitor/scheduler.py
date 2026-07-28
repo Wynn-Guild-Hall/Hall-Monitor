@@ -7,10 +7,13 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from discord.ext import commands
 
 from hall_monitor.config import settings
+from hall_monitor.discord_bot.cogs.moderation import expel as expel_cog
 from hall_monitor.services import (
     delegate_registry,
     discord_invites,
     emote_slots,
+    expel,
+    expel_motion,
     notability,
     roster,
     transitions,
@@ -71,6 +74,13 @@ async def refresh_and_reconcile(bot: commands.Bot) -> None:
     summary = await transitions.reconcile(guild)
     logger.info("reconcile: %s", summary.line())
 
+    # Before the roster, so an expulsion is reflected in the same pass it
+    # happens. Open motions are settled here as well as on each vote,
+    # because the electorate moves on its own: guilds gain and lose their
+    # seat while a vote is open, and a motion can reach the bar with no
+    # new vote behind it (DESIGN.md §16).
+    await _settle_expulsions(bot, guild)
+
     try:
         published = await roster.sync_channel(guild)
     except Exception:  # noqa: BLE001 — a channel edit must not cost the sweep
@@ -97,3 +107,23 @@ async def refresh_and_reconcile(bot: commands.Bot) -> None:
     # debounced, so a pass that changed nothing costs nothing.
     if emotes.minted or emotes.refreshed or emotes.evicted:
         roster.request_sync(guild)
+
+
+async def _settle_expulsions(bot: commands.Bot, guild) -> None:
+    """Resolve open motions, then re-remove anyone a ban should have caught.
+
+    Both halves are best-effort: an expulsion is rare and a failure here
+    must not cost the roster and emote passes that follow. `enforce` runs
+    second so that a motion carrying this minute is already reflected in
+    what it checks.
+    """
+    try:
+        for resolution in await expel_motion.resolve_open(guild):
+            await expel_cog.refresh(bot, resolution.motion)
+    except Exception:  # noqa: BLE001 — a vote must not cost the sweep
+        logger.exception("expel: couldn't resolve open motions")
+
+    try:
+        await expel.enforce(guild)
+    except Exception:  # noqa: BLE001
+        logger.exception("expel: the ban sweep failed")
