@@ -34,7 +34,21 @@ async def handle(ctx: commands.Context, error: Exception) -> None:
         await _reply(ctx, "you don't have the role for that one.")
         return
 
+    if isinstance(error, commands.BadArgument):
+        # A converter that went to the trouble of explaining itself gets
+        # to. Folding this into the usage line below is how `~force
+        # assign Struppi0508 warring` came back as nothing but the syntax
+        # the operator had already typed correctly — the reason it failed
+        # (a name we couldn't resolve) never reached them.
+        await _reply(
+            ctx, f"{error}\nusage: {command_help.signature(ctx, ctx.command)}"
+        )
+        return
+
     if isinstance(error, commands.UserInputError):
+        # Everything else here is a *shape* problem — a missing or extra
+        # argument — where the usage line is the whole answer and the
+        # library's own wording adds nothing.
         await _reply(ctx, f"usage: {command_help.signature(ctx, ctx.command)}")
         return
 

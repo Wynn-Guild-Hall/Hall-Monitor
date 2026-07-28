@@ -8,17 +8,11 @@ off them. Role position answers the third and is invisible from the
 outside — Administrator doesn't waive it.
 """
 
-import re
+from discord.ext import commands
 
 from hall_monitor.db.models import GuildContact, Observer
+from hall_monitor.discord_bot.converters import HallMember
 from hall_monitor.services import contacts, delegate_registry, guild_roles, major_guilds
-
-_MENTION = re.compile(r"[<@!&>]")
-
-
-def _user_id(argument: str) -> int | None:
-    digits = _MENTION.sub("", argument).strip()
-    return int(digits) if digits.isdigit() else None
 
 
 def _holds(member, role) -> bool:
@@ -50,10 +44,13 @@ async def main(ctx, *args: str) -> None:
     if ctx.guild is None or not args:
         await ctx.reply("usage: `~script standing @user` (in the server).")
         return
-    user_id = _user_id(args[0])
-    member = ctx.guild.get_member(user_id) if user_id else None
-    if member is None:
-        await ctx.reply(f"`{args[0]}` isn't a member of this server.")
+    # The same resolution the `~force` commands use, so a name that works
+    # there works here — including a Minecraft name, which is the one
+    # anybody diagnosing a member actually has to hand.
+    try:
+        member = await HallMember().convert(ctx, args[0])
+    except commands.BadArgument as exc:
+        await ctx.reply(str(exc))
         return
 
     delegate = await delegate_registry.get_by_discord_user_id(member.id)

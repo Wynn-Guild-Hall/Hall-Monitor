@@ -30,6 +30,7 @@ from discord.ext import commands
 
 from hall_monitor.config import settings
 from hall_monitor.db.models import Observer
+from hall_monitor.discord_bot.converters import HallMemberArg
 from hall_monitor.discord_bot.permissions import is_monitor
 from hall_monitor.services import (
     contacts,
@@ -116,7 +117,7 @@ def register(cog: commands.Cog) -> None:
     @cog.force.command(name="rep")
     @is_monitor()
     async def force_rep(
-        ctx: commands.Context, user: discord.Member, guild_tag: str
+        ctx: commands.Context, user: HallMemberArg, guild_tag: str
     ) -> None:
         """re-point a representative at the guild they've actually joined"""
         await ctx.reply(await repoint(ctx, user, guild_tag))

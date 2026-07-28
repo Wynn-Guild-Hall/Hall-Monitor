@@ -18,6 +18,7 @@ from discord.ext import commands
 
 from hall_monitor.config import settings
 from hall_monitor.db.models import Delegate
+from hall_monitor.discord_bot.converters import HallMemberArg
 from hall_monitor.discord_bot.permissions import has_any_role, is_ownership_contact
 from hall_monitor.services import contacts, delegate_registry, guild_tag as guild_tag_service
 
@@ -106,7 +107,7 @@ def register(cog: commands.Cog) -> None:
     @cog.force.command(name="assign")
     @is_ownership_contact()  # nests: janitors and monitors pass too
     async def force_assign(
-        ctx: commands.Context, user: discord.Member, contact_type: str
+        ctx: commands.Context, user: HallMemberArg, contact_type: str
     ) -> None:
         """hand a guild's contact slot to a delegate"""
         try:
@@ -142,7 +143,7 @@ def register(cog: commands.Cog) -> None:
     @cog.unforce.command(name="assign")
     @is_ownership_contact()  # nests: janitors and monitors pass too
     async def unforce_assign(
-        ctx: commands.Context, user: discord.Member, contact_type: str
+        ctx: commands.Context, user: HallMemberArg, contact_type: str
     ) -> None:
         """leave a guild's contact slot unclaimed"""
         try:

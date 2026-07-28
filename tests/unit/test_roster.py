@@ -581,35 +581,64 @@ async def test_a_leaving_guest_is_left_alone(db, monkeypatch):
 # --------------------------------------------------------------------------
 
 
-async def test_every_force_command_redraws_the_roster(db, monkeypatch):
-    """`~force guild` and `~force major` shipped without a hook, and the
-    roster silently went stale. The group owns it now, so a sub-command
-    added later can't repeat that."""
-    from hall_monitor.discord_bot.cogs import force
+async def _force_tree():
+    from hall_monitor.discord_bot import build_bot
 
+    bot = build_bot()
+    await bot.load_extension("hall_monitor.discord_bot.cogs.force")
+    return bot
+
+
+def _after_invoke_ctx(guild, *, failed=False):
+    ctx = MagicMock()
+    ctx.guild = guild
+    ctx.command_failed = failed
+    ctx.bot._after_invoke = None  # the global hook discord.py calls last
+    return ctx
+
+
+async def test_every_force_subcommand_redraws_the_roster(db, monkeypatch):
+    """`~force guild` and `~force major` shipped without a hook and the
+    roster silently went stale, so one was put on the group — where it
+    **never fired once**. These sub-commands are attached to the group
+    inside `register()`, so they aren't class attributes, so they aren't
+    in `__cog_commands__`, so `Cog._inject` never sets their `.cog`, and
+    `call_after_hooks` only reaches the cog hook `if cog is not None`.
+    Three `~force assign`s in a row left the roster showing the state
+    before all of them, each reporting success.
+
+    The version of this test that let that through called
+    `ForceGroup.cog_after_invoke(ctx)` **directly**: it proved the body
+    worked, never that discord.py would call it. So this one goes through
+    the real command tree and the library's own hook dispatch, which is
+    the part that was broken.
+    """
+    bot = await _force_tree()
     asked = []
     monkeypatch.setattr(roster, "request_sync", lambda guild: asked.append(guild))
     guild = FakeGuild()
-    ctx = MagicMock()
-    ctx.guild = guild
-    ctx.command_failed = False
 
-    await force.ForceGroup(MagicMock()).cog_after_invoke(ctx)
+    subcommands = [
+        *bot.get_command("force").walk_commands(),
+        *bot.get_command("unforce").walk_commands(),
+    ]
+    assert subcommands, "the tree loaded"
+    for command in subcommands:
+        await command.call_after_hooks(_after_invoke_ctx(guild))
 
-    assert asked == [guild]
+    assert len(asked) == len(subcommands)
 
 
 async def test_a_failed_force_command_doesnt_redraw(db, monkeypatch):
-    """Nothing moved, so there's nothing to publish."""
-    from hall_monitor.discord_bot.cogs import force
-
+    """Nothing moved, so there's nothing to publish — and after-hooks run
+    in a `finally`, so this path is reached on failure too."""
+    bot = await _force_tree()
     asked = []
     monkeypatch.setattr(roster, "request_sync", lambda guild: asked.append(guild))
-    ctx = MagicMock()
-    ctx.guild = FakeGuild()
-    ctx.command_failed = True
 
-    await force.ForceGroup(MagicMock()).cog_after_invoke(ctx)
+    await bot.get_command("force").get_command("assign").call_after_hooks(
+        _after_invoke_ctx(FakeGuild(), failed=True)
+    )
 
     assert asked == []
 

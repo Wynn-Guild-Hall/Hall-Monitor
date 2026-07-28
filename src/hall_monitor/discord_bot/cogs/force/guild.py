@@ -28,6 +28,7 @@ import discord
 from discord.ext import commands
 
 from hall_monitor.config import settings
+from hall_monitor.discord_bot.converters import HallMemberArg
 from hall_monitor.discord_bot.permissions import has_any_role, is_janitor
 from hall_monitor.services import (
     contacts,
@@ -131,7 +132,7 @@ def register(cog: commands.Cog) -> None:
     @cog.force.command(name="guild")
     @is_janitor()
     async def force_guild(
-        ctx: commands.Context, user: discord.Member, guild_tag: str, duration: str
+        ctx: commands.Context, user: HallMemberArg, guild_tag: str, duration: str
     ) -> None:
         """say which guild a member represents, whatever Wynncraft says"""
         try:
