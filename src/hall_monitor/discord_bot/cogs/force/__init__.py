@@ -40,12 +40,12 @@ class ForceGroup(commands.Cog):
     @commands.group(name="force", invoke_without_command=True)
     async def force(self, ctx: commands.Context) -> None:
         """override a piece of state by hand"""
-        await ctx.reply(await command_help.render_group(ctx, self.force))
+        await command_help.reply_all(ctx, await command_help.render_group(ctx, self.force))
 
     @commands.group(name="unforce", invoke_without_command=True)
     async def unforce(self, ctx: commands.Context) -> None:
         """undo a `~force`"""
-        await ctx.reply(await command_help.render_group(ctx, self.unforce))
+        await command_help.reply_all(ctx, await command_help.render_group(ctx, self.unforce))
 
 
 async def setup(bot: commands.Bot) -> None:

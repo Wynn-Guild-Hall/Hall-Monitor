@@ -35,7 +35,7 @@ class Manage(commands.Cog):
     @is_monitor()
     async def manage(self, ctx: commands.Context) -> None:
         """look after the bot process itself"""
-        await ctx.reply(await command_help.render_group(ctx, self.manage))
+        await command_help.reply_all(ctx, await command_help.render_group(ctx, self.manage))
 
     @manage.command(name="reload_cogs")
     @is_monitor()

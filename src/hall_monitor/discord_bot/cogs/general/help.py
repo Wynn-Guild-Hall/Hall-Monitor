@@ -17,7 +17,7 @@ class Help(commands.Cog):
     @commands.command(name="help")
     async def help(self, ctx: commands.Context) -> None:
         """list the commands you can run"""
-        await ctx.reply(await command_help.render_all(ctx, self.bot))
+        await command_help.reply_all(ctx, await command_help.render_all(ctx, self.bot))
 
 
 async def setup(bot: commands.Bot) -> None:

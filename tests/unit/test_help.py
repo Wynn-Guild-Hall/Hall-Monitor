@@ -88,6 +88,12 @@ def _parent(*cmds):
     return SimpleNamespace(commands=list(cmds))
 
 
+def _joined(messages: list[str]) -> str:
+    """Both renderers return message-sized pieces; most cases are about
+    content rather than packing, so they read the whole thing."""
+    return "\n".join(messages)
+
+
 # --------------------------------------------------------------------------
 # Rendering
 # --------------------------------------------------------------------------
@@ -124,7 +130,7 @@ async def test_visible_handles_a_check_that_raises():
 
 
 async def test_render_all_indents_subcommands_under_their_group():
-    body = await command_help.render_all(_ctx(), _parent(grp))
+    body = _joined(await command_help.render_all(_ctx(), _parent(grp)))
     assert "· `~grp` — a group" in body
     assert "    · `~grp open <thing>` — open subcommand" in body
 
@@ -132,30 +138,30 @@ async def test_render_all_indents_subcommands_under_their_group():
 async def test_render_all_omits_a_group_with_nothing_runnable_in_it():
     """A `~force` line with no subcommands under it reads as a command the
     caller can run, and it isn't one."""
-    body = await command_help.render_all(_ctx(user_id=DENIED), _parent(locked, live))
+    body = _joined(await command_help.render_all(_ctx(user_id=DENIED), _parent(locked, live)))
     assert "~locked" not in body
     assert "~live" in body
 
 
 async def test_render_all_falls_back_when_nothing_is_available():
-    body = await command_help.render_all(_ctx(user_id=DENIED), _parent(gated))
+    body = _joined(await command_help.render_all(_ctx(user_id=DENIED), _parent(gated)))
     assert "hall.wynnvets.org/join" in body
 
 
 async def test_render_group_lists_what_the_caller_can_run():
-    body = await command_help.render_group(_ctx(), grp)
+    body = _joined(await command_help.render_group(_ctx(), grp))
     assert "`~grp open <thing>`" in body
     assert "`~grp shut`" in body
 
 
 async def test_render_group_hides_gated_subcommands():
-    body = await command_help.render_group(_ctx(user_id=DENIED), grp)
+    body = _joined(await command_help.render_group(_ctx(user_id=DENIED), grp))
     assert "shut" not in body
     assert "`~grp open <thing>`" in body
 
 
 async def test_render_group_says_so_when_you_can_run_none_of_it():
-    body = await command_help.render_group(_ctx(user_id=DENIED), locked)
+    body = _joined(await command_help.render_group(_ctx(user_id=DENIED), locked))
     assert body == "there's no `~locked` subcommand you can run."
 
 
@@ -256,3 +262,68 @@ def test_nothing_in_the_tree_is_hidden_any_more():
         return [c.qualified_name for c in bot.walk_commands() if c.hidden]
 
     assert asyncio.run(hidden()) == []
+
+
+async def test_the_real_help_fits_in_a_discord_message():
+    """The bug this exists for. `~help` renders the whole tree into one
+    message; every command being built took a monitor's listing to 2240
+    characters, and Discord answers >2000 with a **400, not a
+    truncation** — so `~help` failed outright, and only for the person
+    most likely to need it, which is why it took a deploy to find.
+
+    Asserted against the real command tree and the most privileged
+    caller, because that's the one that overflows first and the one no
+    unit test of a fake tree would ever cover.
+    """
+    import importlib
+
+    from hall_monitor.discord_bot import (
+        _discover_cog_modules,
+        build_bot,
+        permissions,
+    )
+
+    bot = build_bot()
+    for name in _discover_cog_modules("hall_monitor.discord_bot.cogs"):
+        if not hasattr(importlib.import_module(name), "setup"):
+            continue
+        await bot.load_extension(name)
+
+    ctx = _ctx()
+    ctx.bot = bot
+    original = permissions.has_any_role
+    permissions.has_any_role = lambda ctx, *ids: True  # a monitor sees everything
+    try:
+        messages = await command_help.render_all(ctx, bot)
+        groups = [
+            await command_help.render_group(ctx, command)
+            for command in bot.walk_commands()
+            if isinstance(command, commands.Group)
+        ]
+    finally:
+        permissions.has_any_role = original
+
+    assert messages, "a monitor can run something"
+    for body in messages:
+        assert len(body) <= command_help.MESSAGE_LIMIT, len(body)
+    for group in groups:
+        for body in group:
+            assert len(body) <= command_help.MESSAGE_LIMIT, len(body)
+
+    # And the split doesn't lose or duplicate anything.
+    whole = "\n".join(messages)
+    assert whole.count("~dash") >= 1 and whole.count("~force") >= 1
+    assert whole.startswith("**Guild Hall commands**")
+
+
+def test_a_group_is_never_split_from_its_subcommands():
+    """The next message would open with indented orphans under nothing,
+    reading as commands in their own right."""
+    group_block = "· `~force`\n    · `~force assign`\n    · `~force expel`"
+    other = "· " + "x" * 60
+
+    messages = command_help.chunk([other, group_block, other], limit=80)
+
+    assert group_block in messages
+    for body in messages:
+        assert not body.startswith("    ·")
