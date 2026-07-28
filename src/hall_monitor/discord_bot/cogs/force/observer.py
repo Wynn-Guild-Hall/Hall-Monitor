@@ -31,7 +31,7 @@ promotes them instead; the MC-time reply says so.
 
 The invite lives a **week** rather than the MC flow's ten minutes: a
 janitor has to paste it to a human and then wait for them
-(``discord_invites.OBSERVER_INVITE_MAX_AGE_SECONDS``).
+(``discord_invites.HANDED_INVITE_MAX_AGE_SECONDS``).
 """
 
 import logging
@@ -88,7 +88,7 @@ async def invite(ctx: commands.Context, username: str) -> str:
             bot=ctx.bot,
             discord_guild=ctx.guild,
             mc_username=profile.username,
-            max_age=discord_invites.OBSERVER_INVITE_MAX_AGE_SECONDS,
+            max_age=discord_invites.HANDED_INVITE_MAX_AGE_SECONDS,
             invited_by=getattr(ctx.author, "id", None),
         )
     except discord_invites.AlreadyLiveDelegate:

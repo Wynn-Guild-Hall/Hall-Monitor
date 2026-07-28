@@ -35,12 +35,16 @@ logger = logging.getLogger(__name__)
 
 INVITE_MAX_AGE_SECONDS = 600
 
-# An observer invite is minted by a janitor and then *handed to a person*
-# — pasted into a DM, waited on. Ten minutes is right for a code typed
-# in-game by somebody already at the keyboard and useless for somebody
-# who might be asleep, so these get a week. The row carries its own
-# ``expires_at`` to match (see :class:`PendingInvite`).
-OBSERVER_INVITE_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
+# An invite a janitor mints and then *hands to a person* — pasted into a
+# DM, waited on. Ten minutes is right for a code typed in-game by
+# somebody already at the keyboard and useless for somebody who might be
+# asleep, so these get a week. The row carries its own ``expires_at`` to
+# match (see :class:`PendingInvite`).
+#
+# Named for how it travels rather than for who gets it: `~force observer`
+# and `~force invite` both mint one, and they have nothing else in
+# common.
+HANDED_INVITE_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
 
 # A join can only have consumed an invite that was still alive, so a
 # PendingInvite older than the invite's own max_age can't be the match.

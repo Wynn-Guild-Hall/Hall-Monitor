@@ -157,7 +157,7 @@ async def test_inviting_an_observer_mints_a_week_long_invite(db, guild, mojang):
     assert row.expires_at is not None
     assert row.expires_at > datetime.now(timezone.utc) + timedelta(days=6)
     assert guild.channel.create_invite.await_args.kwargs["max_age"] == (
-        discord_invites.OBSERVER_INVITE_MAX_AGE_SECONDS
+        discord_invites.HANDED_INVITE_MAX_AGE_SECONDS
     )
     assert "obs123" in reply
 

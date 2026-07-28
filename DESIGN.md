@@ -246,6 +246,21 @@ Four things it does, each of which would be a bug if left out:
 
 There is deliberately no `~unforce rep`. Nothing remembers the previous guild once the row is rewritten, and re-running the command is the undo.
 
+#### `~force invite` — the exception to that rule
+
+`~force rep` refuses to take the operator's word about chief-hood. `~force invite <username> <TAG> [roles...]` **is** the operator's word, on purpose, and is monitor-only and logged at warning level for that reason.
+
+It exists because the game's rank is a poor proxy for who speaks for a guild. A guild's events organiser may hold Strategist; a co-leader's rank may never have been updated. They represent the guild in every sense the Hall cares about and in none the API can see. The invite is single-use and lives a week (`HANDED_INVITE_MAX_AGE_SECONDS`, shared with `~force observer` — the constant is named for how an invite *travels*, pasted into a DM and waited on, not for who receives it).
+
+**Only the chief check is skipped.** They join through the ordinary listener, take the ordinary roles, claim the ordinary contact slots — displacing whoever holds them — and are settled by the ordinary hourly pass. Two consequences, both correct and both stated in the reply:
+
+- If they really are in that guild, the watch confirms it and they stay a Delegate. Rank is invisible to the watch, which reads only the prefix.
+- If they are **not** in that guild, the watch relegates them to External within the hour. The command asserts who speaks for a guild; it can't assert a membership Wynncraft denies, and doesn't try.
+
+The one thing it *does* verify is the **guild tag**, via `external.guild_name_for`. That's cheap, and a typo would otherwise mint a real invite against a guild that doesn't exist — first noticed as a role and a roster entry nobody ordered. A banned guild is refused too.
+
+`~unforce invite` cancels an unused one and **refuses an observer invite**, mirroring `~unforce observer`'s refusal in the other direction: each command cancels the kind it mints, so a typo can't quietly cancel the other. Neither undoes a *used* invite — the reply says so, and points at a kick or `~force expel`.
+
 ### 12.3 Saying who someone represents — `~force guild`
 
 `~force guild <user> <TAG> <time>` is a janitor asserting **who a member speaks for**, and it outranks both the guild they verified as a chief of and whatever the watch sees. `delegate_registry.represented_guild` folds the three sources into the one answer everything downstream keys on: the tag on their nickname, the colour they wear, whose contact slots they may hold, and whose major-guild status decides their standing. Force someone to `ANO` and they are, for every purpose the Hall has, an ANO representative — including `~force assign`, which gives them ANO's slot rather than refusing.
