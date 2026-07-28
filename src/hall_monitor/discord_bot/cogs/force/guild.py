@@ -24,7 +24,13 @@ from discord.ext import commands
 
 from hall_monitor.config import settings
 from hall_monitor.discord_bot.permissions import has_any_role, is_janitor
-from hall_monitor.services import delegate_registry, nicknames, notability, transitions
+from hall_monitor.services import (
+    contacts,
+    delegate_registry,
+    nicknames,
+    notability,
+    transitions,
+)
 from hall_monitor.services.time_parse import (
     InvalidDuration,
     gating_rejection,
@@ -37,12 +43,18 @@ async def apply_now(ctx: commands.Context, user: discord.Member) -> None:
 
     The hourly reconcile would get there anyway; waiting an hour to find
     out whether a command did what you meant is what makes an override
-    feel broken.
+    feel broken. Everything the reconcile would do to their guild is done
+    here — including the contact roles, which are settled per *guild*
+    rather than per member, so leaving them out would strip someone's
+    standing while leaving them in the contact channels.
     """
     delegate = await delegate_registry.get_by_discord_user_id(user.id)
     if delegate is None or ctx.guild is None:
         return
     notable = await notability.is_notable(delegate.guild_tag)
+    await contacts.sync_contact_roles(
+        delegate.guild_tag, discord_guild=ctx.guild, granted=notable
+    )
     await transitions.settle_members(ctx.guild, delegate.guild_tag, notable=notable)
     await nicknames.enforce(user, reason=f"hall-monitor: ~force guild by {ctx.author}")
 
