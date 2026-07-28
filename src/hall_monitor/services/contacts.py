@@ -294,6 +294,35 @@ async def sync_contact_roles(
     return changed
 
 
+async def vacate_holdings(
+    delegate: Delegate,
+    guild_tag: str,
+    *,
+    discord_guild: discord.Guild | None = None,
+) -> list[str]:
+    """Give up every slot ``delegate`` holds for ``guild_tag``. No kick.
+
+    For when somebody stops speaking for a guild while staying in the
+    Hall — ``~force rep`` re-pointing them at a new one, and the same
+    situation the reconcile handles by itself (:func:`sync_contact_roles`).
+    The kick belongs to :func:`_release`, which is about losing a slot to
+    *somebody else*; here nobody has taken anything and they aren't
+    leaving.
+
+    Returns the role names given up, so the caller can say what it did
+    rather than leaving the member to notice.
+    """
+    rows = await GuildContact.filter(
+        guild_tag__iexact=guild_tag, delegate_id=delegate.id
+    )
+    given_up = []
+    for row in rows:
+        row.delegate = delegate  # already loaded; skip the prefetch
+        await _vacate(row, discord_guild=discord_guild)
+        given_up.append(row.role)
+    return sorted(given_up)
+
+
 async def resolve_conflicts_and_kick_if_empty(
     guild_tag: str,
     roles: set[str],

@@ -39,8 +39,6 @@ from hall_monitor.services import contacts, delegate_registry, notability
 
 router = APIRouter()
 
-_ELIGIBLE_RANKS = frozenset({"OWNER", "CHIEF"})
-
 
 @router.get("/api/join/lookup")
 async def lookup(request: Request, username: str) -> dict:
@@ -49,7 +47,7 @@ async def lookup(request: Request, username: str) -> dict:
         raise HTTPException(status_code=404, detail="username not found")
 
     player_guild = await wynncraft.get_player_guild(profile.uuid, urgent=True)
-    if player_guild is None or player_guild.rank not in _ELIGIBLE_RANKS:
+    if player_guild is None or player_guild.rank not in delegate_registry.ELIGIBLE_RANKS:
         return {
             "eligible": False,
             "reason": "not chief or owner",

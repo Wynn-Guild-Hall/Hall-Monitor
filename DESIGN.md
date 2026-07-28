@@ -231,9 +231,20 @@ The poll only gathers facts; the reconcile that follows in the same job acts on 
 
 A brand-new delegate gets `current_guild_tag` seeded at registration — verification proves they're a chief of that guild right then, so starting them as unknown would only invite a wrong answer until the first poll.
 
-**Known gap — re-representation.** An external representative who becomes a chief of their *new* guild can't verify for it. (`~force guild` covers this in practice — §12.3 — but as an override with an expiry rather than a durable change to the row.) `mint_invite` refuses while their `Delegate` row is live (§3), and releasing the row wouldn't help: clicking an invite as an **existing member fires no `GUILD_MEMBER_ADD`**, so nothing consumes the `PendingInvite`. Short of leaving the server, only a direct edit of the `Delegate` row fixes it.
+**Whether the poll is working is itself observable.** Keeping the last known guild on failure is right per call and unbounded across calls: sustained 429s or a payload shape change would freeze every delegate's guild and nothing would say so, quietly turning the brief's "noticed within 48h" into "never". `Delegate.current_guild_checked_at` moves **only on a successful answer**, so `delegate_registry.stale_delegates()` can name anyone the watch hasn't reached inside `STALE_AFTER` (48h). The hourly job logs a warning when that list is non-empty and `~script delegate_status` prints it. A delegate who has *never* been checked only counts once they're older than the window — a row written minutes ago simply hasn't had its first sweep, and reporting it would make a fresh verification look like a fault. All of them going overdue at once is the signal that matters: that's the poll failing, not any one account.
 
-This is accepted rather than solved. These are major guilds, so someone becoming a *new* guild's representative within a day or two of switching is rare, and the hourly watch means the switch itself is always noticed. The fix is a monitor command (`~force rep`, Stage 15) that re-points the row, vacates the old guild's contact slots without a kick, and verifies chief-hood of the new guild itself rather than trusting the operator.
+**The re-representation gap, and `~force rep`.** An external representative who becomes a chief of their *new* guild can't verify for it: `mint_invite` refuses while their `Delegate` row is live (§3), and releasing the row wouldn't help either, because clicking an invite as an **existing member fires no `GUILD_MEMBER_ADD`**, so nothing consumes the `PendingInvite`. Short of leaving the server, only a direct edit of the row fixes it.
+
+`~force rep <user> <TAG>` is that edit, and it is **not** `~force guild` (§12.3). That one asserts who somebody speaks for temporarily, as an override sitting in front of their row and expiring on its own; this rewrites the row, because it isn't a correction — it's the paperwork for a change that really happened. Monitor-gated and logged at warning level.
+
+Four things it does, each of which would be a bug if left out:
+
+- **It asks Wynncraft rather than trusting the operator.** This is the one place a human asserts something the game is otherwise authoritative on, so chief-hood of the target guild is verified first and the command refuses otherwise — naming the guild Wynncraft *does* have them in, since "you meant SEQ" is more use than "no". Verified before anything is written, so a refusal leaves the member exactly as they were.
+- **The old guild's contact slots are vacated without a kick.** They're staying, and nobody took anything off them; the kick belongs to losing a slot to somebody else (§6). `contacts.vacate_holdings` is that path.
+- **A live `~force guild` override is dropped.** It sits in front of the row, so leaving one would make the command appear to have done nothing at all — the exact failure shape §12.3's history is a list of.
+- **It settles and reports the end state**, rather than leaving standing to the next reconcile as originally planned. Stage 10's structural fix supersedes that: a command whose effect only shows up an hour later is indistinguishable from one that silently did nothing.
+
+There is deliberately no `~unforce rep`. Nothing remembers the previous guild once the row is rewritten, and re-running the command is the undo.
 
 ### 12.3 Saying who someone represents — `~force guild`
 
@@ -241,7 +252,7 @@ This is accepted rather than solved. These are major guilds, so someone becoming
 
 It solves two shapes of problem:
 
-- **Repointing.** Somebody now speaks for a different guild than the one they verified with, and re-verifying isn't available while their delegate row is live (§12.2). This is the supported answer to that until `~force rep` makes it durable.
+- **Repointing.** Somebody now speaks for a different guild than the one they verified with, and re-verifying isn't available while their delegate row is live (§12.2). This is the temporary answer; `~force rep` is the durable one, and it drops any override left here.
 - **Correcting the watch.** A rep mid-transfer flickers, an alt account shows the wrong guild, a shared account shows whoever logged in last. Forcing the guild they already represent pins it and undoes a wrong External Relegate.
 
 **A forced representative is never external**, because the watch disagreeing is the entire situation being overridden. The override sits *in front of* `current_guild_tag`, never in it: the watch rewrites that column hourly, so a forced value stored there would survive exactly until the next sweep. Expired rows read as absent but are left in place, so a janitor can still see what was forced and when it ran out. Duration gating is the shared one (`time_parse.gating_rejection`): janitors capped at three months, monitors unbounded and allowed `0`.
@@ -456,7 +467,11 @@ This is the **only** `@here` or role mention the bot ever sends. The roster must
 
 ### 16.5 Where a ban bites
 
-A ban is one `ExpelBan` row. There's no suspended or partially-expelled state, and lifting it is a delete: the guild's former representatives verify again from scratch, which is what returning means for anyone else who left. Nothing invents a restore path, because a "restored" delegate is a state nothing else in the Hall can reach.
+A ban is one `ExpelBan` row. There's no suspended or partially-expelled state, and lifting it is a delete: the guild's former representatives verify again from scratch, which is what returning means for anyone else who left. Nothing invents a restore path, because a "restored" delegate is a state nothing else in the Hall can reach. `~unforce expel` says so in its reply rather than leaving a monitor to discover it.
+
+**`~force expel <TAG>`** reaches the same end state without a vote — same ban row, same removal, same cleared slots — and is monitor-only and logged at warning level. It exists for what a vote can't answer: a guild that has to go now, and one that never had a seat and so could never be moved against (`~expel_motion` requires a *seated* target, §16.1). Against a guild with no presence here it removes nobody and says so, because barring a guild before it ever arrives is an ordinary thing to do and has to read as done rather than as a command that failed.
+
+It also **closes any open motion** against that guild, recorded as `superseded` — not `passed`, which claims a vote that never happened, and not `lapsed`, which says the Hall declined. Leaving it open would put live buttons under a question nobody can answer any more, about a guild that has already gone, and that motion could still reach the bar later and re-run the removal.
 
 It has to hold in four places, and all four, or a removed guild finds its own way back:
 
@@ -468,3 +483,20 @@ It has to hold in four places, and all four, or a removed guild finds its own wa
 Removal goes by who *represents* the tag, not by the tag on the row — `~force guild` can repoint that, and settling by the row would miss a repointed member while catching one who has moved on. The ban is written **first**, before anybody is removed: a removal that dies partway still leaves the door shut, whereas the other order leaves a window in which the representatives are gone and the door is open. Kicks that fail are logged and counted rather than raised, and `Delegate` rows are marked left rather than deleted — the history survives, and `mint_invite` reads the same column.
 
 **Needs Kick Members**, which §6 already required; **Manage Messages** on any channel a motion might be typed in, to scrub a public invocation; and **Mention @everyone** on the delegate channel, or the one `@here` renders as plain text. It needs `NOTIFICATIONS_CHANNEL_ID` set — without it `~expel_motion` refuses rather than posting a vote somewhere only the mover can see — and `DELEGATE_CHANNEL_ID` if the Hall is ever to be called to one.
+
+## 17. Looking after the process — `~manage`
+
+**Status:** implemented (Stage 15)
+
+Everything under `~force` changes what the Hall *is*. `~manage` changes what the process is doing, and the two are kept apart so an audit log reads properly: `~force expel` is a decision, `~manage reload_cogs` is maintenance. Monitor-only throughout.
+
+`~manage refresh_notability` and `~manage resync_roster` **delegate to the `~script` modules** rather than reimplementing them. They have to mean the same thing as `~script refresh_notability` and `~script roster`, and one of them throttling its progress edits while the other doesn't is exactly the divergence nobody notices until an operator reports different behaviour from two commands that sound identical. The scripts own the work; these are aliases with a name a monitor can guess.
+
+`~manage reload_cogs` re-imports every cog without restarting. It **names the ones that failed**, because a partial reload leaves the process running some old code and some new, and which is which decides whether the next thing you try proves anything at all. A module with no `setup()` isn't a failure, just not a cog.
+
+`~manage shutdown` exits, and the container's `restart: unless-stopped` is what brings the bot back — exiting *is* the restart. Two details:
+
+- **It drains the roster first.** `roster.request_sync` is debounced and fire-and-forget, so exiting seconds after a `~force` would drop a redraw nothing else is going to make until the next hourly pass.
+- **It sends itself `SIGTERM` rather than calling `sys.exit`.** Uvicorn is serving on another task in the same event loop and `bot.close()` doesn't stop it. `SIGTERM` is what `docker stop` sends, so the process takes its ordinary shutdown path rather than a novel one only this command exercises.
+
+The reply says what's *expected* to happen rather than promising the bot will be back, since nothing in the process re-launches it if that restart policy is ever removed.

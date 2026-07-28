@@ -79,6 +79,11 @@ logger = logging.getLogger(__name__)
 OPEN = "open"
 PASSED = "passed"
 LAPSED = "lapsed"
+# Closed because the guild was expelled another way — a monitor's
+# `~force expel`. Distinct from `passed`, which is a claim about a vote
+# that in this case never happened, and from `lapsed`, which says the
+# Hall declined. The motion simply stopped being a question.
+SUPERSEDED = "superseded"
 
 # The bar, as a whole-number percentage. Integer arithmetic throughout:
 # 0.51 has no exact binary representation, so a float comparison decides
@@ -413,6 +418,25 @@ async def resolve_open(discord_guild: discord.Guild) -> list[Resolution]:
     return resolutions
 
 
+async def supersede_open(
+    discord_guild: discord.Guild, guild_tag: str
+) -> list[ExpelMotion]:
+    """Close any open motion against a guild that's been expelled anyway.
+
+    A monitor's ``~force expel`` answers the question the motion was
+    asking, so leaving it open would put live buttons under a vote about
+    a guild that has already gone — and one that could still "carry"
+    later and re-run the removal. Recorded as :data:`SUPERSEDED` rather
+    than passed, because no vote decided it.
+    """
+    closed = []
+    for motion in await ExpelMotion.filter(guild_tag__iexact=guild_tag, state=OPEN):
+        voters = await electorate(discord_guild, exclude=motion.guild_tag)
+        await _close(motion, SUPERSEDED, await tally(motion, voters), None)
+        closed.append(motion)
+    return closed
+
+
 async def _close(
     motion: ExpelMotion,
     state: str,
@@ -547,6 +571,13 @@ def render_resolved(
         outcome = (
             f"`{motion.guild_tag}`'s representatives have been removed and the "
             "guild is barred from the Hall."
+        )
+    elif motion.state == SUPERSEDED:
+        headline = "closed"
+        outcome = (
+            f"`{motion.guild_tag}` was barred from the Hall by a monitor while "
+            "this was open, so there's nothing left to decide. The votes cast "
+            "are recorded below; none of them settled it."
         )
     else:
         headline = "lapsed"

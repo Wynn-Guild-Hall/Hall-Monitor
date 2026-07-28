@@ -34,6 +34,12 @@ class Delegate(Model):
     # watch. Differing from `guild_tag` is what makes someone external;
     # NULL means guildless or never polled, neither of which is.
     current_guild_tag = fields.CharField(max_length=8, null=True)
+    # When the watch last got a *successful* answer about them. A failed
+    # lookup keeps the stored guild, which is right per-call and unbounded
+    # across calls — sustained 429s or a payload shape change would freeze
+    # every delegate's guild silently. This is what makes that visible;
+    # without it "detected within 48h" quietly becomes "never".
+    current_guild_checked_at = fields.DatetimeField(null=True)
     joined_at = fields.DatetimeField(auto_now_add=True)
     left_at = fields.DatetimeField(null=True)
 

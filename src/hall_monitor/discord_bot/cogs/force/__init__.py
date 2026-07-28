@@ -49,10 +49,13 @@ class ForceGroup(commands.Cog):
 
 
 async def setup(bot: commands.Bot) -> None:
-    from . import assign, expel, guild, notable, observer
+    from . import assign, expel, guild, notable, observer, rep
 
     cog = ForceGroup(bot)
     # Each sibling module attaches its `~force <name>` and `~unforce <name>` pair.
-    for module in (assign, notable, guild, observer, expel):
+    # `rep` is the exception with no `~unforce`: it rewrites the row rather
+    # than sitting in front of it, and there's no remembered previous guild
+    # to go back to. Re-running it is the undo.
+    for module in (assign, notable, guild, observer, expel, rep):
         module.register(cog)
     await bot.add_cog(cog)

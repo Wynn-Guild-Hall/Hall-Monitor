@@ -26,6 +26,7 @@ from fastapi import APIRouter, Request
 from hall_monitor.config import settings
 from hall_monitor.external import wynncraft
 from hall_monitor.services import (
+    delegate_registry,
     discord_invites,
     expel,
     mc_command,
@@ -35,8 +36,6 @@ from hall_monitor.services import (
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
-
-_ELIGIBLE_RANKS = frozenset({"OWNER", "CHIEF"})
 
 
 def _chat(message: str) -> dict:
@@ -128,7 +127,7 @@ async def _decide(request: Request, uuid: str, msg: str) -> tuple[dict, str]:
 
     player = await wynncraft.get_player(uuid, urgent=True)
     player_guild = player.guild if player else None
-    if player_guild is None or player_guild.rank not in _ELIGIBLE_RANKS:
+    if player_guild is None or player_guild.rank not in delegate_registry.ELIGIBLE_RANKS:
         return (
             _chat("You aren't chief or owner of a notable guild."),
             f"chat: not eligible (rank={player_guild.rank if player_guild else None})",

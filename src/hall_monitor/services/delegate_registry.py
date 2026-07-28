@@ -27,7 +27,7 @@ and to verify again, or a janitor to say so with ``~force guild``.
 
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import discord
 import httpx
@@ -45,6 +45,30 @@ EXTERNAL = "external"
 
 # `ForceOverride.kind` for `~force guild`.
 FORCE_GUILD = "guild"
+
+# The in-game ranks that may speak for a guild. One copy: the join
+# lookup, the MC-time verify route and `~force rep` all ask the same
+# question, and three spellings of it is three things to forget to
+# change — the same reasoning as `time_parse.gating_rejection`.
+ELIGIBLE_RANKS = frozenset({"OWNER", "CHIEF"})
+
+
+async def eligible_guild(mc_uuid: str, *, urgent: bool = True):
+    """The guild this account may represent, or ``None``.
+
+    ``None`` covers every way of not being eligible — guildless, an
+    ordinary member, or a lookup that failed — because none of them
+    entitles anyone to anything and the caller's answer is the same.
+    Callers that need to *explain* the refusal should ask
+    :func:`hall_monitor.external.wynncraft.get_player_guild` themselves.
+
+    ``urgent`` by default: every caller is a person waiting, in
+    Minecraft or in a browser or on a command.
+    """
+    guild = await wynncraft.get_player_guild(mc_uuid, urgent=urgent)
+    if guild is None or guild.rank not in ELIGIBLE_RANKS:
+        return None
+    return guild
 
 
 async def get_by_mc_uuid(mc_uuid: str) -> Delegate | None:
@@ -189,6 +213,13 @@ async def standing(delegate: Delegate, *, notable: bool) -> str:
     return DELEGATE if notable else RELEGATE
 
 
+# How long a delegate may go unchecked before it's worth telling someone.
+# The design brief's guarantee is that a guild change is noticed within
+# 48h; the poll is hourly, so anything near this bound means the poll
+# itself has been failing rather than that it hasn't come round yet.
+STALE_AFTER = timedelta(hours=48)
+
+
 async def refresh_current_guilds() -> tuple[int, int]:
     """Ask Wynncraft where every live delegate currently is.
 
@@ -200,6 +231,12 @@ async def refresh_current_guilds() -> tuple[int, int]:
     resetting it — a 429 recorded as "no guild" would read back as the
     delegate having *rejoined* their guild, quietly promoting someone the
     last sweep had relegated.
+
+    It does **not** leave ``current_guild_checked_at`` alone, and that's
+    the whole point of the column: keeping the last known guild is right
+    per-call but unbounded across calls, so a persistent failure would
+    otherwise freeze every delegate's guild with nothing to see it by.
+    The timestamp only moves on an answer.
     """
     checked = external = 0
     for delegate in await Delegate.filter(left_at=None):
@@ -215,9 +252,13 @@ async def refresh_current_guilds() -> tuple[int, int]:
             continue
         checked += 1
         tag = guild.prefix if guild else None
-        if delegate.current_guild_tag != tag:
-            delegate.current_guild_tag = tag
-            await delegate.save(update_fields=["current_guild_tag"])
+        changed = delegate.current_guild_tag != tag
+        delegate.current_guild_tag = tag
+        delegate.current_guild_checked_at = datetime.now(timezone.utc)
+        await delegate.save(
+            update_fields=["current_guild_tag", "current_guild_checked_at"]
+        )
+        if changed:
             logger.info(
                 "guild watch: %s is now in %s (represents %s)",
                 delegate.mc_uuid,
@@ -225,7 +266,40 @@ async def refresh_current_guilds() -> tuple[int, int]:
                 delegate.guild_tag,
             )
         external += await is_external(delegate)
+
+    stale = await stale_delegates()
+    if stale:
+        logger.warning(
+            "guild watch: %d delegate(s) haven't been checked in %dh — "
+            "`~script delegate_status` for which",
+            len(stale),
+            STALE_AFTER.total_seconds() // 3600,
+        )
     return checked, external
+
+
+async def stale_delegates(within: timedelta | None = None) -> list[Delegate]:
+    """Live delegates the watch hasn't successfully checked inside ``within``.
+
+    A delegate that has *never* been checked counts as stale once they're
+    older than the window — a row written moments ago simply hasn't had
+    its first sweep yet, and reporting it would make a fresh verification
+    look like a fault.
+    """
+    window = within or STALE_AFTER
+    cutoff = datetime.now(timezone.utc) - window
+    return [
+        delegate
+        for delegate in await Delegate.filter(left_at=None)
+        if (
+            delegate.current_guild_checked_at is None
+            and delegate.joined_at < cutoff
+        )
+        or (
+            delegate.current_guild_checked_at is not None
+            and delegate.current_guild_checked_at < cutoff
+        )
+    ]
 
 
 async def mark_left(discord_user_id: int) -> None:
