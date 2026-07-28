@@ -43,10 +43,14 @@ class Settings(BaseSettings):
     pending_invite_sweep_seconds: int = 60
     notability_refresh_seconds: int = 3600
 
-    # How many of the server's custom emote slots the bot may fill with
-    # guild banners. Zero means it mints none — the emote list belongs to
-    # the community, so taking slots is opt-in rather than assumed.
-    roster_emote_budget: int = 0
+    # Guild banners fill every emote slot the server isn't otherwise
+    # using. Members can't add emotes, so the list is the bot's to manage
+    # and its size is whatever the current boost level allows.
+    roster_emotes_enabled: bool = True
+    # Slots held back for the server's own emotes, on top of any it
+    # already has. Zero fills the list; a couple leaves an admin room to
+    # upload something without first deleting a banner.
+    roster_emote_reserve: int = 0
 
     @property
     def sqlite_path(self) -> Path:

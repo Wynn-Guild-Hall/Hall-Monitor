@@ -1,19 +1,26 @@
 """Keep the top guilds' banners in the server's custom-emote list.
 
-Emote slots are scarce and shared. A server gets 50 of them (250 at boost
-level 3), the community's own emotes live in the same list, and there are
-far more notable guilds than slots — so this is a *budget* to spend, not
-a set to fill. `ROSTER_EMOTE_BUDGET` says how many the bot may take, and
-it defaults to **zero**: the emote list belongs to the server, and taking
-slots is something an operator asks for rather than something a deploy
-does to them.
+Members can't upload emotes here, so the list is the bot's to manage and
+**banners fill whatever the server isn't otherwise using**. The size of
+that is the boost level: 50 slots at tier 0, 100 at 1, 150 at 2, 250 at
+3. Nothing configures the count — :func:`budget` derives it from
+`emoji_limit` minus the emotes a human uploaded minus
+`ROSTER_EMOTE_RESERVE`, which is exactly what makes a boost gained or
+lost take care of itself.
 
-Within the budget the rule is simply roster order (`services/roster.py`),
-which is Wynnpool's guild-level board. Guilds above the line get their
-banner minted; guilds that fall below it are evicted to make room. Both
-directions matter — nothing recycled emotes, the boundary moves every
-time the leaderboard does, and a full slot list is a wall a mint fails
-against silently.
+There are far more notable guilds than slots either way, so which ones
+get a banner is decided by **how strongly each guild is notable**, not
+by the roster's running order. A guild qualifying on four signals is
+more securely part of the Hall than one scraping in on a single
+leaderboard, so the placeholder falls to the guilds that qualify by the
+least — see `notability.strength`. Guilds above the line are minted;
+guilds that fall below it are evicted to make room, and **eviction runs
+first** so the slots it frees are available to whatever displaced them.
+A full list is a wall every later mint fails against silently.
+
+Note this is deliberately a *different* order from the roster's. The
+roster is sorted for a reader scanning it (guild level, highest first);
+the slots go to whoever has most claim on one.
 
 Two invariants, both the same shape as the guild-role rules in §11:
 
@@ -47,6 +54,7 @@ from hall_monitor.services import (
     banner_render,
     guild_roles,
     guild_tag as tags,
+    notability,
     roster,
 )
 from hall_monitor.external import wynnpool
@@ -88,15 +96,16 @@ class Reconciled:
 async def reconcile(discord_guild: discord.Guild) -> Reconciled:
     """Mint banners for the top guilds and evict the ones that dropped off.
 
-    The budget is the smaller of what the operator allowed and what the
-    server can actually hold, so a boost level lost overnight can't leave
-    us trying to mint into slots that no longer exist.
+    Self-correcting against the boost level: :func:`budget` reads the
+    server's current slot count every pass, so a level gained means more
+    banners next time and a level lost means the tail is evicted to fit.
+    A `GUILD_UPDATE` listener runs this immediately on a boost change so
+    the wait isn't an hour, but the hourly pass would get there anyway.
     """
     summary = Reconciled()
-    summary.budget = _budget(discord_guild)
+    summary.budget = await budget(discord_guild)
 
-    listed = await roster.listed_guilds()
-    wanted = [one.tag for one in listed[: summary.budget]]
+    wanted = [one.tag for one in await by_strength()][: summary.budget]
     summary.wanted = len(wanted)
 
     await _evict_all_but(discord_guild, wanted, summary)
@@ -135,14 +144,72 @@ async def rendered_banner(guild_tag: str, guild_name: str | None) -> bytes | Non
     return await banner_render.render_banner(details.banner)
 
 
+async def by_strength() -> list[roster.ListedGuild]:
+    """Every listed guild, most strongly notable first.
+
+    The order slots are handed out in, and not the same as the roster's:
+    that one is sorted for someone reading down it, this one for who has
+    most claim on a scarce emote. `notability.strength` counts matched
+    signals first and breaks ties on the numbers behind them.
+
+    A guild with no cached measurement sorts last — that's a fresh force
+    override, and we know nothing about it that would justify putting it
+    ahead of a guild we've actually measured. The tag is the final
+    tiebreak, purely so the order is stable between passes and a
+    coin-flip doesn't churn an emote every hour.
+    """
+    strengths = await notability.strength_by_tag()
+    listed = await roster.listed_guilds()
+    return sorted(
+        listed,
+        key=lambda one: (
+            [-value for value in strengths.get(tags.normalise(one.tag), ())] or [1],
+            one.tag.upper(),
+        ),
+    )
+
+
+async def budget(discord_guild: discord.Guild) -> int:
+    """How many banners fit right now: the slots nobody else is using.
+
+    Derived, not configured, and that's what makes boost changes take
+    care of themselves. `emoji_limit` *is* the boost level — 50 slots at
+    tier 0, 100 at 1, 150 at 2, 250 at 3 — so a server that gains a level
+    simply has a bigger number here on the next pass, and one that loses
+    a level has a smaller one and evicts down to fit.
+
+    Two subtractions:
+
+    - **Emotes we didn't upload.** Members can't add them, but admins
+      can, and those slots are genuinely taken. Counting them keeps the
+      budget honest instead of minting into space that isn't there and
+      failing on the last few.
+    - **The reserve.** Filling the list to the brim means an admin
+      wanting to add one has to delete a banner first — which the next
+      pass would put straight back. A slot or two of headroom avoids
+      that fight entirely.
+
+    Animated emotes are ignored: Discord counts them against a separate
+    pool of the same size, and our banners are static.
+    """
+    if not settings.roster_emotes_enabled:
+        return 0
+    limit = getattr(discord_guild, "emoji_limit", 0)
+    ours = {
+        row["discord_emoji_id"]
+        for row in await GuildEmote.all().values("discord_emoji_id")
+    }
+    foreign = sum(
+        1
+        for emoji in discord_guild.emojis
+        if not getattr(emoji, "animated", False) and emoji.id not in ours
+    )
+    return max(0, limit - foreign - max(0, settings.roster_emote_reserve))
+
+
 # --------------------------------------------------------------------------
 # Internals
 # --------------------------------------------------------------------------
-
-
-def _budget(discord_guild: discord.Guild) -> int:
-    allowed = max(0, settings.roster_emote_budget)
-    return min(allowed, getattr(discord_guild, "emoji_limit", allowed))
 
 
 async def _ensure(

@@ -48,6 +48,11 @@ class NotabilityCache(Model):
     guild_tag = fields.CharField(max_length=8, unique=True)
     is_notable = fields.BooleanField()
     signals_json = fields.TextField()
+    # The numbers behind the signals — board ranks, level, territories,
+    # wars. The booleans say *whether* a guild qualifies; these say by how
+    # much, which is what breaks ties when more guilds qualify than there
+    # are emote slots to go round (`services/emote_slots.py`).
+    metrics_json = fields.TextField(default="{}")
     # Wynncraft's spelling of the guild's full name, harvested from the
     # same leaderboards the signals come from. The roster prints it, and
     # nothing else in the bot knows a guild by anything but its tag.

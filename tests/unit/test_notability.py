@@ -621,3 +621,94 @@ async def test_signals_match_a_differently_cased_board_entry(db):
     assert _signal_top25_avg_online("vets", ctx) is True
     assert _signal_level_100_plus("vets", ctx) is True
     assert ctx.name_for("vEtS") == "Returners"
+
+
+# --------------------------------------------------------------------------
+# Strength — ordering guilds against each other, for the emote budget
+# --------------------------------------------------------------------------
+
+
+def test_matched_signal_count_dominates():
+    """Notability is a yes/no, but a guild qualifying four ways is more
+    securely part of the Hall than one scraping in on a leaderboard."""
+    many = notability.strength(
+        {"level_100_plus": True, "war_count": True}, {"guild_level": 101, "wars": 50_001}
+    )
+    one = notability.strength({"level_100_plus": True}, {"guild_level": 140})
+
+    assert many > one
+
+
+def test_a_tie_on_count_falls_to_the_numbers():
+    stronger = notability.strength({"level_100_plus": True}, {"guild_level": 140})
+    weaker = notability.strength({"level_100_plus": True}, {"guild_level": 101})
+
+    assert stronger > weaker
+
+
+def test_rank_based_signals_are_inverted():
+    """Rank 1 is the strongest, not the weakest — the one place a raw
+    value sorts exactly backwards."""
+    first = notability.strength(
+        {"top25_average_online": True}, {"average_online_rank": 1}
+    )
+    twentieth = notability.strength(
+        {"top25_average_online": True}, {"average_online_rank": 20}
+    )
+
+    assert first > twentieth
+
+
+def test_an_unmatched_signal_contributes_nothing():
+    """No credit for being *nearly* good at something you didn't qualify
+    on — otherwise a guild's near-misses could outrank a real signal."""
+    near_miss = notability.strength(
+        {"level_100_plus": False, "war_count": True},
+        {"guild_level": 99, "wars": 50_001},
+    )
+    assert near_miss[1 + notability.SIGNAL_ORDER.index("level_100_plus")] == 0.0
+
+
+async def test_strength_by_tag_reads_the_cache(db):
+    await NotabilityCache.create(
+        guild_tag="VETS", is_notable=True,
+        signals_json=json.dumps({"level_100_plus": True}),
+        metrics_json=json.dumps({"guild_level": 130}),
+    )
+
+    by_tag = await notability.strength_by_tag()
+
+    assert by_tag["vets"][0] == 1.0
+    assert by_tag["vets"][1 + notability.SIGNAL_ORDER.index("level_100_plus")] == 130.0
+
+
+async def test_a_row_with_unreadable_json_is_skipped_not_fatal(db):
+    await NotabilityCache.create(
+        guild_tag="BAD", is_notable=True, signals_json="{not json",
+        metrics_json="{}",
+    )
+    await NotabilityCache.create(
+        guild_tag="OK", is_notable=True,
+        signals_json=json.dumps({"war_count": True}),
+        metrics_json=json.dumps({"wars": 60_000}),
+    )
+
+    by_tag = await notability.strength_by_tag()
+
+    assert "bad" not in by_tag and "ok" in by_tag
+
+
+async def test_the_sweep_records_the_numbers_behind_the_signals(db, httpx_mock, monkeypatch):
+    """The booleans say whether a guild qualifies; these say by how much,
+    and nothing can rank guilds without them."""
+    monkeypatch.setattr(
+        "hall_monitor.external.wynncraft.settings.wynncraft_api_token", ""
+    )
+    _boards(httpx_mock, boards={
+        "guildLevel": {"1": {"name": "Returners", "prefix": "VETS", "level": 130}},
+    })
+
+    await refresh_all()
+
+    metrics = json.loads((await NotabilityCache.get(guild_tag="VETS")).metrics_json)
+    assert metrics["guild_level"] == 130

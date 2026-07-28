@@ -369,6 +369,7 @@ async def _evaluate_and_cache(tag: str, context: _BulkContext) -> bool:
     defaults: dict[str, object] = {
         "is_notable": result,
         "signals_json": json.dumps(signals),
+        "metrics_json": json.dumps(_metrics(tag, context)),
         # Where the roster sorts this guild (services/roster.py). Written
         # every sweep including when it's `None`: falling off the level
         # board is a real change, and a remembered rank would keep the
@@ -385,10 +386,124 @@ async def _evaluate_and_cache(tag: str, context: _BulkContext) -> bool:
 
 
 def _level_rank(tag: str, context: _BulkContext) -> int | None:
-    for entry in context.guild_level:
+    return _board_rank(context.guild_level, tag)
+
+
+def _board_rank(
+    board: tuple[wynnpool.LeaderboardEntry, ...], tag: str
+) -> int | None:
+    for entry in board:
         if tags.matches(entry.tag, tag):
             return entry.rank
     return None
+
+
+def _metrics(tag: str, context: _BulkContext) -> dict[str, float | None]:
+    """The numbers behind the signals, for ranking guilds against each other.
+
+    The signals answer "does this guild qualify"; these answer "by how
+    much". Nothing in notability itself needs them — a guild is notable
+    on any single signal, and no amount of extra margin makes it more so
+    — but they're the only way to order guilds when there are more
+    qualifying than there are emote slots (:func:`strength`).
+    """
+    best_season = None
+    for board in context.season_boards[:_SIGNAL_3_LAST_10]:
+        rank = _board_rank(board, tag)
+        if rank is None:
+            name = context.name_for(tag)
+            folded = name.casefold() if name else None
+            for entry in board:
+                if folded and entry.name and entry.name.casefold() == folded:
+                    rank = entry.rank
+                    break
+        if rank is not None and (best_season is None or rank < best_season):
+            best_season = rank
+    return {
+        "average_online_rank": _board_rank(context.avg_online, tag),
+        "guild_level": _board_value(context.guild_level, tag),
+        "best_season_rank": best_season,
+        "territories": _board_value(context.territories, tag),
+        "wars": _board_value(context.wars, tag),
+    }
+
+
+# The signals in DESIGN.md §4 order. Ties on the *number* of matched
+# signals are broken by their values in this order, so a guild matching
+# signal 1 more strongly outranks one matching signal 2 more strongly.
+SIGNAL_ORDER = (
+    "top25_average_online",
+    "level_100_plus",
+    "season_placement",
+    "territory_ownership",
+    "war_count",
+    "force_override",
+)
+
+
+def strength(
+    signals: dict[str, object], metrics: dict[str, object]
+) -> tuple[float, ...]:
+    """How strongly a guild qualifies, as a sortable tuple. Bigger is stronger.
+
+    First element is **how many signals it matched**, which is the
+    headline: a guild notable on four counts is more securely part of the
+    Hall than one scraping in on a single leaderboard. The rest break
+    ties with the underlying numbers, signal by signal in
+    :data:`SIGNAL_ORDER`.
+
+    An unmatched signal contributes zero, so this never rewards a guild
+    for being *nearly* good at something it didn't qualify on. Rank-based
+    signals are inverted — rank 1 is the strongest, not the weakest —
+    which is the one place a raw value would sort exactly backwards.
+    """
+    matched = sum(1 for name in SIGNAL_ORDER if signals.get(name))
+    return (float(matched), *(_margin(name, signals, metrics) for name in SIGNAL_ORDER))
+
+
+def _margin(
+    name: str, signals: dict[str, object], metrics: dict[str, object]
+) -> float:
+    if not signals.get(name):
+        return 0.0
+    if name == "top25_average_online":
+        rank = metrics.get("average_online_rank")
+        return 0.0 if rank is None else float(_SIGNAL_1_TOP_N + 1 - rank)
+    if name == "level_100_plus":
+        return float(metrics.get("guild_level") or 0)
+    if name == "season_placement":
+        rank = metrics.get("best_season_rank")
+        # Boards are top-100, so 101 - rank keeps first place highest and
+        # never goes negative.
+        return 0.0 if rank is None else float(max(0, 101 - rank))
+    if name == "territory_ownership":
+        return float(metrics.get("territories") or 0)
+    if name == "war_count":
+        return float(metrics.get("wars") or 0)
+    # A force override has no magnitude — a janitor said yes, and that's
+    # the whole of it.
+    return 1.0
+
+
+async def strength_by_tag() -> dict[str, tuple[float, ...]]:
+    """Comparison key → strength, for every guild in the cache.
+
+    One query. Guilds with no cached row — a fresh force override, say —
+    are simply absent, and callers sort them last, which is right: we
+    know nothing that would justify putting them ahead of a guild we've
+    actually measured.
+    """
+    by_tag = {}
+    for row in await NotabilityCache.all().values(
+        "guild_tag", "signals_json", "metrics_json"
+    ):
+        try:
+            signals = json.loads(row["signals_json"] or "{}")
+            metrics = json.loads(row["metrics_json"] or "{}")
+        except ValueError:
+            continue
+        by_tag[tags.normalise(row["guild_tag"])] = strength(signals, metrics)
+    return by_tag
 
 
 async def _evaluate_and_cache_single(tag: str) -> bool:

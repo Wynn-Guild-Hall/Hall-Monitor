@@ -48,6 +48,17 @@ _STANDING_SETTINGS = {
 }
 
 
+def has_role_icons(discord_guild: discord.Guild) -> bool:
+    """Whether this server is boosted enough to have role icons at all.
+
+    Boost level 2 grants the `ROLE_ICONS` feature; below it every
+    `display_icon` write is a 403. Reading the feature is how we tell
+    "not allowed" from "failed", which are worth very different log
+    lines when it happens sixty times an hour.
+    """
+    return "ROLE_ICONS" in getattr(discord_guild, "features", ())
+
+
 def find_guild_role(
     discord_guild: discord.Guild, guild_tag: str
 ) -> discord.Role | None:
@@ -188,13 +199,26 @@ async def sync_role_icon(
     rendering them a second time here would double the work for every
     guild in the budget, every hour.
     """
-    if "ROLE_ICONS" not in getattr(discord_guild, "features", []):
-        return False
     owned = await GuildRole.filter(
         guild_tag__iexact=guild_tag, discord_role_id=role.id
     ).first()
     if owned is None:
         return False  # not ours to decorate
+
+    if not has_role_icons(discord_guild):
+        # Dropping below boost level 2 takes the icons off every role,
+        # and nothing tells us — so a remembered hash would say "already
+        # set" forever, and the roles would stay bare through the next
+        # boost. Forgetting it is what makes regaining the level put them
+        # back. Deliberately *not* an edit: there is nothing to write to.
+        if owned.icon_hash is not None:
+            owned.icon_hash = None
+            await owned.save(update_fields=["icon_hash"])
+            logger.info(
+                "guild roles: %s lost its icon with the server's boost level",
+                guild_tag,
+            )
+        return False
 
     digest = None if icon is None else banner_render.image_hash(icon)
     if owned.icon_hash == digest:

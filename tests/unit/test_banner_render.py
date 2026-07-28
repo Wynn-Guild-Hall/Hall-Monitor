@@ -8,6 +8,7 @@ small enough to read.
 """
 
 import io
+import json
 import logging
 from unittest.mock import AsyncMock, MagicMock
 
@@ -15,7 +16,12 @@ import discord
 import pytest
 from PIL import Image
 
-from hall_monitor.db.models import GuildEmote, GuildRole, NotabilityCache
+from hall_monitor.db.models import (
+    ForceOverride,
+    GuildEmote,
+    GuildRole,
+    NotabilityCache,
+)
 from hall_monitor.external import wynnpool
 from hall_monitor.services import banner_render, emote_slots, guild_roles
 
@@ -199,9 +205,10 @@ async def test_the_same_banner_hashes_the_same(patterns):
 
 
 class FakeEmoji:
-    def __init__(self, emoji_id, name):
+    def __init__(self, emoji_id, name, animated=False):
         self.id = emoji_id
         self.name = name
+        self.animated = animated
         self.deleted = False
 
     async def delete(self, *, reason=None):
@@ -209,11 +216,13 @@ class FakeEmoji:
 
 
 class FakeDiscordGuild:
-    def __init__(self, *, emoji_limit=50, features=()):
+    def __init__(self, *, emoji_limit=50, features=(), premium_tier=0):
         self.emojis = []
         self.emoji_limit = emoji_limit
         self.features = list(features)
+        self.premium_tier = premium_tier
         self.roles = []
+        self.id = 1
         self._next_id = 900
 
     def get_role(self, role_id):
@@ -226,11 +235,21 @@ class FakeDiscordGuild:
         return emoji
 
 
+@pytest.fixture(autouse=True)
+def emotes_on(monkeypatch):
+    monkeypatch.setattr(
+        "hall_monitor.services.emote_slots.settings.roster_emotes_enabled", True
+    )
+    monkeypatch.setattr(
+        "hall_monitor.services.emote_slots.settings.roster_emote_reserve", 0
+    )
+
+
 @pytest.fixture
-def budget(monkeypatch):
+def reserve(monkeypatch):
     def _set(n):
         monkeypatch.setattr(
-            "hall_monitor.services.emote_slots.settings.roster_emote_budget", n
+            "hall_monitor.services.emote_slots.settings.roster_emote_reserve", n
         )
     return _set
 
@@ -246,54 +265,148 @@ def banners(monkeypatch):
     monkeypatch.setattr(emote_slots, "rendered_banner", fake)
 
 
-async def _notable(tag, name, rank):
+async def _notable(tag, name, rank, *, signals=None, metrics=None):
+    """A cached guild. `signals`/`metrics` decide how strongly it counts,
+    which is what the emote budget is handed out on."""
     await NotabilityCache.create(
-        guild_tag=tag, is_notable=True, signals_json="{}",
+        guild_tag=tag, is_notable=True,
+        signals_json=json.dumps(signals or {"level_100_plus": True}),
+        metrics_json=json.dumps(metrics or {"guild_level": 100}),
         guild_name=name, level_rank=rank,
     )
 
 
-async def test_a_zero_budget_takes_no_slots(db, budget, banners):
-    """The emote list belongs to the server. Taking slots is opt-in."""
-    budget(0)
+async def test_the_feature_can_be_turned_off(db, banners, monkeypatch):
+    monkeypatch.setattr(
+        "hall_monitor.services.emote_slots.settings.roster_emotes_enabled", False
+    )
     await _notable("VETS", "Returners", 1)
     guild = FakeDiscordGuild()
 
     summary = await emote_slots.reconcile(guild)
 
-    assert summary.minted == 0 and guild.emojis == []
+    assert summary.budget == 0 and guild.emojis == []
 
 
-async def test_the_budget_is_spent_in_roster_order(db, budget, banners):
-    budget(2)
-    await _notable("AAA", "Alpha", 1)
-    await _notable("BBB", "Beta", 2)
-    await _notable("CCC", "Gamma", 3)
-    guild = FakeDiscordGuild()
+async def test_the_budget_is_the_servers_free_slots(db, banners):
+    """Members can't add emotes, so the list is ours to fill — and its
+    size is the boost level, not a number anyone configured."""
+    guild = FakeDiscordGuild(emoji_limit=4)
 
-    summary = await emote_slots.reconcile(guild)
-
-    assert summary.minted == 2
-    assert [e.name for e in guild.emojis] == ["AAA", "BBB"]
+    assert await emote_slots.budget(guild) == 4
 
 
-async def test_the_budget_cannot_exceed_the_servers_own_limit(db, budget, banners):
-    """A boost level lost overnight shouldn't leave us minting into slots
-    that no longer exist."""
-    budget(10)
+async def test_emotes_a_human_uploaded_hold_their_slots(db, banners):
+    """Minting into space that isn't there fails on the last few, which
+    reads as the mint being broken rather than the list being full."""
+    guild = FakeDiscordGuild(emoji_limit=4)
+    guild.emojis.append(FakeEmoji(1, "party_parrot"))
+
+    assert await emote_slots.budget(guild) == 3
+
+
+async def test_animated_emotes_dont_count(db, banners):
+    """Discord counts them against a separate pool of the same size."""
+    guild = FakeDiscordGuild(emoji_limit=4)
+    guild.emojis.append(FakeEmoji(1, "dancing", animated=True))
+
+    assert await emote_slots.budget(guild) == 4
+
+
+async def test_a_reserve_leaves_an_admin_room_to_upload(db, banners, reserve):
+    """A full list means adding one costs deleting a banner, which the
+    next pass would put straight back."""
+    reserve(2)
+    guild = FakeDiscordGuild(emoji_limit=4)
+
+    assert await emote_slots.budget(guild) == 2
+
+
+async def test_slots_go_to_the_most_strongly_notable_guilds(db, banners):
+    """Not roster order. A guild qualifying on three signals has more
+    claim on a scarce slot than one scraping in on a single leaderboard,
+    whatever the level board says."""
+    await _notable(
+        "WEAK", "Weakly", 1,  # top of the level board, one signal
+        signals={"level_100_plus": True}, metrics={"guild_level": 130},
+    )
+    await _notable(
+        "STRG", "Strongly", 90,  # bottom of it, three signals
+        signals={
+            "level_100_plus": True, "war_count": True, "territory_ownership": True
+        },
+        metrics={"guild_level": 101, "wars": 90_000, "territories": 40},
+    )
     guild = FakeDiscordGuild(emoji_limit=1)
-    await _notable("AAA", "Alpha", 1)
-    await _notable("BBB", "Beta", 2)
 
     summary = await emote_slots.reconcile(guild)
 
-    assert summary.budget == 1 and summary.minted == 1
+    assert summary.minted == 1
+    assert [e.name for e in guild.emojis] == ["STRG"]
 
 
-async def test_an_unchanged_banner_is_not_re_uploaded(db, budget, banners):
+async def test_ties_on_count_are_broken_by_the_numbers(db, banners):
+    await _notable(
+        "LOWL", "Lower", 5,
+        signals={"level_100_plus": True}, metrics={"guild_level": 101},
+    )
+    await _notable(
+        "HIGH", "Higher", 6,
+        signals={"level_100_plus": True}, metrics={"guild_level": 140},
+    )
+    guild = FakeDiscordGuild(emoji_limit=1)
+
+    await emote_slots.reconcile(guild)
+
+    assert [e.name for e in guild.emojis] == ["HIGH"]
+
+
+async def test_a_guild_we_have_never_measured_sorts_last(db, banners):
+    """A fresh `~force notable` has no cached signals. We know nothing
+    that would justify putting it ahead of a guild we've measured."""
+    await _notable("MEAS", "Measured", 50)
+    await ForceOverride.create(kind="notable", subject="NEWG", expires_at=None)
+    guild = FakeDiscordGuild(emoji_limit=1)
+
+    await emote_slots.reconcile(guild)
+
+    assert [e.name for e in guild.emojis] == ["MEAS"]
+
+
+async def test_gaining_a_boost_level_mints_more(db, banners):
+    """The boost is a thing somebody paid for and then watches for."""
+    for i, tag in enumerate(("AAA", "BBB", "CCC"), start=1):
+        await _notable(tag, f"Guild {tag}", i)
+    guild = FakeDiscordGuild(emoji_limit=1)
+    await emote_slots.reconcile(guild)
+    assert len(guild.emojis) == 1
+
+    guild.emoji_limit = 3  # boosted
+    summary = await emote_slots.reconcile(guild)
+
+    assert summary.minted == 2 and len(guild.emojis) == 3
+
+
+async def test_losing_a_boost_level_evicts_the_tail(db, banners):
+    """Discord doesn't remove the overflow — it just refuses every later
+    upload, which looks like the mint silently failing."""
+    for i, tag in enumerate(("AAA", "BBB", "CCC"), start=1):
+        await _notable(tag, f"Guild {tag}", i)
+    guild = FakeDiscordGuild(emoji_limit=3)
+    await emote_slots.reconcile(guild)
+    assert len(guild.emojis) == 3
+
+    guild.emoji_limit = 1  # boost lapsed
+    summary = await emote_slots.reconcile(guild)
+
+    assert summary.evicted == 2
+    assert await GuildEmote.all().count() == 1
+    assert [e.name for e in guild.emojis if not e.deleted] == ["AAA"]
+
+
+async def test_an_unchanged_banner_is_not_re_uploaded(db, banners):
     """Every upload is a new emote ID, so re-minting breaks every message
     already using the old one."""
-    budget(1)
     await _notable("VETS", "Returners", 1)
     guild = FakeDiscordGuild()
     await emote_slots.reconcile(guild)
@@ -305,8 +418,7 @@ async def test_an_unchanged_banner_is_not_re_uploaded(db, budget, banners):
     assert guild.emojis == [first] and not first.deleted
 
 
-async def test_a_changed_banner_is_replaced(db, budget, monkeypatch):
-    budget(1)
+async def test_a_changed_banner_is_replaced(db, monkeypatch):
     await _notable("VETS", "Returners", 1)
     guild = FakeDiscordGuild()
     version = ["first"]
@@ -326,18 +438,20 @@ async def test_a_changed_banner_is_replaced(db, budget, monkeypatch):
     assert (await GuildEmote.get(guild_tag="VETS")).discord_emoji_id != original.id
 
 
-async def test_a_guild_dropping_out_of_the_budget_is_evicted(db, budget, banners):
+async def test_a_guild_overtaken_on_notability_is_evicted(db, banners):
     """Nothing recycled emotes, and the boundary moves whenever the
-    leaderboard does — a full list makes every later mint fail."""
-    budget(1)
+    signals do — a full list makes every later mint fail."""
     await _notable("AAA", "Alpha", 1)
-    guild = FakeDiscordGuild()
+    guild = FakeDiscordGuild(emoji_limit=1)
     await emote_slots.reconcile(guild)
     old = guild.emojis[0]
 
-    (await NotabilityCache.get(guild_tag="AAA")).level_rank  # unchanged row
-    await NotabilityCache.filter(guild_tag="AAA").update(level_rank=5)
-    await _notable("BBB", "Beta", 1)
+    # BBB now qualifies on two signals to AAA's one.
+    await _notable(
+        "BBB", "Beta", 9,
+        signals={"level_100_plus": True, "war_count": True},
+        metrics={"guild_level": 100, "wars": 60_000},
+    )
     summary = await emote_slots.reconcile(guild)
 
     assert summary.evicted == 1 and old.deleted
@@ -345,10 +459,9 @@ async def test_a_guild_dropping_out_of_the_budget_is_evicted(db, budget, banners
     assert summary.minted == 1
 
 
-async def test_only_emotes_we_made_are_ever_deleted(db, budget, banners):
+async def test_only_emotes_we_made_are_ever_deleted(db, banners):
     """An emote sharing a guild's tag might be somebody's own from years
     ago, and deleting it breaks every message that used it."""
-    budget(1)
     await _notable("VETS", "Returners", 1)
     guild = FakeDiscordGuild()
     theirs = FakeEmoji(1, "VETS")
@@ -360,10 +473,9 @@ async def test_only_emotes_we_made_are_ever_deleted(db, budget, banners):
     assert await GuildEmote.filter(guild_tag="VETS").count() == 1
 
 
-async def test_a_guild_with_no_resolved_name_is_skipped(db, budget, banners):
+async def test_a_guild_with_no_resolved_name_is_skipped(db, banners):
     """Wynnpool's banner endpoint only takes names, so a tag with none
     has nothing to ask for."""
-    budget(1)
     await NotabilityCache.create(
         guild_tag="ZZZZ", is_notable=True, signals_json="{}", level_rank=1
     )
@@ -375,9 +487,8 @@ async def test_a_guild_with_no_resolved_name_is_skipped(db, budget, banners):
 
 
 async def test_a_full_slot_list_fails_loudly_rather_than_silently(
-    db, budget, banners, caplog
+    db, banners, caplog
 ):
-    budget(1)
     await _notable("VETS", "Returners", 1)
     guild = FakeDiscordGuild()
     guild.create_custom_emoji = AsyncMock(
@@ -403,10 +514,9 @@ def _role(role_id=7, name="VETS"):
     return role
 
 
-async def test_an_unboosted_server_skips_role_icons(db, budget, banners):
+async def test_an_unboosted_server_skips_role_icons(db, banners):
     """Role icons need boost level 2. Below it every write is a 403, so
     it's detected rather than retried hourly."""
-    budget(1)
     await _notable("VETS", "Returners", 1)
     role = _role()
     guild = FakeDiscordGuild(features=())
@@ -419,8 +529,7 @@ async def test_an_unboosted_server_skips_role_icons(db, budget, banners):
     role.edit.assert_not_awaited()
 
 
-async def test_a_boosted_server_puts_the_banner_on_the_role(db, budget, banners):
-    budget(1)
+async def test_a_boosted_server_puts_the_banner_on_the_role(db, banners):
     await _notable("VETS", "Returners", 1)
     role = _role()
     guild = FakeDiscordGuild(features=("ROLE_ICONS",))
@@ -434,9 +543,8 @@ async def test_a_boosted_server_puts_the_banner_on_the_role(db, budget, banners)
     assert (await GuildRole.get(guild_tag="VETS")).icon_hash is not None
 
 
-async def test_an_unchanged_role_icon_is_not_rewritten(db, budget, banners):
+async def test_an_unchanged_role_icon_is_not_rewritten(db, banners):
     """An unconditional edit per hour is an audit-log entry per hour."""
-    budget(1)
     await _notable("VETS", "Returners", 1)
     role = _role()
     guild = FakeDiscordGuild(features=("ROLE_ICONS",))
@@ -450,10 +558,9 @@ async def test_an_unchanged_role_icon_is_not_rewritten(db, budget, banners):
     assert role.edit.await_count == 1
 
 
-async def test_eviction_takes_the_role_icon_off_too(db, budget, banners):
+async def test_eviction_takes_the_role_icon_off_too(db, banners):
     """An icon outliving the emote it came from drifts the moment the
     guild changes its banner."""
-    budget(1)
     await _notable("AAA", "Alpha", 1)
     role = _role(role_id=7, name="AAA")
     guild = FakeDiscordGuild(features=("ROLE_ICONS",))
@@ -468,10 +575,9 @@ async def test_eviction_takes_the_role_icon_off_too(db, budget, banners):
     assert (await GuildRole.get(guild_tag="AAA")).icon_hash is None
 
 
-async def test_a_role_we_didnt_create_is_never_decorated(db, budget, banners):
+async def test_a_role_we_didnt_create_is_never_decorated(db, banners):
     """Same rule as deleting one: adopting a role by name doesn't make it
     ours to write to."""
-    budget(1)
     await _notable("VETS", "Returners", 1)
     role = _role()
     guild = FakeDiscordGuild(features=("ROLE_ICONS",))
@@ -494,3 +600,96 @@ def test_an_emote_name_survives_a_tag_with_punctuation():
     assert emote_slots._emote_name("VETS") == "VETS"
     assert emote_slots._emote_name("A B") == "A_B"
     assert len(emote_slots._emote_name("X")) >= 2
+
+
+# --------------------------------------------------------------------------
+# Boost level, in both directions
+# --------------------------------------------------------------------------
+
+
+async def test_dropping_below_boost_level_2_forgets_the_role_icons(db, banners):
+    """Discord takes the icons off and tells us nothing. A remembered
+    hash would read as "already set" forever, and the roles would stay
+    bare straight through the next boost."""
+    await _notable("VETS", "Returners", 1)
+    role = _role()
+    guild = FakeDiscordGuild(features=("ROLE_ICONS",), premium_tier=2)
+    guild.roles = [role]
+    await GuildRole.create(guild_tag="VETS", discord_role_id=role.id)
+    await emote_slots.reconcile(guild)
+    assert (await GuildRole.get(guild_tag="VETS")).icon_hash is not None
+
+    guild.features = []  # boost lapsed
+    await emote_slots.reconcile(guild)
+
+    assert (await GuildRole.get(guild_tag="VETS")).icon_hash is None
+
+
+async def test_regaining_boost_level_2_puts_the_icons_back(db, banners):
+    await _notable("VETS", "Returners", 1)
+    role = _role()
+    guild = FakeDiscordGuild(features=("ROLE_ICONS",), premium_tier=2)
+    guild.roles = [role]
+    await GuildRole.create(guild_tag="VETS", discord_role_id=role.id)
+    await emote_slots.reconcile(guild)
+    guild.features = []
+    await emote_slots.reconcile(guild)
+    role.edit.reset_mock()
+
+    guild.features = ["ROLE_ICONS"]  # boosted again
+    summary = await emote_slots.reconcile(guild)
+
+    assert summary.icons == 1
+    assert role.edit.await_args.kwargs["display_icon"] == b"png-for-VETS"
+
+
+def _boost_listener():
+    from hall_monitor.discord_bot.cogs.listeners import on_boost
+
+    return on_boost
+
+
+async def test_a_boost_change_reconciles_immediately(db, banners, monkeypatch):
+    """A boost is a thing somebody paid for and then watches for; "it'll
+    sort itself out within the hour" is a poor answer to that."""
+    on_boost = _boost_listener()
+    monkeypatch.setattr(
+        "hall_monitor.discord_bot.cogs.listeners.on_boost.settings.discord_guild_id", 0
+    )
+    await _notable("AAA", "Alpha", 1)
+    await _notable("BBB", "Beta", 2)
+    before = FakeDiscordGuild(emoji_limit=1)
+    after = FakeDiscordGuild(emoji_limit=2, premium_tier=1)
+
+    await on_boost.OnBoost(MagicMock()).on_guild_update(before, after)
+
+    assert len(after.emojis) == 2
+
+
+async def test_an_unrelated_guild_edit_does_nothing(db, banners, monkeypatch):
+    """`GUILD_UPDATE` fires for the name, the icon, the AFK timeout. A
+    full emote reconcile on each would be absurd."""
+    on_boost = _boost_listener()
+    monkeypatch.setattr(
+        "hall_monitor.discord_bot.cogs.listeners.on_boost.settings.discord_guild_id", 0
+    )
+    await _notable("AAA", "Alpha", 1)
+    before = FakeDiscordGuild(emoji_limit=50)
+    after = FakeDiscordGuild(emoji_limit=50)
+
+    await on_boost.OnBoost(MagicMock()).on_guild_update(before, after)
+
+    assert after.emojis == []
+
+
+async def test_losing_the_role_icon_feature_alone_is_a_relevant_change(db, banners, monkeypatch):
+    """The slot count is unchanged between tier 2 and tier 2 minus one
+    boost, but the icons still need forgetting."""
+    on_boost = _boost_listener()
+    monkeypatch.setattr(
+        "hall_monitor.discord_bot.cogs.listeners.on_boost.settings.discord_guild_id", 0
+    )
+    before = FakeDiscordGuild(emoji_limit=50, features=("ROLE_ICONS",))
+    after = FakeDiscordGuild(emoji_limit=50)
+
+    assert on_boost._relevant_change(before, after) is not None
