@@ -61,9 +61,7 @@ Reading the invite list requires **Manage Server**. With only View Audit Log, Di
 1. Top-25 average online (last 5 days) on `api.wynnpool.com/leaderboard/guild-average-online`.
 2. Level 100+ on `api.wynnpool.com/leaderboard/guildLevel`.
 3. Season placements — top 3 in any of the last 10 seasons, top 10 in any of the last 5, or mean rank across the last 5 ≤ 25. Wynnpool's season-rating payload identifies guilds by name only (no prefix field), so this signal matches on guild name, case-insensitively — the tag is still checked first should the shape ever gain one. The three rules are kept apart in `notability.season_rules` and recorded per guild, because they make very different claims: one outstanding season two years ago and a steady mid-table record both satisfy "season placement", and only one of them is a case for tightening. `~script season` reports them separately, and `~script season <TAG>` shows a guild's rank in each of the last ten. Note the boards are top-100, so a missing season is *outside the top 100* rather than a bad rank — and the mean rule deliberately requires a placement in every one of the last five, or a guild that turned up once and came second would qualify on a single appearance.
-4. Territory ownership > 20 while a Wynncraft season is currently running (`api.wynncraft.com/v3/guild/seasons`). Counted from **Wynncraft's live territory map** (`/v3/guild/list/territory`) — one request returns every territory with its current holder, so it's exact for every guild at once and the map being complete means a guild absent from it holds nothing, which is a fact rather than a gap. Guilds holding territory are candidates in their own right: one can hold half the map without placing on any Wynnpool board.
-
-   This replaced Wynnpool's `guildTerritories` board, which is a snapshot that can lag badly — it credited two guilds with 61 and 57 territories while the game said they held none, and both were notable on the strength of it. A stale count here doesn't make a guild slightly wrong, it makes it notable. Still a current snapshot rather than the 5-day average the brief asks for; that needs historical polling we don't yet do, but it is at least *this moment's* truth rather than an unknown moment's.
+4. Territory ownership — more than 20 territories **sustained across five days**, while a Wynncraft season is running (`api.wynncraft.com/v3/guild/seasons`). See §4.1.
 5. War count > 50 000 on the Wynncraft guild payload.
 6. A janitor/monitor-issued force override (`force_override` table with `kind="notable"`) with no expiry or an expiry in the future.
 
@@ -80,6 +78,20 @@ Candidates are drawn from **every** board Wynnpool publishes — the four signal
 `~force notable <tag> <time>` writes a `ForceOverride` row. Janitors are capped at three months — long enough to carry a guild through a quiet patch, short enough that nobody parks a guild in the Hall indefinitely. There's no floor. Monitors have no ceiling and can pass `0` for a permanent override (`services/time_parse.py` owns the parsing). `~unforce notable <tag>` deletes the row.
 
 What a change in notability *does* to a guild's representatives — the delegate ↔ relegate swap, the contact roles, the guild colour — is §12. Nothing here dispatches on the change itself; the reconcile reads the cache and makes Discord match.
+
+### 4.1 Sustained territory
+
+A snapshot cannot answer signal 4. Any guild can take dozens of territories briefly, and small ones can sit on a few indefinitely in low-contest FFA zones; what marks a major guild is keeping **twenty for five days**, which needs on-call war teams across timezones and the eco to fund them. Wynnpool's `guildTerritories` board couldn't answer it either — it's a lagging snapshot that once credited two guilds with 61 and 57 territories while the game said they held none, and both were notable on the strength of it.
+
+So the sweep samples Wynncraft's live territory map each pass (`/v3/guild/list/territory` — one request, every territory with its current holder, authoritative) and `services/territory_history.py` reads the series back. Three decisions make it a measure rather than a number that looks like one:
+
+- **A fraction of the window, not a minimum.** A strong guild can be pushed down to a handful of territories for a few hours and take it back; that's an ordinary night, provided they reclaim it. Requiring every reading to clear the bar would disqualify precisely the guilds the signal exists to find. `SUSTAINED_FRACTION` (0.8) leaves room to be under it for a full day in total across the five, while still failing a guild that dropped and never recovered.
+- **Sweeps are the denominator, not the guild's own rows.** A guild that started holding two days ago has a flawless record over the two days it's been watched, and that is the claim we are specifically not making.
+- **The window must be covered before it can be judged**, measured from the oldest reading still retained rather than from the span of readings inside the window — those can only span the full window if a sample lands exactly on its edge, so comparing them to it would leave `covered` essentially never true. Retention runs a day longer than the window so this can be asked at all.
+
+Guilds that stop holding are recorded as **zero** rather than dropped. Sampling only the holders would leave a wiped guild's last good readings standing for the rest of the window — the exact failure the snapshot had. Territory holders are also candidates in their own right, since a guild can hold half the map without placing on any Wynnpool board.
+
+**The signal reads false for everyone until five days of history exist.** That's honest rather than unfortunate: nothing has yet demonstrated the thing being asked about. `~script territory` shows how much history there is and each guild's record; `~script territory <TAG>` explains one guild's verdict.
 
 ### Guild tags
 

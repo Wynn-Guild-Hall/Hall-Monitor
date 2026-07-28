@@ -8,10 +8,12 @@ Signals
 3. **Season placement** across recent seasons — any of:
    top-3 in any of the last 10 seasons; top-10 in any of the last 5;
    mean rank across the last 5 seasons ≤ 25.
-4. **Territory ownership** > 20 while a Wynncraft season is currently
-   running, counted from Wynncraft's live territory map. (Approximated
-   with the current snapshot; the full 5-day average would require
-   historical polling we don't yet do.)
+4. **Territory ownership** — above 20 territories *sustained across five
+   days* while a Wynncraft season is running. Counted from Wynncraft's
+   live territory map, sampled each sweep and read back from
+   ``services/territory_history.py``. A snapshot won't do: any guild can
+   take 150 territories for five minutes, and holding twenty for five
+   days is what actually needs on-call war teams and eco capacity.
 5. **War count** > 50 000.
 6. **Force override** — a `ForceOverride(kind="notable", subject=tag)`
    row with no expiry or an expiry in the future.
@@ -38,7 +40,7 @@ from datetime import datetime, timezone
 from hall_monitor import external
 from hall_monitor.db.models import Delegate, ForceOverride, NotabilityCache
 from hall_monitor.external import wynncraft, wynnpool
-from hall_monitor.services import guild_tag as tags
+from hall_monitor.services import guild_tag as tags, territory_history
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +51,7 @@ _SIGNAL_3_TOP_10 = 10
 _SIGNAL_3_MEAN_TOP = 25
 _SIGNAL_3_LAST_10 = 10
 _SIGNAL_3_LAST_5 = 5
-_SIGNAL_4_MIN_TERRITORIES = 20
+MIN_TERRITORIES = 20
 _SIGNAL_5_MIN_WARS = 50_000
 
 
@@ -81,6 +83,9 @@ class _BulkContext:
     # A dict rather than a board because the map is *complete*: a guild
     # that isn't in it holds nothing, which is a fact and not a gap.
     territories: dict[str, int]
+    # The last five days of those readings. The signal is about holding,
+    # not about having held when we happened to look.
+    territory_window: territory_history.Window
     season_boards: tuple[tuple[wynnpool.LeaderboardEntry, ...], ...]  # newest → oldest
     current_season_active: bool
     # A top-N board proves a "> threshold" signal false by omission only
@@ -269,6 +274,21 @@ async def _load_context() -> _BulkContext:
             if entry.tag is None:
                 continue
             tag_to_name.setdefault(entry.tag, entry.name)
+    # Record before reading, so this sweep's reading is part of the window
+    # it's about to judge on.
+    await territory_history.record(
+        {holder.prefix: holder.territories for holder in territory_map}
+    )
+    window = await territory_history.load(MIN_TERRITORIES)
+    if not window.covered:
+        logger.info(
+            "territory history: %d reading(s) over %.1fd of a %dd window — the "
+            "territory signal stays false until it's covered",
+            window.sweeps,
+            window.watched.total_seconds() / 86400,
+            territory_history.WINDOW.days,
+        )
+
     return _BulkContext(
         tag_to_name=tag_to_name,
         avg_online=avg_online,
@@ -278,6 +298,7 @@ async def _load_context() -> _BulkContext:
             tags.normalise(holder.prefix): holder.territories
             for holder in territory_map
         },
+        territory_window=window,
         season_boards=season_boards,
         current_season_active=_any_active(seasons),
         folded_to_name={tags.normalise(k): v for k, v in tag_to_name.items()},
@@ -489,6 +510,12 @@ def _metrics(tag: str, context: _BulkContext) -> dict[str, float | None]:
         "season_ranks": ranks,
         "season_rules": season_rules(ranks),
         "territories": context.territories_for(tag),
+        # The record behind the signal, so a report can say *why* rather
+        # than only what.
+        "territory_sustained_fraction": round(
+            context.territory_window.fraction(tag), 3
+        ),
+        "territory_window_covered": context.territory_window.covered,
         "wars": _board_value(context.wars, tag),
     }
 
@@ -642,7 +669,8 @@ async def _evaluate(tag: str, context: _BulkContext) -> dict[str, bool | None]:
             tag, context.name_for(tag), context
         ),
         "territory_ownership": _signal_territory_ownership(
-            context.territories_for(tag), context.current_season_active
+            context.territory_window.sustained(tag),
+            context.current_season_active,
         ),
         "war_count": _signal_war_count(wars),
         "force_override": await _has_active_notable_override(tag),
@@ -762,15 +790,14 @@ def _signal_season_placement(
     return any(season_rules(season_ranks(tag, name, ctx)).values())
 
 
-def _signal_territory_ownership(territories: float | None, season_active: bool) -> bool:
-    """Holdings above the threshold, and only while a season is running.
+def _signal_territory_ownership(sustained: bool, season_active: bool) -> bool:
+    """Held above the threshold for the window, and only while a season runs.
 
-    ``None`` and ``0`` mean the same thing here — the territory map is
-    complete, so a guild that isn't on it holds nothing.
+    The holding question is answered by ``services/territory_history``;
+    all that's left here is the season gate, because territory off-season
+    costs nothing to keep and proves nothing about war capacity.
     """
-    if not territories or not season_active:
-        return False
-    return territories > _SIGNAL_4_MIN_TERRITORIES
+    return bool(sustained and season_active)
 
 
 def _signal_war_count(wars: float | None) -> bool:

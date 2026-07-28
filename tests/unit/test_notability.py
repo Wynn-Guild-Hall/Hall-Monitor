@@ -8,7 +8,7 @@ import pytest
 
 from hall_monitor.db.models import Delegate, ForceOverride, NotabilityCache
 from hall_monitor.external import wynncraft, wynnpool
-from hall_monitor.services import notability
+from hall_monitor.services import notability, territory_history
 from hall_monitor.services.notability import (
     _BulkContext,
     _signal_level_100_plus,
@@ -46,6 +46,21 @@ def _lb(rank: int, tag: str, name: str = "n", value: float | None = None):
     return wynnpool.LeaderboardEntry(rank=rank, name=name, tag=tag, value=value)
 
 
+def _window(holdings=None, *, covered=True, sweeps=120) -> territory_history.Window:
+    """A territory window with `{tag: readings-above-the-bar}`."""
+    return territory_history.Window(
+        sweeps=sweeps,
+        watched=territory_history.WINDOW if covered else timedelta(days=1),
+        threshold=notability.MIN_TERRITORIES,
+        holdings={
+            tag.casefold(): territory_history.Holding(
+                readings=sweeps, above=above, low=0, high=99
+            )
+            for tag, above in (holdings or {}).items()
+        },
+    )
+
+
 def _ctx(**overrides) -> _BulkContext:
     defaults = dict(
         tag_to_name={},
@@ -53,6 +68,7 @@ def _ctx(**overrides) -> _BulkContext:
         guild_level=(),
         wars=(),
         territories={},
+        territory_window=_window(),
         season_boards=(),
         current_season_active=False,
     )
@@ -189,22 +205,63 @@ def test_signal_3_still_matches_on_tag_if_wynnpool_adds_one():
 # --------------------------------------------------------------------------
 
 
-def test_signal_4_true_when_over_20_and_season_active():
-    assert _signal_territory_ownership(25, True) is True
+def test_signal_4_true_when_sustained_and_season_active():
+    assert _signal_territory_ownership(True, True) is True
 
 
 def test_signal_4_false_when_no_active_season():
-    """Twenty-five territories don't count off-season."""
-    assert _signal_territory_ownership(25, False) is False
+    """Territory off-season costs nothing to keep and proves nothing."""
+    assert _signal_territory_ownership(True, False) is False
 
 
-def test_signal_4_false_at_boundary():
-    assert _signal_territory_ownership(20, True) is False
+def test_signal_4_needs_the_holding_sustained_not_merely_held():
+    assert _signal_territory_ownership(False, True) is False
 
 
-def test_signal_4_false_when_absent_from_the_board():
-    """Off the territories board means below its floor, which is below 20."""
-    assert _signal_territory_ownership(None, True) is False
+def test_a_guild_holding_the_bar_throughout_qualifies():
+    window = _window({"AEQ": 120}, sweeps=120)
+    assert window.sustained("Aeq") is True
+
+
+def test_a_deep_but_brief_loss_is_survivable():
+    """A strong guild can be pushed down to a handful of territories for
+    a few hours and take it back — that's an ordinary night, not a
+    disqualification, provided they reclaim it."""
+    window = _window({"AEQ": 117}, sweeps=120)  # under the bar for 3 hours
+    assert window.sustained("Aeq") is True
+
+
+def test_a_guild_that_dropped_and_never_recovered_fails():
+    window = _window({"GONE": 30}, sweeps=120)  # held for a day, then nothing
+    assert window.sustained("GONE") is False
+
+
+def test_a_spike_doesnt_count():
+    """Any guild can take 150 territories for five minutes."""
+    window = _window({"SPKE": 2}, sweeps=120)
+    assert window.sustained("SPKE") is False
+
+
+def test_nothing_qualifies_until_the_window_is_covered():
+    """Two days of a flawless record is not five days of one, and the
+    signal must not read as though it were."""
+    window = _window({"AEQ": 48}, covered=False, sweeps=48)
+    assert window.covered is False
+    assert window.sustained("Aeq") is False
+
+
+def test_sweeps_are_the_denominator_not_the_guilds_own_rows():
+    """A guild watched for two days has a perfect record over two days,
+    which is the claim we are specifically not making."""
+    window = territory_history.Window(
+        sweeps=120,
+        watched=territory_history.WINDOW,
+        threshold=notability.MIN_TERRITORIES,
+        holdings={
+            "new": territory_history.Holding(readings=48, above=48, low=30, high=40)
+        },
+    )
+    assert window.sustained("NEW") is False
 
 
 # --------------------------------------------------------------------------
@@ -777,6 +834,21 @@ async def test_a_finished_season_board_is_fetched_once(db, httpx_mock, monkeypat
 # --------------------------------------------------------------------------
 
 
+async def _seed_history(counts, *, sweeps=6):
+    """A full window of readings, so the signal has something to judge."""
+    from hall_monitor.db.models import TerritorySample
+
+    now = datetime.now(timezone.utc)
+    for index in range(sweeps):
+        at = now - territory_history.WINDOW + (
+            territory_history.WINDOW * index / (sweeps - 1)
+        )
+        for tag, count in counts.items():
+            await TerritorySample.create(
+                guild_tag=tag, territories=count, sampled_at=at
+            )
+
+
 async def test_territories_come_from_the_live_map(db, httpx_mock, monkeypatch):
     """Wynnpool's `guildTerritories` board lagged badly enough to credit
     two guilds with 61 and 57 territories while the game said they held
@@ -792,6 +864,7 @@ async def test_territories_come_from_the_live_map(db, httpx_mock, monkeypatch):
                         "endDate": "2099-01-01T00:00:00Z"}},
         season_boards={32: {"ranking": []}},
     )
+    await _seed_history({"BIG": 40, "SMOL": 3})
 
     await refresh_all()
 
@@ -815,6 +888,7 @@ async def test_a_guild_off_every_board_still_counts_its_territory(db, httpx_mock
                         "endDate": "2099-01-01T00:00:00Z"}},
         season_boards={32: {"ranking": []}},
     )
+    await _seed_history({"HOLD": 40})
 
     await refresh_all()
 
@@ -828,9 +902,46 @@ async def test_holding_nothing_is_a_fact_not_a_gap(db):
 
     assert ctx.territories_for("Aeq") == 97
     assert ctx.territories_for("NONE") == 0
-    assert _signal_territory_ownership(ctx.territories_for("NONE"), True) is False
 
 
-async def test_territory_still_needs_an_active_season(db):
-    """Twenty-five territories don't count off-season, live map or not."""
-    assert _signal_territory_ownership(97, False) is False
+async def test_a_wiped_guild_is_recorded_as_zero_not_dropped(db):
+    """Sampling only holders would leave its last good readings standing
+    for the rest of the window — the exact failure the snapshot had."""
+    from hall_monitor.db.models import TerritorySample
+
+    now = datetime.now(timezone.utc)
+    await TerritorySample.create(
+        guild_tag="GONE", territories=40, sampled_at=now - timedelta(hours=1)
+    )
+
+    await territory_history.record({"AEQ": 97}, at=now)
+
+    latest = await TerritorySample.filter(guild_tag="GONE").order_by("-sampled_at").first()
+    assert latest.territories == 0
+
+
+async def test_recording_keeps_the_live_counts(db):
+    """The zero-fill must not overwrite the guilds that are holding —
+    merging the wrong way round records every holder as holding nothing."""
+    now = datetime.now(timezone.utc)
+    await territory_history.record({"AEQ": 97}, at=now - timedelta(hours=1))
+
+    await territory_history.record({"AEQ": 97}, at=now)
+
+    window = await territory_history.load(20, now=now)
+    assert window.holdings["aeq"].low == 97
+
+
+async def test_old_readings_are_pruned(db):
+    from hall_monitor.db.models import TerritorySample
+
+    now = datetime.now(timezone.utc)
+    await TerritorySample.create(
+        guild_tag="AEQ",
+        territories=97,
+        sampled_at=now - territory_history.RETENTION - timedelta(days=1),
+    )
+
+    await territory_history.record({"AEQ": 97}, at=now)
+
+    assert await TerritorySample.filter(guild_tag="AEQ").count() == 1

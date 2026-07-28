@@ -602,3 +602,58 @@ async def test_a_dash_is_outside_the_top_100_not_a_bad_rank(db):
 
     rules = _n.season_rules([None] * 10)
     assert not any(rules.values())
+
+
+# --------------------------------------------------------------------------
+# territory — the sustained-holding record behind signal 4
+# --------------------------------------------------------------------------
+
+
+async def test_territory_script_says_when_the_window_isnt_covered_yet(db):
+    """Five days after this ships the signal is false for everyone, and
+    the script has to say so rather than look like nobody qualifies."""
+    from datetime import datetime, timedelta, timezone
+
+    from hall_monitor.db.models import TerritorySample
+    from hall_monitor.discord_bot.cogs.admin.scripts import territory
+
+    now = datetime.now(timezone.utc)
+    for hours in (0, 6):
+        await TerritorySample.create(
+            guild_tag="AEQ", territories=97, sampled_at=now - timedelta(hours=hours)
+        )
+
+    ctx, _ = _fake_ctx()
+    await territory.main(ctx)
+
+    assert "reads false for everyone" in ctx.reply.await_args.args[0]
+
+
+async def test_territory_script_reports_one_guilds_record(db):
+    from datetime import datetime, timedelta, timezone
+
+    from hall_monitor.db.models import TerritorySample
+    from hall_monitor.discord_bot.cogs.admin.scripts import territory
+    from hall_monitor.services import territory_history
+
+    now = datetime.now(timezone.utc)
+    for index in range(10):
+        at = now - territory_history.WINDOW * (index / 9)
+        # One reading in ten sits under the bar: a night of losing ground
+        # and taking it back, which must not disqualify them.
+        await TerritorySample.create(
+            guild_tag="AEQ",
+            territories=3 if index == 4 else 97,
+            sampled_at=at,
+        )
+
+    ctx, _ = _fake_ctx()
+    await territory.main(ctx, "AEQ")
+    body = ctx.reply.await_args.args[0]
+
+    # Qualifies despite the dip, and the report shows how deep it went —
+    # the exact reading count depends on where the window edge lands, so
+    # what's asserted is the judgement and the evidence for it.
+    assert "**yes**" in body
+    assert "ranging 3–97" in body
+    assert "window covered" in body

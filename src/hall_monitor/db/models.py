@@ -166,6 +166,33 @@ class GuildEmote(Model):
         table = "guild_emote"
 
 
+class TerritorySample(Model):
+    """One sweep's reading of how much territory a guild held.
+
+    Signal 4 asks whether a guild *sustained* holdings, not whether it
+    happened to hold some the moment we looked — any guild can take 150
+    territories for five minutes, and the thing worth measuring is the
+    on-call war teams and eco capacity needed to keep twenty for five
+    days. That can only be answered from a series, so the sweep records
+    one reading per tracked guild per pass and
+    ``services/territory_history.py`` reads them back.
+
+    Rows outside the window are pruned on write, so this stays a few
+    thousand rows rather than growing forever.
+    """
+
+    id = fields.IntField(pk=True)
+    guild_tag = fields.CharField(max_length=8)
+    territories = fields.IntField()
+    sampled_at = fields.DatetimeField()
+
+    class Meta:
+        table = "territory_sample"
+        # Every read is "this guild, inside the window", and the prune is
+        # "everything before a cutoff".
+        indexes = (("guild_tag", "sampled_at"),)
+
+
 class GuildContact(Model):
     """Which delegate currently holds each contact role for a guild."""
 
