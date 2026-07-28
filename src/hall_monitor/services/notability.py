@@ -9,8 +9,9 @@ Signals
    top-3 in any of the last 10 seasons; top-10 in any of the last 5;
    mean rank across the last 5 seasons ≤ 25.
 4. **Territory ownership** > 20 while a Wynncraft season is currently
-   running. (Approximated with the current snapshot; the full 5-day
-   average would require historical polling we don't yet do.)
+   running, counted from Wynncraft's live territory map. (Approximated
+   with the current snapshot; the full 5-day average would require
+   historical polling we don't yet do.)
 5. **War count** > 50 000.
 6. **Force override** — a `ForceOverride(kind="notable", subject=tag)`
    row with no expiry or an expiry in the future.
@@ -76,7 +77,10 @@ class _BulkContext:
     avg_online: tuple[wynnpool.LeaderboardEntry, ...]
     guild_level: tuple[wynnpool.LeaderboardEntry, ...]
     wars: tuple[wynnpool.LeaderboardEntry, ...]
-    territories: tuple[wynnpool.LeaderboardEntry, ...]
+    # Live holdings from Wynncraft's territory map, by comparison key.
+    # A dict rather than a board because the map is *complete*: a guild
+    # that isn't in it holds nothing, which is a fact and not a gap.
+    territories: dict[str, int]
     season_boards: tuple[tuple[wynnpool.LeaderboardEntry, ...], ...]  # newest → oldest
     current_season_active: bool
     # A top-N board proves a "> threshold" signal false by omission only
@@ -84,13 +88,16 @@ class _BulkContext:
     # ever pushes the 100th guild past ours, omission stops meaning
     # anything and we have to ask per guild again.
     wars_board_decisive: bool = True
-    territories_board_decisive: bool = True
     # tag_to_name keeps Wynncraft's spelling, because that's what gets
     # cached and displayed; this is the same map keyed for lookup.
     folded_to_name: dict[str, str] = field(default_factory=dict)
 
     def name_for(self, tag: str) -> str | None:
         return self.folded_to_name.get(tags.normalise(tag))
+
+    def territories_for(self, tag: str) -> int:
+        """Territories held right now. Absent from the map means none."""
+        return self.territories.get(tags.normalise(tag), 0)
 
     def learn(self, tag: str, name: str) -> None:
         """Record a name the leaderboards didn't carry.
@@ -222,11 +229,16 @@ async def _refresh_all(on_progress: "ProgressCallback | None" = None) -> Refresh
 
 
 async def _load_context() -> _BulkContext:
-    avg_online, guild_level, wars, territories, seasons = await asyncio.gather(
+    avg_online, guild_level, wars, territory_map, seasons = await asyncio.gather(
         wynnpool.average_online_leaderboard(),
         wynnpool.guild_level_leaderboard(),
         wynnpool.wars_leaderboard(),
-        wynnpool.territories_leaderboard(),
+        # Wynncraft's own territory map rather than Wynnpool's
+        # `guildTerritories` board. That board is a snapshot that can lag
+        # badly — it credited two guilds with 61 and 57 territories while
+        # the game said they held none — and a stale count here doesn't
+        # make a guild slightly wrong, it makes it notable.
+        wynncraft.territory_holdings(),
         wynncraft.get_seasons(),
     )
     candidate_boards = await asyncio.gather(
@@ -243,7 +255,13 @@ async def _load_context() -> _BulkContext:
     last_10 = seasons[-_SIGNAL_3_LAST_10:] if seasons else ()
     season_boards = await _season_boards(last_10)
     tag_to_name: dict[str, str] = {}
-    for board in (avg_online, guild_level, wars, territories, *extra_boards, *season_boards):
+    # Territory holders are candidates in their own right: a guild can
+    # hold half the map without appearing on any Wynnpool board, and
+    # dropping it from the candidate set would mean never evaluating the
+    # one signal it obviously qualifies on.
+    for holder in territory_map:
+        tag_to_name.setdefault(holder.prefix, holder.name)
+    for board in (avg_online, guild_level, wars, *extra_boards, *season_boards):
         for entry in board:
             # Season boards carry no prefix, so their entries arrive with
             # tag=None. Letting one into the map poisons every later
@@ -256,14 +274,14 @@ async def _load_context() -> _BulkContext:
         avg_online=avg_online,
         guild_level=guild_level,
         wars=wars,
-        territories=territories,
+        territories={
+            tags.normalise(holder.prefix): holder.territories
+            for holder in territory_map
+        },
         season_boards=season_boards,
         current_season_active=_any_active(seasons),
         folded_to_name={tags.normalise(k): v for k, v in tag_to_name.items()},
         wars_board_decisive=_board_decides(wars, _SIGNAL_5_MIN_WARS, "guildWars"),
-        territories_board_decisive=_board_decides(
-            territories, _SIGNAL_4_MIN_TERRITORIES, "guildTerritories"
-        ),
     )
 
 
@@ -470,7 +488,7 @@ def _metrics(tag: str, context: _BulkContext) -> dict[str, float | None]:
         # season boards to find out.
         "season_ranks": ranks,
         "season_rules": season_rules(ranks),
-        "territories": _board_value(context.territories, tag),
+        "territories": context.territories_for(tag),
         "wars": _board_value(context.wars, tag),
     }
 
@@ -602,21 +620,18 @@ async def _evaluate(tag: str, context: _BulkContext) -> dict[str, bool | None]:
     janitor can see exactly why a guild is (or isn't) notable without
     re-running the refresh.
 
-    Every signal is answered from bulk leaderboards the sweep already
-    holds, so evaluating a guild costs no request of its own. Territory
-    ownership and war count lean on a property of top-N boards: while the
-    board's floor sits below our threshold, a guild missing from it must
-    be under that threshold, because otherwise it would have displaced the
-    bottom entry. ``_board_decides`` checks that each sweep, and only when
-    it stops holding do we fall back to asking per guild.
+    Every signal is answered from bulk data the sweep already holds, so
+    evaluating a guild costs no request of its own. Territories come from
+    Wynncraft's complete territory map, so a guild missing from it holds
+    none — a fact, not a gap. War count leans on a property of top-N
+    boards instead: while the board's floor sits below our threshold, a
+    guild missing from it must be under that threshold, because otherwise
+    it would have displaced the bottom entry. ``_board_decides`` checks
+    that each sweep, and only when it stops holding do we ask per guild.
     """
     wars = _board_value(context.wars, tag)
-    territories = _board_value(context.territories, tag)
-
     if wars is None and not context.wars_board_decisive:
         wars = await _stat(tag, context, "wars")
-    if territories is None and not context.territories_board_decisive:
-        territories = await _stat(tag, context, "territories")
 
     return {
         "top25_average_online": _signal_top25_avg_online(tag, context),
@@ -627,7 +642,7 @@ async def _evaluate(tag: str, context: _BulkContext) -> dict[str, bool | None]:
             tag, context.name_for(tag), context
         ),
         "territory_ownership": _signal_territory_ownership(
-            territories, context.current_season_active
+            context.territories_for(tag), context.current_season_active
         ),
         "war_count": _signal_war_count(wars),
         "force_override": await _has_active_notable_override(tag),
@@ -748,7 +763,12 @@ def _signal_season_placement(
 
 
 def _signal_territory_ownership(territories: float | None, season_active: bool) -> bool:
-    if territories is None or not season_active:
+    """Holdings above the threshold, and only while a season is running.
+
+    ``None`` and ``0`` mean the same thing here — the territory map is
+    complete, so a guild that isn't on it holds nothing.
+    """
+    if not territories or not season_active:
         return False
     return territories > _SIGNAL_4_MIN_TERRITORIES
 

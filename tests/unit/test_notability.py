@@ -52,7 +52,7 @@ def _ctx(**overrides) -> _BulkContext:
         avg_online=(),
         guild_level=(),
         wars=(),
-        territories=(),
+        territories={},
         season_boards=(),
         current_season_active=False,
     )
@@ -280,11 +280,7 @@ async def test_refresh_all_writes_cache_for_all_candidates(db, httpx_mock, monke
             "1": {"name": "Avicia", "prefix": "AVO", "wars": 225394},
             "2": {"name": "Bottom", "prefix": "BTMW", "wars": 4108},
         },
-        "guildTerritories": {
-            "1": {"name": "Aequitas", "prefix": "Aeq", "territories": 97},
-            "2": {"name": "Bottom", "prefix": "BTMT", "territories": 0},
-        },
-    }, names={"DELEG": "Delegated", "OVRD": None})
+    }, territories={"Aeq": 97}, names={"DELEG": "Delegated", "OVRD": None})
     await Delegate.create(mc_uuid="u", discord_user_id=1, guild_tag="DELEG")
     await ForceOverride.create(kind="notable", subject="OVRD", expires_at=None)
 
@@ -293,7 +289,7 @@ async def test_refresh_all_writes_cache_for_all_candidates(db, httpx_mock, monke
     # Boards contribute candidates alongside delegates and overrides — and
     # no per-guild request is registered, so any would fail the test.
     cached = {r.guild_tag for r in await NotabilityCache.all()}
-    assert cached == {"VETS", "AVO", "BTMW", "Aeq", "BTMT", "DELEG", "OVRD"}
+    assert cached == {"VETS", "AVO", "BTMW", "Aeq", "DELEG", "OVRD"}
 
     vets = await NotabilityCache.get(guild_tag="VETS")
     assert vets.is_notable is True
@@ -453,7 +449,6 @@ def _boards(httpx_mock, **overrides):
         "guild-average-online": {},
         "guildLevel": {},
         "guildWars": {},
-        "guildTerritories": {},
         **{name: {} for name in notability._CANDIDATE_BOARDS},
     }
     boards.update(overrides.pop("boards", {}))
@@ -464,6 +459,19 @@ def _boards(httpx_mock, **overrides):
     httpx_mock.add_response(
         url="https://api.wynncraft.com/v3/guild/seasons",
         json=overrides.pop("seasons", {}),
+    )
+    # Territories come from Wynncraft's complete territory map, not from a
+    # Wynnpool board: `{tag: count}` here, expanded into one entry per
+    # territory the way the real payload is shaped.
+    holdings = overrides.pop("territories", {}) or {}
+    territory_map = {}
+    for tag, count in holdings.items():
+        for n in range(count):
+            territory_map[f"{tag} Territory {n}"] = {
+                "guild": {"uuid": f"uuid-{tag}", "prefix": tag, "name": tag}
+            }
+    httpx_mock.add_response(
+        url="https://api.wynncraft.com/v3/guild/list/territory", json=territory_map
     )
     for number, payload in (overrides.pop("season_boards", {}) or {}).items():
         httpx_mock.add_response(
@@ -762,3 +770,67 @@ async def test_a_finished_season_board_is_fetched_once(db, httpx_mock, monkeypat
     # asked for again — there is no second response registered for it.
     _boards(httpx_mock, seasons=finished)
     await refresh_all()
+
+
+# --------------------------------------------------------------------------
+# Territories — counted from the game, not from a leaderboard snapshot
+# --------------------------------------------------------------------------
+
+
+async def test_territories_come_from_the_live_map(db, httpx_mock, monkeypatch):
+    """Wynnpool's `guildTerritories` board lagged badly enough to credit
+    two guilds with 61 and 57 territories while the game said they held
+    none — and a stale count here doesn't make a guild slightly wrong, it
+    makes it notable."""
+    monkeypatch.setattr(
+        "hall_monitor.external.wynncraft.settings.wynncraft_api_token", ""
+    )
+    _boards(
+        httpx_mock,
+        territories={"BIG": 40, "SMOL": 3},
+        seasons={"32": {"startDate": "2000-01-01T00:00:00Z",
+                        "endDate": "2099-01-01T00:00:00Z"}},
+        season_boards={32: {"ranking": []}},
+    )
+
+    await refresh_all()
+
+    big = json.loads((await NotabilityCache.get(guild_tag="BIG")).signals_json)
+    smol = json.loads((await NotabilityCache.get(guild_tag="SMOL")).signals_json)
+    assert big["territory_ownership"] is True
+    assert smol["territory_ownership"] is False
+
+
+async def test_a_guild_off_every_board_still_counts_its_territory(db, httpx_mock, monkeypatch):
+    """A guild can hold half the map without placing on any Wynnpool
+    board. Dropping it from the candidate set would mean never evaluating
+    the one signal it obviously qualifies on."""
+    monkeypatch.setattr(
+        "hall_monitor.external.wynncraft.settings.wynncraft_api_token", ""
+    )
+    _boards(
+        httpx_mock,
+        territories={"HOLD": 40},
+        seasons={"32": {"startDate": "2000-01-01T00:00:00Z",
+                        "endDate": "2099-01-01T00:00:00Z"}},
+        season_boards={32: {"ranking": []}},
+    )
+
+    await refresh_all()
+
+    assert (await NotabilityCache.get(guild_tag="HOLD")).is_notable is True
+
+
+async def test_holding_nothing_is_a_fact_not_a_gap(db):
+    """The map is complete, so absence means zero — there is no
+    per-guild fallback to reach for and none is wanted."""
+    ctx = _ctx(territories={"aeq": 97}, current_season_active=True)
+
+    assert ctx.territories_for("Aeq") == 97
+    assert ctx.territories_for("NONE") == 0
+    assert _signal_territory_ownership(ctx.territories_for("NONE"), True) is False
+
+
+async def test_territory_still_needs_an_active_season(db):
+    """Twenty-five territories don't count off-season, live map or not."""
+    assert _signal_territory_ownership(97, False) is False

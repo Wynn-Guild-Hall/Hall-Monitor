@@ -102,6 +102,15 @@ class Guild:
 
 
 @dataclass(frozen=True)
+class TerritoryHolder:
+    """One guild's current holdings, from Wynncraft's territory map."""
+
+    prefix: str
+    name: str
+    territories: int
+
+
+@dataclass(frozen=True)
 class Season:
     number: int
     start: str  # ISO 8601 UTC (Wynncraft's `startDate`)
@@ -216,6 +225,42 @@ async def get_guild_by_prefix(tag: str, *, urgent: bool = False) -> Guild | None
             return None
         raise
     return _guild_from_payload(response.json())
+
+
+async def territory_holdings(
+    *, urgent: bool = False
+) -> tuple[TerritoryHolder, ...]:
+    """Every guild holding territory *right now*, with how much.
+
+    One request returns the whole map with each territory's current
+    holder, so this is exact for every guild at once — cheaper than a
+    leaderboard and, being the game's own answer, authoritative.
+
+    Guilds holding none are simply absent, which callers should read as
+    zero rather than as unknown: the map is complete, so absence is a
+    fact rather than a gap. The guild *name* rides along because a guild
+    can hold territory without appearing on any leaderboard, and dropping
+    it here would leave nothing able to name such a guild.
+    """
+    response = await _requester.get(
+        "/v3/guild/list/territory",
+        bucket=_BUCKET_GUILD,
+        urgent=urgent,
+        headers=_headers(),
+    )
+    counts: dict[str, int] = {}
+    names: dict[str, str] = {}
+    for info in (response.json() or {}).values():
+        guild = (info or {}).get("guild") or {}
+        prefix = guild.get("prefix")
+        if not prefix:
+            continue
+        counts[prefix] = counts.get(prefix, 0) + 1
+        names.setdefault(prefix, guild.get("name") or prefix)
+    return tuple(
+        TerritoryHolder(prefix=prefix, name=names[prefix], territories=count)
+        for prefix, count in counts.items()
+    )
 
 
 async def get_seasons(*, urgent: bool = False) -> tuple[Season, ...]:
